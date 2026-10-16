@@ -90,17 +90,31 @@ pub struct ModelInfo {
 pub struct ChatMessage {
     pub role: String,
     pub content: String,
+    /// Image data URLs (`data:image/png;base64,...`). Only sent to models whose image input
+    /// was verified; serialized as OpenAI-compatible content parts.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub images: Vec<String>,
 }
 
 impl ChatMessage {
     pub fn system(c: impl Into<String>) -> Self {
-        Self { role: "system".into(), content: c.into() }
+        Self { role: "system".into(), content: c.into(), images: vec![] }
     }
     pub fn user(c: impl Into<String>) -> Self {
-        Self { role: "user".into(), content: c.into() }
+        Self { role: "user".into(), content: c.into(), images: vec![] }
     }
     pub fn assistant(c: impl Into<String>) -> Self {
-        Self { role: "assistant".into(), content: c.into() }
+        Self { role: "assistant".into(), content: c.into(), images: vec![] }
+    }
+
+    /// Wire format: plain string content, or content parts when images are attached.
+    pub fn to_wire(&self) -> Value {
+        if self.images.is_empty() {
+            return json!({ "role": self.role, "content": self.content });
+        }
+        let mut parts = vec![json!({ "type": "text", "text": self.content })];
+        parts.extend(self.images.iter().map(|u| json!({ "type": "image_url", "image_url": { "url": u } })));
+        json!({ "role": self.role, "content": parts })
     }
 }
 
@@ -424,7 +438,7 @@ fn is_token_limit_error(message: &str) -> bool {
 pub fn build_chat_body(model: &str, messages: &[ChatMessage], opts: &ChatOptions, stream: bool) -> Value {
     json!({
         "model": model,
-        "messages": messages,
+        "messages": messages.iter().map(ChatMessage::to_wire).collect::<Vec<_>>(),
         "temperature": opts.temperature,
         "top_p": opts.top_p,
         "max_tokens": opts.max_tokens,

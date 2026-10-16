@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-probe-vision"
+description = "Enables the probe_vision command without any pre-configured scope."
+commands.allow = ["probe_vision"]
+
+[[permission]]
+identifier = "deny-probe-vision"
+description = "Denies the probe_vision command without any pre-configured scope."
+commands.deny = ["probe_vision"]

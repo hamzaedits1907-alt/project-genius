@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-supabase-propose-migration"
+description = "Enables the supabase_propose_migration command without any pre-configured scope."
+commands.allow = ["supabase_propose_migration"]
+
+[[permission]]
+identifier = "deny-supabase-propose-migration"
+description = "Denies the supabase_propose_migration command without any pre-configured scope."
+commands.deny = ["supabase_propose_migration"]

@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-add-memory"
+description = "Enables the add_memory command without any pre-configured scope."
+commands.allow = ["add_memory"]
+
+[[permission]]
+identifier = "deny-add-memory"
+description = "Denies the add_memory command without any pre-configured scope."
+commands.deny = ["add_memory"]

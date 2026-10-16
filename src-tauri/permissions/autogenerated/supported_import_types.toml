@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-supported-import-types"
+description = "Enables the supported_import_types command without any pre-configured scope."
+commands.allow = ["supported_import_types"]
+
+[[permission]]
+identifier = "deny-supported-import-types"
+description = "Denies the supported_import_types command without any pre-configured scope."
+commands.deny = ["supported_import_types"]

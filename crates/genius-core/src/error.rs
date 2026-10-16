@@ -28,6 +28,9 @@ pub enum GeniusError {
     Git(String),
     #[error("{0}")]
     GitHub(String),
+    /// External service integration failure (Supabase, …), already user-readable and redacted.
+    #[error("{0}")]
+    Integration(String),
     #[error("credential storage error: {0}")]
     Secret(String),
     #[error("process error: {0}")]
@@ -47,6 +50,7 @@ impl GeniusError {
         match self {
             GeniusError::Validation(_) => "validation",
             GeniusError::NotFound(_) => "not_found",
+            GeniusError::Integration(_) => "integration",
             GeniusError::PathRejected(_) => "path_rejected",
             GeniusError::Conflict(_) => "conflict",
             GeniusError::Cancelled => "cancelled",

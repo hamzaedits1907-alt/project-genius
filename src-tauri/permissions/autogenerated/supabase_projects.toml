@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-supabase-projects"
+description = "Enables the supabase_projects command without any pre-configured scope."
+commands.allow = ["supabase_projects"]
+
+[[permission]]
+identifier = "deny-supabase-projects"
+description = "Denies the supabase_projects command without any pre-configured scope."
+commands.deny = ["supabase_projects"]

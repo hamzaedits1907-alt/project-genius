@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-supabase-connect"
+description = "Enables the supabase_connect command without any pre-configured scope."
+commands.allow = ["supabase_connect"]
+
+[[permission]]
+identifier = "deny-supabase-connect"
+description = "Denies the supabase_connect command without any pre-configured scope."
+commands.deny = ["supabase_connect"]

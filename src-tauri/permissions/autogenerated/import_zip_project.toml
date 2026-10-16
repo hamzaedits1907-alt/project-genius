@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-import-zip-project"
+description = "Enables the import_zip_project command without any pre-configured scope."
+commands.allow = ["import_zip_project"]
+
+[[permission]]
+identifier = "deny-import-zip-project"
+description = "Denies the import_zip_project command without any pre-configured scope."
+commands.deny = ["import_zip_project"]

@@ -170,7 +170,7 @@ impl Genius {
         Ok(self.key_status())
     }
 
-    fn client(&self) -> Result<(NvidiaClient, Settings)> {
+    pub(crate) fn client(&self) -> Result<(NvidiaClient, Settings)> {
         let s = self.settings()?;
         let key = self.secrets.get(NVIDIA_KEY)?;
         Ok((NvidiaClient::new(&s.base_url, key)?, s))
@@ -196,7 +196,7 @@ impl Genius {
         res
     }
 
-    fn probes(&self) -> HashMap<String, ProbeResult> {
+    pub(crate) fn probes(&self) -> HashMap<String, ProbeResult> {
         self.db.get_setting("model_probes").ok().flatten().and_then(|v| serde_json::from_value(v).ok()).unwrap_or_default()
     }
 
@@ -572,7 +572,7 @@ impl Genius {
 
     /// One model call with live streaming to the UI. When `stream_files` is set, file
     /// blocks are parsed as they arrive and pushed as draft file events (nothing is written).
-    async fn ai_call(&self, project_id: &str, task_id: &str, purpose: &str, messages: &[ChatMessage], stream_files: bool, cancel: &CancellationToken) -> Result<(ChatResult, Vec<BlockEvent>)> {
+    pub(crate) async fn ai_call(&self, project_id: &str, task_id: &str, purpose: &str, messages: &[ChatMessage], stream_files: bool, cancel: &CancellationToken) -> Result<(ChatResult, Vec<BlockEvent>)> {
         let (client, s) = self.client()?;
         let model = s.model.clone().ok_or(crate::nvidia::ProviderError::NoModel)?;
         let opts = ChatOptions { temperature: s.temperature, top_p: 0.95, max_tokens: s.max_tokens, stream: true };
@@ -785,7 +785,7 @@ impl Genius {
     }
 
     /// Validate model-proposed paths; unsafe ones are rejected and reported, not written.
-    fn safe_changes(&self, ws: &Workspace, files: &[(String, String)], deletes: &[String]) -> Result<(Vec<FileChange>, Vec<Value>)> {
+    pub(crate) fn safe_changes(&self, ws: &Workspace, files: &[(String, String)], deletes: &[String]) -> Result<(Vec<FileChange>, Vec<Value>)> {
         let mut ok_files = Vec::new();
         let mut rejected = Vec::new();
         for (p, c) in files {
@@ -858,7 +858,7 @@ impl Genius {
         self.finish_proposal(project_id, task_id, &cs, s.approvals.apply_ai_edits, cancel, json!({ "rejectedPaths": rejected, "incomplete": parsed.incomplete })).await
     }
 
-    async fn finish_proposal(&self, project_id: &str, task_id: &str, cs: &Changeset, policy: Policy, cancel: &CancellationToken, extra: Value) -> Result<Value> {
+    pub(crate) async fn finish_proposal(&self, project_id: &str, task_id: &str, cs: &Changeset, policy: Policy, cancel: &CancellationToken, extra: Value) -> Result<Value> {
         let mut out = json!({ "changesetId": cs.id, "explanation": cs.summary });
         if let (Some(o), Some(e)) = (out.as_object_mut(), extra.as_object()) {
             o.extend(e.clone());

@@ -1,0 +1,260 @@
+//! Agent integration tests. The NVIDIA API is replaced by a scripted mock (wiremock) that
+//! plays the model's side of the tool protocol; everything else — conversation storage, tool
+//! execution against a real project folder, sandboxing, subagents, changesets, reports — is
+//! the real implementation. These tests do NOT verify live NVIDIA behaviour.
+
+use genius_core::agent::{AgentMode, AgentRequest};
+use genius_core::app::Genius;
+use genius_core::events::{EventKind, EventStatus, NullEmitter};
+use genius_core::secrets::MemoryStore;
+use serde_json::{json, Value};
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
+use wiremock::matchers::{method, path};
+use wiremock::{Mock, MockServer, Request, Respond, ResponseTemplate};
+
+fn sse(text: &str) -> ResponseTemplate {
+    let mut s = String::new();
+    for chunk in text.chars().collect::<Vec<_>>().chunks(29) {
+        let c: String = chunk.iter().collect();
+        s.push_str(&format!("data: {}\n\n", json!({"choices":[{"index":0,"delta":{"content":c},"finish_reason":null}]})));
+    }
+    s.push_str("data: {\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n");
+    ResponseTemplate::new(200).set_body_raw(s, "text/event-stream")
+}
+
+type Script = dyn Fn(&str, &str, &[Value]) -> String + Send + Sync;
+
+/// Calls `script(system, last_message, all_messages)` and records every request body.
+struct Scripted {
+    script: Box<Script>,
+    log: Arc<Mutex<Vec<Value>>>,
+}
+
+impl Respond for Scripted {
+    fn respond(&self, req: &Request) -> ResponseTemplate {
+        let body: Value = serde_json::from_slice(&req.body).unwrap();
+        self.log.lock().unwrap().push(body.clone());
+        let msgs = body["messages"].as_array().unwrap().clone();
+        let system = msgs[0]["content"].as_str().unwrap_or("").to_string();
+        let last = msgs.last().unwrap()["content"].as_str().unwrap_or("").to_string();
+        sse(&(self.script)(&system, &last, &msgs))
+    }
+}
+
+const APP: &str = "import './App.css';\n\nexport default function App() {\n  return <main className=\"app\"><h1>Dashboard</h1></main>;\n}\n";
+
+async fn setup(script: impl Fn(&str, &str, &[Value]) -> String + Send + Sync + 'static) -> (tempfile::TempDir, Arc<Genius>, String, Arc<Mutex<Vec<Value>>>, MockServer) {
+    let server = MockServer::start().await;
+    let log = Arc::new(Mutex::new(Vec::new()));
+    Mock::given(method("POST")).and(path("/v1/chat/completions")).respond_with(Scripted { script: Box::new(script), log: log.clone() }).mount(&server).await;
+    let tmp = tempfile::tempdir().unwrap();
+    let g = Genius::new(&tmp.path().join("data"), Arc::new(NullEmitter), Arc::new(MemoryStore::default())).unwrap();
+    let mut s = g.settings().unwrap();
+    s.base_url = format!("http://127.0.0.1:{}/v1", server.address().port());
+    s.model = Some("mock/coder-1".into());
+    s.workspace_dir = Some(tmp.path().join("projects").to_string_lossy().to_string());
+    g.save_settings(&s).unwrap();
+    g.save_api_key("nvapi-agent-test-key-0123456789").unwrap();
+    let p = g.create_project("Dashboard", "A modern dashboard").unwrap();
+    let ws = g.workspace(&p.id).unwrap();
+    ws.write_text("package.json", r#"{"name":"dash","scripts":{"build":"tsc && vite build"},"dependencies":{"react":"^19.0.0"}}"#).unwrap();
+    ws.write_text("src/App.tsx", APP).unwrap();
+    ws.write_text("src/App.css", ".app { padding: 1rem; }\n").unwrap();
+    std::fs::write(ws.root().join(".env"), "API_TOKEN=SECRET_VALUE_123\n").unwrap();
+    (tmp, g, p.id, log, server)
+}
+
+async fn run(g: &Arc<Genius>, pid: &str, conv: &str, msg: &str, mode: AgentMode) -> Value {
+    let t = g.start_agent(pid, AgentRequest { conversation_id: conv.into(), message: msg.into(), mode, ..Default::default() }).unwrap();
+    for _ in 0..400 {
+        if g.active_tasks(Some(pid)).is_empty() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    let ev = g.bus.list(Some(pid), 3000).unwrap().into_iter().find(|e| e.task_id.as_deref() == Some(t.id.as_str()) && e.kind == EventKind::Task && e.detail.get("taskKind").is_some()).unwrap();
+    json!({ "taskId": t.id, "status": ev.status, "detail": ev.detail })
+}
+
+fn file_block(p: &str, c: &str) -> String {
+    format!("<<<FILE: {p}>>>\n{c}<<<END FILE>>>\n")
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn continuous_conversation_inspects_then_proposes_targeted_changes() {
+    let (_tmp, g, pid, log, _server) = setup(|system, last, msgs| {
+        if system.contains("Reviewer subagent") {
+            assert!(last.contains("DIFF:"), "reviewer receives the diff");
+            return "<final>[note] Sidebar has an aria-label. No blocking issues found.</final>".into();
+        }
+        let all: String = msgs.iter().map(|m| m["content"].as_str().unwrap_or("")).collect::<Vec<_>>().join("\n");
+        if last.contains("USER MESSAGE:\nAdd a sidebar") {
+            return "I'll find the layout first.\n<tool>{\"name\":\"search\",\"args\":{\"query\":\"Dashboard\"}}</tool>".into();
+        }
+        if last.starts_with("<tool_result name=\"search\"") {
+            assert!(last.contains("src/App.tsx:4"), "real search result: {last}");
+            return "<tool>{\"name\":\"read_file\",\"args\":{\"path\":\"src/App.tsx\"}}</tool>".into();
+        }
+        if last.starts_with("<tool_result name=\"read_file\"") {
+            assert!(last.contains("<h1>Dashboard</h1>"), "real file content");
+            let app = "import './App.css';\nimport Sidebar from './components/Sidebar';\n\nexport default function App() {\n  return <div className=\"layout\"><Sidebar /><main className=\"app\"><h1>Dashboard</h1></main></div>;\n}\n";
+            let sidebar = "export default function Sidebar() {\n  return <nav aria-label=\"Main\" className=\"sidebar\">Menu</nav>;\n}\n";
+            return format!("<final>Added a Sidebar component and placed it beside the main content.\n{}{}</final>", file_block("src/App.tsx", app), file_block("src/components/Sidebar.tsx", sidebar));
+        }
+        if last.contains("USER MESSAGE:\nMake the sidebar darker") {
+            // Follow-up: the earlier request and the proposal's real status are in context.
+            assert!(all.contains("Add a sidebar"), "conversation history is included");
+            assert!(all.contains("is now 'proposed'"), "proposal status comes from Genius records");
+            return "<final>Should the darker sidebar use your existing dark palette (#111) or a new colour?</final>".into();
+        }
+        panic!("unexpected turn: {last}");
+    })
+    .await;
+
+    let conv = g.db.create_conversation(&pid, "New conversation").unwrap();
+    let r = run(&g, &pid, &conv.id, "Add a sidebar", AgentMode::Build).await;
+    assert_eq!(r["status"], json!(EventStatus::Completed), "{r}");
+    assert_eq!(r["detail"]["result"]["kind"], "proposal");
+    let cs_id = r["detail"]["result"]["changesetId"].as_str().unwrap().to_string();
+
+    // Nothing applied before review; unrelated file untouched.
+    let ws = g.workspace(&pid).unwrap();
+    assert_eq!(ws.read_text("src/App.tsx").unwrap(), APP);
+    assert!(!ws.exists("src/components/Sidebar.tsx"));
+    let (cs, files) = g.changeset(&cs_id).unwrap();
+    assert_eq!(cs.status, "proposed");
+    assert_eq!(files.iter().map(|f| f.path.as_str()).collect::<Vec<_>>(), vec!["src/App.tsx", "src/components/Sidebar.tsx"]);
+
+    // Provenance: main agent steps + reviewer subagent recorded.
+    let steps = g.agent_steps(r["taskId"].as_str().unwrap()).unwrap();
+    let tools: Vec<(&str, &str, bool)> = steps.iter().map(|s| (s.agent.as_str(), s.tool.as_str(), s.ok)).collect();
+    assert_eq!(tools, vec![("main", "search", true), ("main", "read_file", true)]);
+    let reviewer_ev = g.bus.list(Some(&pid), 3000).unwrap().into_iter().find(|e| e.title.starts_with("reviewer subagent")).expect("reviewer ran");
+    assert_eq!(reviewer_ev.status, EventStatus::Completed);
+
+    // Conversation persisted with distinct kinds and an evidence-based report.
+    let msgs = g.db.list_conversation_messages(&conv.id, 50).unwrap();
+    assert_eq!(msgs.iter().map(|m| (m.role.as_str(), m.kind.as_str())).collect::<Vec<_>>(), vec![("user", "chat"), ("assistant", "proposal")]);
+    let report = &msgs[1].meta["report"];
+    assert_eq!(report["filesRead"], json!(["src/App.tsx"]));
+    assert_eq!(report["changeset"]["status"], "proposed");
+    assert!(report["notVerified"].as_array().unwrap().iter().any(|n| n.as_str().unwrap().contains("No build or test")));
+    assert!(msgs[1].meta["review"]["findings"].as_str().unwrap().contains("No blocking issues"));
+    assert_eq!(g.db.get_conversation(&conv.id).unwrap().title, "Add a sidebar", "titled from the first message");
+
+    // Follow-up in the same conversation.
+    let r2 = run(&g, &pid, &conv.id, "Make the sidebar darker", AgentMode::Build).await;
+    assert_eq!(r2["detail"]["result"]["kind"], "answer");
+    assert_eq!(g.db.list_conversation_messages(&conv.id, 50).unwrap().len(), 4);
+
+    // Restart: conversation and messages survive.
+    let data = g.data_dir().to_path_buf();
+    drop(g);
+    let g2 = Genius::new(&data, Arc::new(NullEmitter), Arc::new(MemoryStore::default())).unwrap();
+    assert_eq!(g2.db.list_conversations(&pid).unwrap()[0].message_count, 4);
+
+    // The .env secret never reached the model.
+    for body in log.lock().unwrap().iter() {
+        assert!(!body.to_string().contains("SECRET_VALUE_123"), "secret leaked to the provider");
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn tools_are_sandboxed_validated_and_deduplicated() {
+    let (_tmp, g, pid, log, _server) = setup(|_system, last, msgs| {
+        let n = msgs.iter().filter(|m| m["content"].as_str().unwrap_or("").starts_with("<tool_result")).count();
+        match n {
+            0 => "<tool>{\"name\":\"read_file\",\"args\":{\"path\":\".env\"}}</tool>".into(),
+            1 => {
+                assert!(last.contains("ok=\"false\""), "{last}");
+                "<tool>{\"name\":\"read_file\",\"args\":{\"path\":\"../../etc/passwd\"}}</tool>".into()
+            }
+            2 => "<tool>{\"name\":\"run_shell\",\"args\":{\"cmd\":\"rm -rf /\"}}</tool>".into(),
+            3 => {
+                assert!(last.contains("unknown tool"));
+                "<tool>{\"name\":\"read_file\",\"args\":{\"path\":\"src/App.tsx\",\"evil\":1}}</tool>".into()
+            }
+            4 => "<tool>{\"name\":\"project_facts\",\"args\":{}}</tool>".into(),
+            5 => "<tool>{\"name\":\"project_facts\",\"args\":{}}</tool>".into(),
+            6 => {
+                assert!(last.contains("identical arguments"), "duplicate suppressed: {last}");
+                "<tool>not json</tool>".into()
+            }
+            _ => "<final>All tests pass and the build succeeded.</final>".into(),
+        }
+    })
+    .await;
+    let conv = g.db.create_conversation(&pid, "New conversation").unwrap();
+    let r = run(&g, &pid, &conv.id, "Check the project", AgentMode::Build).await;
+    assert_eq!(r["detail"]["result"]["kind"], "answer", "{r}");
+    let steps = g.agent_steps(r["taskId"].as_str().unwrap()).unwrap();
+    let oks: Vec<(String, bool)> = steps.iter().map(|s| (s.tool.clone(), s.ok)).collect();
+    assert_eq!(
+        oks,
+        vec![("read_file".into(), false), ("read_file".into(), false), ("run_shell".into(), false), ("read_file".into(), false), ("project_facts".into(), true), ("project_facts".into(), false)]
+    );
+    assert!(steps[0].summary.contains("excluded") || steps[0].summary.contains("secret"), "{}", steps[0].summary);
+    // Honest report: the model claimed tests passed, but nothing ran.
+    let msgs = g.db.list_conversation_messages(&conv.id, 10).unwrap();
+    let warnings = msgs[1].meta["report"]["warnings"].as_array().unwrap();
+    assert!(warnings[0].as_str().unwrap().contains("no successful build or test ran"), "{warnings:?}");
+    for body in log.lock().unwrap().iter() {
+        let s = body.to_string();
+        assert!(!s.contains("SECRET_VALUE_123"));
+        assert!(!s.contains("root:x:0"), "no file outside the workspace was read");
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn loop_is_bounded_and_plan_mode_never_proposes_files() {
+    let calls = Arc::new(Mutex::new(0usize));
+    let c2 = calls.clone();
+    let (_tmp, g, pid, _log, _server) = setup(move |_system, last, _msgs| {
+        *c2.lock().unwrap() += 1;
+        if last.contains("step limit") {
+            return "<final>I ran out of steps; nothing was changed.</final>".into();
+        }
+        if last.contains("USER MESSAGE:\nPlan it") {
+            return format!("<final>Plan: add a header.\n{}</final>", file_block("src/Header.tsx", "export {}\n"));
+        }
+        let n = *c2.lock().unwrap();
+        format!("<tool>{{\"name\":\"list_files\",\"args\":{{\"prefix\":\"src/{n}\"}}}}</tool>")
+    })
+    .await;
+    let conv = g.db.create_conversation(&pid, "New conversation").unwrap();
+    let r = run(&g, &pid, &conv.id, "Explore forever", AgentMode::Build).await;
+    assert_eq!(r["status"], json!(EventStatus::Completed));
+    assert_eq!(g.agent_steps(r["taskId"].as_str().unwrap()).unwrap().len(), 14, "bounded at 14 steps");
+    assert_eq!(*calls.lock().unwrap(), 15, "14 tool turns + 1 forced final");
+
+    let r = run(&g, &pid, &conv.id, "Plan it", AgentMode::Plan).await;
+    assert_eq!(r["detail"]["result"]["kind"], "plan");
+    assert!(g.list_changesets(&pid).unwrap().is_empty(), "plan mode proposes nothing");
+    assert!(!g.workspace(&pid).unwrap().exists("src/Header.tsx"));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn capabilities_reflect_runtime_state() {
+    let (_tmp, g, pid, _log, _server) = setup(|_s, last, _m| {
+        if last.starts_with("<tool_result name=\"capabilities\"") {
+            assert!(last.contains("[unverified] Chat with a model"), "model not probed yet: {last}");
+            assert!(last.contains("[unverified] Image input"));
+            assert!(last.contains("supabase"));
+            return "<final>I can read and change this project; the model has not been verified yet.</final>".into();
+        }
+        "<tool>{\"name\":\"capabilities\",\"args\":{}}</tool>".into()
+    })
+    .await;
+    let conv = g.db.create_conversation(&pid, "New conversation").unwrap();
+    let r = run(&g, &pid, &conv.id, "What can you do?", AgentMode::Build).await;
+    assert_eq!(r["detail"]["result"]["kind"], "answer", "{r}");
+    let rep = g.capability_report_quick(Some(&pid)).unwrap();
+    let get = |id: &str| rep.capabilities.iter().find(|c| c.id == id).unwrap().status.clone();
+    assert_eq!(get("provider_key"), "available");
+    assert_eq!(get("chat"), "unverified");
+    assert_eq!(get("shell"), "unavailable");
+    g.remove_api_key().unwrap();
+    let rep = g.capability_report_quick(Some(&pid)).unwrap();
+    assert_eq!(rep.capabilities.iter().find(|c| c.id == "provider_key").unwrap().status, "unavailable");
+}

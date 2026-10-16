@@ -93,6 +93,75 @@ const MIGRATIONS: &[&str] = &[
         json       TEXT NOT NULL
     );
     "#,
+    // v2 — project conversations, agent provenance, memory, attachments, integrations
+    r#"
+    CREATE TABLE conversations (
+        id         TEXT PRIMARY KEY,
+        project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+        title      TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+    );
+    CREATE INDEX idx_conversations_project ON conversations(project_id, updated_at);
+    ALTER TABLE messages ADD COLUMN conversation_id TEXT REFERENCES conversations(id) ON DELETE CASCADE;
+    ALTER TABLE messages ADD COLUMN kind TEXT NOT NULL DEFAULT 'chat';
+    ALTER TABLE messages ADD COLUMN meta_json TEXT NOT NULL DEFAULT '{}';
+    -- Keep earlier messages: each project with history gets an "Earlier messages" conversation.
+    INSERT INTO conversations(id, project_id, title, created_at, updated_at)
+        SELECT 'legacy-' || project_id, project_id, 'Earlier messages', MIN(created_at), MAX(created_at)
+        FROM messages GROUP BY project_id;
+    UPDATE messages SET conversation_id = 'legacy-' || project_id WHERE conversation_id IS NULL;
+    CREATE INDEX idx_messages_conversation ON messages(conversation_id, created_at);
+    CREATE TABLE agent_steps (
+        id              TEXT PRIMARY KEY,
+        project_id      TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+        task_id         TEXT NOT NULL,
+        conversation_id TEXT,
+        agent           TEXT NOT NULL,
+        seq             INTEGER NOT NULL,
+        tool            TEXT NOT NULL,
+        args_json       TEXT NOT NULL DEFAULT '{}',
+        ok              INTEGER NOT NULL,
+        summary         TEXT NOT NULL DEFAULT '',
+        result_json     TEXT NOT NULL DEFAULT '{}',
+        started_at      TEXT NOT NULL,
+        ended_at        TEXT NOT NULL
+    );
+    CREATE INDEX idx_agent_steps_task ON agent_steps(task_id, seq);
+    CREATE TABLE memories (
+        id         TEXT PRIMARY KEY,
+        project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+        kind       TEXT NOT NULL,
+        content    TEXT NOT NULL,
+        source     TEXT NOT NULL,
+        evidence   TEXT NOT NULL DEFAULT '',
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+    );
+    CREATE INDEX idx_memories_project ON memories(project_id, updated_at);
+    CREATE TABLE attachments (
+        id              TEXT PRIMARY KEY,
+        project_id      TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+        conversation_id TEXT,
+        name            TEXT NOT NULL,
+        kind            TEXT NOT NULL,
+        mime            TEXT NOT NULL,
+        size            INTEGER NOT NULL,
+        scope           TEXT NOT NULL,
+        status          TEXT NOT NULL,
+        error           TEXT,
+        text            TEXT NOT NULL DEFAULT '',
+        data_b64        TEXT,
+        meta_json       TEXT NOT NULL DEFAULT '{}',
+        created_at      TEXT NOT NULL
+    );
+    CREATE INDEX idx_attachments_project ON attachments(project_id, created_at);
+    CREATE TABLE integrations (
+        id         TEXT PRIMARY KEY,
+        meta_json  TEXT NOT NULL DEFAULT '{}',
+        updated_at TEXT NOT NULL
+    );
+    "#,
 ];
 
 pub fn now() -> String {
@@ -128,6 +197,58 @@ pub struct MessageRow {
     pub role: String,
     pub content: String,
     pub created_at: String,
+    #[serde(default)]
+    pub conversation_id: Option<String>,
+    /// chat | answer | proposal | report | error | note
+    #[serde(default)]
+    pub kind: String,
+    #[serde(default)]
+    pub meta: Value,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct ConversationRow {
+    pub id: String,
+    pub project_id: String,
+    pub title: String,
+    pub created_at: String,
+    pub updated_at: String,
+    #[serde(default)]
+    pub message_count: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentStepRow {
+    pub id: String,
+    pub project_id: String,
+    pub task_id: String,
+    pub conversation_id: Option<String>,
+    pub agent: String,
+    pub seq: i64,
+    pub tool: String,
+    pub args: Value,
+    pub ok: bool,
+    pub summary: String,
+    pub result: Value,
+    pub started_at: String,
+    pub ended_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct MemoryRow {
+    pub id: String,
+    pub project_id: String,
+    /// decision | convention | fix | constraint | problem | integration | dependency
+    pub kind: String,
+    pub content: String,
+    /// user (stated/approved by the user) | repo (verified from repository evidence) | agent (model inference)
+    pub source: String,
+    pub evidence: String,
+    pub created_at: String,
+    pub updated_at: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -331,7 +452,14 @@ impl Db {
 
     // ---------- messages ----------
 
+    /// Add a message to the project's most recent conversation (created if none exists).
     pub fn add_message(&self, project_id: &str, task_id: Option<&str>, role: &str, content: &str) -> Result<MessageRow> {
+        let conv = self.current_conversation(project_id)?;
+        self.add_message_in(&conv.id, project_id, task_id, role, "chat", content, &Value::Object(Default::default()))
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn add_message_in(&self, conversation_id: &str, project_id: &str, task_id: Option<&str>, role: &str, kind: &str, content: &str, meta: &Value) -> Result<MessageRow> {
         let m = MessageRow {
             id: uuid::Uuid::new_v4().to_string(),
             project_id: project_id.into(),
@@ -339,12 +467,221 @@ impl Db {
             role: role.into(),
             content: content.into(),
             created_at: now(),
+            conversation_id: Some(conversation_id.into()),
+            kind: kind.into(),
+            meta: meta.clone(),
         };
+        let conn = self.conn();
+        conn.execute(
+            "INSERT INTO messages(id,project_id,task_id,role,content,created_at,conversation_id,kind,meta_json) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9)",
+            params![m.id, m.project_id, m.task_id, m.role, m.content, m.created_at, m.conversation_id, m.kind, m.meta.to_string()],
+        )?;
+        conn.execute("UPDATE conversations SET updated_at = ?2 WHERE id = ?1", params![conversation_id, m.created_at])?;
+        Ok(m)
+    }
+
+    pub fn update_message_meta(&self, id: &str, meta: &Value) -> Result<()> {
+        self.conn().execute("UPDATE messages SET meta_json = ?2 WHERE id = ?1", params![id, meta.to_string()])?;
+        Ok(())
+    }
+
+    fn row_to_message(r: &rusqlite::Row) -> rusqlite::Result<MessageRow> {
+        let meta: String = r.get("meta_json")?;
+        Ok(MessageRow {
+            id: r.get("id")?,
+            project_id: r.get("project_id")?,
+            task_id: r.get("task_id")?,
+            role: r.get("role")?,
+            content: r.get("content")?,
+            created_at: r.get("created_at")?,
+            conversation_id: r.get("conversation_id")?,
+            kind: r.get("kind")?,
+            meta: serde_json::from_str(&meta).unwrap_or(Value::Null),
+        })
+    }
+
+    pub fn list_conversation_messages(&self, conversation_id: &str, limit: usize) -> Result<Vec<MessageRow>> {
+        let conn = self.conn();
+        let mut stmt = conn.prepare(
+            "SELECT * FROM (SELECT *, rowid AS seq_ FROM messages WHERE conversation_id = ?1 ORDER BY created_at DESC, rowid DESC LIMIT ?2)
+             ORDER BY created_at ASC, seq_ ASC",
+        )?;
+        let rows = stmt.query_map(params![conversation_id, limit as i64], Self::row_to_message)?;
+        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+    }
+
+    // ---------- conversations ----------
+
+    pub fn create_conversation(&self, project_id: &str, title: &str) -> Result<ConversationRow> {
+        let t = now();
+        let c = ConversationRow { id: uuid::Uuid::new_v4().to_string(), project_id: project_id.into(), title: title.into(), created_at: t.clone(), updated_at: t, message_count: 0 };
         self.conn().execute(
-            "INSERT INTO messages(id,project_id,task_id,role,content,created_at) VALUES(?1,?2,?3,?4,?5,?6)",
-            params![m.id, m.project_id, m.task_id, m.role, m.content, m.created_at],
+            "INSERT INTO conversations(id,project_id,title,created_at,updated_at) VALUES(?1,?2,?3,?4,?5)",
+            params![c.id, c.project_id, c.title, c.created_at, c.updated_at],
+        )?;
+        Ok(c)
+    }
+
+    pub fn list_conversations(&self, project_id: &str) -> Result<Vec<ConversationRow>> {
+        let conn = self.conn();
+        let mut stmt = conn.prepare(
+            "SELECT c.*, (SELECT COUNT(*) FROM messages m WHERE m.conversation_id = c.id) AS n
+             FROM conversations c WHERE c.project_id = ?1 ORDER BY c.updated_at DESC, c.rowid DESC",
+        )?;
+        let rows = stmt.query_map(params![project_id], |r| {
+            Ok(ConversationRow {
+                id: r.get("id")?,
+                project_id: r.get("project_id")?,
+                title: r.get("title")?,
+                created_at: r.get("created_at")?,
+                updated_at: r.get("updated_at")?,
+                message_count: r.get("n")?,
+            })
+        })?;
+        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+    }
+
+    pub fn get_conversation(&self, id: &str) -> Result<ConversationRow> {
+        self.list_conversations_where("c.id = ?1", id)?.into_iter().next().ok_or_else(|| GeniusError::NotFound(format!("conversation {id}")))
+    }
+
+    fn list_conversations_where(&self, cond: &str, arg: &str) -> Result<Vec<ConversationRow>> {
+        let conn = self.conn();
+        let mut stmt = conn.prepare(&format!(
+            "SELECT c.*, (SELECT COUNT(*) FROM messages m WHERE m.conversation_id = c.id) AS n FROM conversations c WHERE {cond}"
+        ))?;
+        let rows = stmt.query_map(params![arg], |r| {
+            Ok(ConversationRow {
+                id: r.get("id")?,
+                project_id: r.get("project_id")?,
+                title: r.get("title")?,
+                created_at: r.get("created_at")?,
+                updated_at: r.get("updated_at")?,
+                message_count: r.get("n")?,
+            })
+        })?;
+        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+    }
+
+    /// Most recently active conversation, creating "Project conversation" if the project has none.
+    pub fn current_conversation(&self, project_id: &str) -> Result<ConversationRow> {
+        match self.list_conversations(project_id)?.into_iter().next() {
+            Some(c) => Ok(c),
+            None => self.create_conversation(project_id, "Project conversation"),
+        }
+    }
+
+    pub fn rename_conversation(&self, id: &str, title: &str) -> Result<()> {
+        self.conn().execute("UPDATE conversations SET title = ?2 WHERE id = ?1", params![id, title])?;
+        Ok(())
+    }
+
+    pub fn delete_conversation(&self, id: &str) -> Result<()> {
+        let conn = self.conn();
+        conn.execute("DELETE FROM messages WHERE conversation_id = ?1", params![id])?;
+        conn.execute("DELETE FROM conversations WHERE id = ?1", params![id])?;
+        Ok(())
+    }
+
+    // ---------- agent steps (provenance of every tool call) ----------
+
+    pub fn insert_agent_step(&self, s: &AgentStepRow) -> Result<()> {
+        self.conn().execute(
+            "INSERT INTO agent_steps(id,project_id,task_id,conversation_id,agent,seq,tool,args_json,ok,summary,result_json,started_at,ended_at)
+             VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13)",
+            params![s.id, s.project_id, s.task_id, s.conversation_id, s.agent, s.seq, s.tool, s.args.to_string(), s.ok as i64, s.summary, s.result.to_string(), s.started_at, s.ended_at],
+        )?;
+        Ok(())
+    }
+
+    pub fn list_agent_steps(&self, task_id: &str) -> Result<Vec<AgentStepRow>> {
+        let conn = self.conn();
+        let mut stmt = conn.prepare("SELECT * FROM agent_steps WHERE task_id = ?1 ORDER BY seq ASC, rowid ASC")?;
+        let rows = stmt.query_map(params![task_id], |r| {
+            let args: String = r.get("args_json")?;
+            let result: String = r.get("result_json")?;
+            Ok(AgentStepRow {
+                id: r.get("id")?,
+                project_id: r.get("project_id")?,
+                task_id: r.get("task_id")?,
+                conversation_id: r.get("conversation_id")?,
+                agent: r.get("agent")?,
+                seq: r.get("seq")?,
+                tool: r.get("tool")?,
+                args: serde_json::from_str(&args).unwrap_or(Value::Null),
+                ok: r.get::<_, i64>("ok")? != 0,
+                summary: r.get("summary")?,
+                result: serde_json::from_str(&result).unwrap_or(Value::Null),
+                started_at: r.get("started_at")?,
+                ended_at: r.get("ended_at")?,
+            })
+        })?;
+        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+    }
+
+    // ---------- project memory ----------
+
+    pub fn add_memory(&self, project_id: &str, kind: &str, content: &str, source: &str, evidence: &str) -> Result<MemoryRow> {
+        let t = now();
+        let m = MemoryRow { id: uuid::Uuid::new_v4().to_string(), project_id: project_id.into(), kind: kind.into(), content: content.into(), source: source.into(), evidence: evidence.into(), created_at: t.clone(), updated_at: t };
+        self.conn().execute(
+            "INSERT INTO memories(id,project_id,kind,content,source,evidence,created_at,updated_at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8)",
+            params![m.id, m.project_id, m.kind, m.content, m.source, m.evidence, m.created_at, m.updated_at],
         )?;
         Ok(m)
+    }
+
+    pub fn list_memories(&self, project_id: &str) -> Result<Vec<MemoryRow>> {
+        let conn = self.conn();
+        let mut stmt = conn.prepare("SELECT * FROM memories WHERE project_id = ?1 ORDER BY updated_at DESC, rowid DESC")?;
+        let rows = stmt.query_map(params![project_id], |r| {
+            Ok(MemoryRow {
+                id: r.get("id")?,
+                project_id: r.get("project_id")?,
+                kind: r.get("kind")?,
+                content: r.get("content")?,
+                source: r.get("source")?,
+                evidence: r.get("evidence")?,
+                created_at: r.get("created_at")?,
+                updated_at: r.get("updated_at")?,
+            })
+        })?;
+        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+    }
+
+    pub fn update_memory(&self, id: &str, content: &str, source: &str, evidence: &str) -> Result<()> {
+        self.conn().execute(
+            "UPDATE memories SET content = ?2, source = ?3, evidence = ?4, updated_at = ?5 WHERE id = ?1",
+            params![id, content, source, evidence, now()],
+        )?;
+        Ok(())
+    }
+
+    pub fn delete_memory(&self, project_id: &str, id: &str) -> Result<()> {
+        self.conn().execute("DELETE FROM memories WHERE id = ?1 AND project_id = ?2", params![id, project_id])?;
+        Ok(())
+    }
+
+    // ---------- integrations (non-secret metadata only; secrets live in the OS store) ----------
+
+    pub fn get_integration(&self, id: &str) -> Result<Option<Value>> {
+        let conn = self.conn();
+        let v: Option<String> = conn.query_row("SELECT meta_json FROM integrations WHERE id = ?1", params![id], |r| r.get(0)).optional()?;
+        Ok(v.and_then(|s| serde_json::from_str(&s).ok()))
+    }
+
+    pub fn set_integration(&self, id: &str, meta: &Value) -> Result<()> {
+        self.conn().execute(
+            "INSERT INTO integrations(id, meta_json, updated_at) VALUES(?1, ?2, ?3)
+             ON CONFLICT(id) DO UPDATE SET meta_json = excluded.meta_json, updated_at = excluded.updated_at",
+            params![id, meta.to_string(), now()],
+        )?;
+        Ok(())
+    }
+
+    pub fn delete_integration(&self, id: &str) -> Result<()> {
+        self.conn().execute("DELETE FROM integrations WHERE id = ?1", params![id])?;
+        Ok(())
     }
 
     pub fn list_messages(&self, project_id: &str, limit: usize) -> Result<Vec<MessageRow>> {
@@ -353,16 +690,7 @@ impl Db {
             "SELECT * FROM (SELECT * FROM messages WHERE project_id = ?1 ORDER BY created_at DESC, rowid DESC LIMIT ?2)
              ORDER BY created_at ASC",
         )?;
-        let rows = stmt.query_map(params![project_id, limit as i64], |r| {
-            Ok(MessageRow {
-                id: r.get("id")?,
-                project_id: r.get("project_id")?,
-                task_id: r.get("task_id")?,
-                role: r.get("role")?,
-                content: r.get("content")?,
-                created_at: r.get("created_at")?,
-            })
-        })?;
+        let rows = stmt.query_map(params![project_id, limit as i64], Self::row_to_message)?;
         Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
     }
 
@@ -529,5 +857,29 @@ mod tests {
         db.delete_project("p1").unwrap();
         let n: i64 = db.conn().query_row("SELECT COUNT(*) FROM messages", [], |r| r.get(0)).unwrap();
         assert_eq!(n, 0);
+    }
+
+    #[test]
+    fn v1_database_upgrades_keeping_messages_in_a_conversation() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("g.db");
+        {
+            let mut conn = Connection::open(&path).unwrap();
+            let tx = conn.transaction().unwrap();
+            tx.execute_batch(MIGRATIONS[0]).unwrap();
+            tx.pragma_update(None, "user_version", 1i64).unwrap();
+            tx.execute("INSERT INTO projects(id,name,path,created_at,updated_at) VALUES('p','P','/x','2026-01-01','2026-01-01')", []).unwrap();
+            tx.execute("INSERT INTO messages(id,project_id,role,content,created_at) VALUES('m1','p','user','Add a footer','2026-01-02')", []).unwrap();
+            tx.commit().unwrap();
+        }
+        let db = Db::open(&path).unwrap();
+        assert_eq!(db.schema_version().unwrap(), MIGRATIONS.len() as i64);
+        let convs = db.list_conversations("p").unwrap();
+        assert_eq!((convs.len(), convs[0].title.as_str(), convs[0].message_count), (1, "Earlier messages", 1));
+        let msgs = db.list_conversation_messages(&convs[0].id, 10).unwrap();
+        assert_eq!((msgs[0].content.as_str(), msgs[0].kind.as_str()), ("Add a footer", "chat"));
+        // New messages without an explicit conversation go to the most recent one.
+        db.add_message("p", None, "assistant", "Done").unwrap();
+        assert_eq!(db.list_conversation_messages(&convs[0].id, 10).unwrap().len(), 2);
     }
 }

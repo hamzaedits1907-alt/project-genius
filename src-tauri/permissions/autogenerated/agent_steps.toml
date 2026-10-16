@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-agent-steps"
+description = "Enables the agent_steps command without any pre-configured scope."
+commands.allow = ["agent_steps"]
+
+[[permission]]
+identifier = "deny-agent-steps"
+description = "Denies the agent_steps command without any pre-configured scope."
+commands.deny = ["agent_steps"]

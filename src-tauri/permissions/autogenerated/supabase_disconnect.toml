@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-supabase-disconnect"
+description = "Enables the supabase_disconnect command without any pre-configured scope."
+commands.allow = ["supabase_disconnect"]
+
+[[permission]]
+identifier = "deny-supabase-disconnect"
+description = "Denies the supabase_disconnect command without any pre-configured scope."
+commands.deny = ["supabase_disconnect"]

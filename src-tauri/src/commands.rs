@@ -475,3 +475,181 @@ pub fn record_ui_error(g: G, report: genius_core::uilog::UiErrorReport) -> Resul
 pub fn recent_ui_errors(g: G, limit: Option<usize>) -> Vec<Value> {
     genius_core::uilog::recent(g.data_dir(), limit.unwrap_or(20).min(200))
 }
+
+// ---------------------------------------------------------------- conversations & agent
+
+#[tauri::command]
+pub fn list_conversations(g: G, project_id: String) -> Result<Vec<genius_core::db::ConversationRow>> {
+    g.db.list_conversations(&project_id)
+}
+
+#[tauri::command]
+pub fn create_conversation(g: G, project_id: String, title: Option<String>) -> Result<genius_core::db::ConversationRow> {
+    g.db.get_project(&project_id)?;
+    g.db.create_conversation(&project_id, title.as_deref().filter(|t| !t.trim().is_empty()).unwrap_or("New conversation"))
+}
+
+#[tauri::command]
+pub fn rename_conversation(g: G, conversation_id: String, title: String) -> Result<()> {
+    g.db.rename_conversation(&conversation_id, title.trim())
+}
+
+#[tauri::command]
+pub fn delete_conversation(g: G, conversation_id: String) -> Result<()> {
+    g.db.delete_conversation(&conversation_id)
+}
+
+#[tauri::command]
+pub fn conversation_messages(g: G, conversation_id: String) -> Result<Vec<MessageRow>> {
+    g.db.list_conversation_messages(&conversation_id, 500)
+}
+
+#[tauri::command]
+pub fn start_agent(g: G, project_id: String, request: genius_core::agent::AgentRequest) -> Result<TaskInfo> {
+    g.start_agent(&project_id, request)
+}
+
+#[tauri::command]
+pub fn agent_steps(g: G, task_id: String) -> Result<Vec<genius_core::db::AgentStepRow>> {
+    g.agent_steps(&task_id)
+}
+
+#[tauri::command]
+pub async fn capability_report(g: G<'_>, project_id: Option<String>) -> Result<genius_core::capabilities::CapabilityReport> {
+    g.capability_report(project_id.as_deref()).await
+}
+
+// ---------------------------------------------------------------- project memory
+
+#[tauri::command]
+pub fn list_memories(g: G, project_id: String) -> Result<Vec<genius_core::db::MemoryRow>> {
+    g.db.list_memories(&project_id)
+}
+
+#[tauri::command]
+pub fn add_memory(g: G, project_id: String, kind: String, content: String) -> Result<genius_core::db::MemoryRow> {
+    if content.trim().is_empty() || content.len() > 2000 {
+        return Err(genius_core::GeniusError::Validation("memory must be 1-2000 characters".into()));
+    }
+    g.db.get_project(&project_id)?;
+    g.db.add_memory(&project_id, &kind, content.trim(), "user", "added by you")
+}
+
+#[tauri::command]
+pub fn update_memory(g: G, memory_id: String, content: String) -> Result<()> {
+    g.db.update_memory(&memory_id, content.trim(), "user", "edited by you")
+}
+
+#[tauri::command]
+pub fn delete_memory(g: G, project_id: String, memory_id: String) -> Result<()> {
+    g.db.delete_memory(&project_id, &memory_id)
+}
+
+// ---------------------------------------------------------------- imported files
+
+#[tauri::command]
+pub fn import_attachment(g: G, project_id: String, path: String, scope: String, conversation_id: Option<String>) -> Result<genius_core::attachments::Attachment> {
+    g.import_attachment(&project_id, &path, &scope, conversation_id.as_deref())
+}
+
+#[tauri::command]
+pub fn import_attachment_data(g: G, project_id: String, name: String, data_base64: String, scope: String, conversation_id: Option<String>) -> Result<genius_core::attachments::Attachment> {
+    use base64::Engine;
+    if data_base64.len() as u64 > genius_core::attachments::MAX_IMPORT_BYTES * 4 / 3 + 16 {
+        return Err(genius_core::GeniusError::Validation("file exceeds the import limit".into()));
+    }
+    let bytes = base64::engine::general_purpose::STANDARD.decode(data_base64.as_bytes()).map_err(|e| genius_core::GeniusError::Validation(format!("invalid file data: {e}")))?;
+    g.import_attachment_bytes(&project_id, &name, &bytes, &scope, conversation_id.as_deref())
+}
+
+#[tauri::command]
+pub fn list_attachments(g: G, project_id: String) -> Result<Vec<genius_core::attachments::Attachment>> {
+    g.list_attachments(&project_id)
+}
+
+#[tauri::command]
+pub fn attachment_preview(g: G, project_id: String, attachment_id: String) -> Result<Value> {
+    g.attachment_preview(&project_id, &attachment_id)
+}
+
+#[tauri::command]
+pub fn set_attachment_scope(g: G, project_id: String, attachment_id: String, scope: String) -> Result<genius_core::attachments::Attachment> {
+    g.set_attachment_scope(&project_id, &attachment_id, &scope)
+}
+
+#[tauri::command]
+pub fn delete_attachment(g: G, project_id: String, attachment_id: String) -> Result<()> {
+    g.delete_attachment(&project_id, &attachment_id)
+}
+
+#[tauri::command]
+pub fn supported_import_types() -> Vec<String> {
+    genius_core::attachments::supported_extensions()
+}
+
+#[tauri::command]
+pub fn import_zip_project(g: G, path: String) -> Result<ProjectRow> {
+    g.import_zip_project(&path)
+}
+
+#[tauri::command]
+pub async fn probe_vision(g: G<'_>, model: String) -> Result<Value> {
+    g.probe_vision(&model).await
+}
+
+// ---------------------------------------------------------------- integrations
+
+#[tauri::command]
+pub fn integration_statuses(g: G) -> Vec<Value> {
+    g.integration_statuses()
+}
+
+#[tauri::command]
+pub async fn supabase_connect(g: G<'_>, token: String) -> Result<Value> {
+    g.supabase_connect(&token).await
+}
+
+#[tauri::command]
+pub fn supabase_disconnect(g: G) -> Result<Value> {
+    g.supabase_disconnect()
+}
+
+#[tauri::command]
+pub async fn supabase_projects(g: G<'_>) -> Result<Vec<genius_core::supabase::SupabaseProject>> {
+    g.supabase_projects().await
+}
+
+#[tauri::command]
+pub async fn supabase_link(g: G<'_>, project_id: String, reference: String) -> Result<Value> {
+    g.supabase_link(&project_id, &reference).await
+}
+
+#[tauri::command]
+pub async fn supabase_status(g: G<'_>, project_id: String) -> Result<Value> {
+    g.supabase_status(&project_id).await
+}
+
+#[tauri::command]
+pub async fn supabase_configure(g: G<'_>, project_id: String) -> Result<Value> {
+    g.supabase_configure(&project_id).await
+}
+
+#[tauri::command]
+pub fn supabase_propose_migration(g: G, project_id: String, name: String, sql: String) -> Result<Value> {
+    g.supabase_propose_migration(&project_id, &name, &sql)
+}
+
+#[tauri::command]
+pub fn supabase_migrations(g: G, project_id: String) -> Result<Vec<Value>> {
+    g.supabase_migrations(&project_id)
+}
+
+#[tauri::command]
+pub async fn supabase_apply_migration(g: G<'_>, project_id: String, path: String) -> Result<Value> {
+    g.supabase_apply_migration(&project_id, &path, &CancellationToken::new()).await
+}
+
+#[tauri::command]
+pub async fn supabase_generate_types(g: G<'_>, project_id: String) -> Result<Value> {
+    g.supabase_generate_types(&project_id).await
+}
