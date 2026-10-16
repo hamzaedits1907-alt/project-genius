@@ -41,5 +41,5 @@ cargo test --workspace
 ## Windows-specific behaviour already handled in code
 
 - Paths: all project paths are validated as relative and normalised; drive letters, `\\?\` prefixes, reserved names (`CON`, `NUL`, …) and `..` are rejected.
-- Processes: npm runs via `npm.cmd` without a shell; trees are killed with `taskkill /T /F` on stop and on exit.
+- Processes: npm is resolved through `PATHEXT` (`npm.cmd`, which Windows runs via `cmd.exe`) with a fixed argument list chosen by Genius — model output never becomes a command; process trees are killed with `taskkill /T` on stop and on exit.
 - Credentials: `keyring` with the `windows-native` backend (Credential Manager).
