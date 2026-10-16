@@ -83,6 +83,9 @@ pub struct Genius {
     previews: Arc<Mutex<HashMap<String, String>>>,
     repair_history: Arc<Mutex<HashMap<String, Vec<String>>>>,
     data_dir: PathBuf,
+    /// Runtime used for background work. Captured at construction so tasks can be spawned
+    /// from any thread (Tauri runs synchronous commands on the main thread, outside Tokio).
+    rt: tokio::runtime::Handle,
 }
 
 impl Genius {
@@ -98,7 +101,9 @@ impl Genius {
         bus.close_stale()?;
         db.mark_orphaned_runs()?;
         let procs = ProcessManager::new(db.clone(), bus.clone());
+        let rt = tokio::runtime::Handle::try_current().map_err(|_| GeniusError::Internal("Genius must be created inside a Tokio runtime".into()))?;
         Ok(Arc::new(Self {
+            rt,
             db,
             bus,
             secrets,
@@ -109,6 +114,10 @@ impl Genius {
             repair_history: Arc::new(Mutex::new(HashMap::new())),
             data_dir: data_dir.to_path_buf(),
         }))
+    }
+
+    pub fn runtime(&self) -> &tokio::runtime::Handle {
+        &self.rt
     }
 
     pub fn data_dir(&self) -> &Path {
@@ -447,6 +456,7 @@ impl Genius {
         match store.apply(&ws, id) {
             Ok(cs) => {
                 store.mark_reverted_if_restore(&cs)?;
+                self.bus.resolve_changeset(id, EventStatus::Completed, "applied");
                 ev.set_title(format!("Applied: {}", cs.title));
                 ev.update(EventStatus::Completed, json!({ "files": cs.files.len() }));
                 self.emit_applied(project_id, task_id, &cs);
@@ -477,6 +487,7 @@ impl Genius {
 
     pub fn reject_changeset(&self, id: &str) -> Result<Changeset> {
         let cs = ChangeStore::new(&self.db).reject(id)?;
+        self.bus.resolve_changeset(id, EventStatus::Cancelled, "rejected");
         self.bus.record(Some(&cs.project_id), cs.task_id.as_deref(), EventKind::Changeset, EventStatus::Cancelled, format!("Rejected: {}", cs.title), json!({ "changesetId": cs.id }));
         Ok(cs)
     }
@@ -539,7 +550,7 @@ impl Genius {
         self.tasks.lock().unwrap().insert(info.id.clone(), TaskEntry { info: info.clone(), cancel: cancel.clone() });
         let me = self.clone();
         let info2 = info.clone();
-        tokio::spawn(async move {
+        self.rt.spawn(async move {
             let mut ev = me.bus.start(Some(&info2.project_id), Some(&info2.id), EventKind::Task, EventStatus::Running, info2.title.clone(), json!({ "taskKind": info2.kind }));
             let started = Instant::now();
             let res = f(info2.id.clone(), cancel).await;
@@ -1073,7 +1084,7 @@ impl Genius {
                 let bus = self.bus.clone();
                 let previews = self.previews.clone();
                 let (pid, rid) = (project_id.to_string(), run.id.clone());
-                tokio::spawn(async move {
+                self.rt.spawn(async move {
                     if let Ok(o) = procs.wait(&rid).await {
                         let mut map = previews.lock().unwrap();
                         if procs.dev_server(&pid).is_none() {
@@ -1146,10 +1157,11 @@ impl Genius {
                     let ok = s.get("status").and_then(|x| x.as_str()) == Some("succeeded");
                     let stale = last_change.as_deref().is_some_and(|lc| lc > at);
                     let status = if !ok { "fail" } else if stale { "warn" } else { "pass" };
+                    let when = chrono::DateTime::parse_from_rfc3339(at).map(|t| t.with_timezone(&chrono::Local).format("%Y-%m-%d %H:%M").to_string()).unwrap_or_else(|_| at.to_string());
                     let detail = format!(
-                        "{} at {}{}",
+                        "{} {}{}",
                         if ok { "Succeeded" } else { "Failed" },
-                        at,
+                        when,
                         if stale { " — files changed since; run again" } else { "" }
                     );
                     check(id, label, status, detail)
@@ -1215,6 +1227,34 @@ pub fn validate_package_json(text: &str) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Tauri runs synchronous commands on the main thread, outside any Tokio context.
+    /// Spawning a task from such a thread must work (regression test for a startup crash).
+    #[test]
+    fn tasks_can_be_spawned_from_non_runtime_threads() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let g = rt.block_on(async {
+            Genius::new(dir.path(), Arc::new(crate::events::NullEmitter), Arc::new(crate::secrets::MemoryStore::default())).unwrap()
+        });
+        let p = g.create_project("Thread test", "").unwrap();
+        let g2 = g.clone();
+        let pid = p.id.clone();
+        let task = std::thread::spawn(move || g2.spawn_task(&pid, "test", "noop", |_, _| async { Ok(json!({ "ran": true })) }).unwrap())
+            .join()
+            .expect("spawning from a plain thread must not panic");
+        rt.block_on(async {
+            for _ in 0..100 {
+                if g.active_tasks(None).is_empty() {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        });
+        let ev = g.bus.list(Some(&p.id), 50).unwrap().into_iter().find(|e| e.task_id.as_deref() == Some(task.id.as_str())).unwrap();
+        assert_eq!(ev.status, EventStatus::Completed);
+        assert_eq!(ev.detail["result"]["ran"], true);
+    }
 
     #[test]
     fn package_json_validation() {

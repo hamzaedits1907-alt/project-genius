@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-github-orgs"
+description = "Enables the github_orgs command without any pre-configured scope."
+commands.allow = ["github_orgs"]
+
+[[permission]]
+identifier = "deny-github-orgs"
+description = "Denies the github_orgs command without any pre-configured scope."
+commands.deny = ["github_orgs"]

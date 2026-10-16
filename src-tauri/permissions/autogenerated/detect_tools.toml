@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-detect-tools"
+description = "Enables the detect_tools command without any pre-configured scope."
+commands.allow = ["detect_tools"]
+
+[[permission]]
+identifier = "deny-detect-tools"
+description = "Denies the detect_tools command without any pre-configured scope."
+commands.deny = ["detect_tools"]

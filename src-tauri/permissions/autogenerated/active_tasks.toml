@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-active-tasks"
+description = "Enables the active_tasks command without any pre-configured scope."
+commands.allow = ["active_tasks"]
+
+[[permission]]
+identifier = "deny-active-tasks"
+description = "Denies the active_tasks command without any pre-configured scope."
+commands.deny = ["active_tasks"]

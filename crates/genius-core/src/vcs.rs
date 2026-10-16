@@ -379,7 +379,7 @@ impl Genius {
     pub fn github_login_web(self: &Arc<Self>) -> Result<()> {
         let gh = self.gh()?;
         let me = self.clone();
-        tokio::spawn(async move {
+        self.runtime().spawn(async move {
             let mut ev = me.bus.start(None, None, EventKind::Github, EventStatus::Running, "Connecting GitHub account", json!({ "method": "device" }));
             let bus = me.bus.clone();
             let res = gh

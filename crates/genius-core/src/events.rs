@@ -208,8 +208,8 @@ impl EventBus {
     pub fn list(&self, project_id: Option<&str>, limit: usize) -> crate::error::Result<Vec<ActivityEvent>> {
         let conn = self.db.conn();
         let mut stmt = conn.prepare(
-            "SELECT * FROM (SELECT * FROM activity WHERE (?1 IS NULL AND project_id IS NULL) OR project_id = ?1
-               ORDER BY ts DESC, rowid DESC LIMIT ?2) ORDER BY ts ASC",
+            "SELECT * FROM (SELECT *, rowid AS seq FROM activity WHERE (?1 IS NULL AND project_id IS NULL) OR project_id = ?1
+               ORDER BY ts DESC, rowid DESC LIMIT ?2) ORDER BY ts ASC, seq ASC",
         )?;
         let rows = stmt.query_map(rusqlite::params![project_id, limit as i64], |r| {
             let kind: String = r.get("kind")?;
@@ -236,9 +236,38 @@ impl EventBus {
         Ok(self.db.conn().execute(
             "UPDATE activity SET status = 'cancelled', updated_ts = ?1,
                detail_json = json_set(detail_json, '$.note', 'Interrupted: Genius was closed before this finished.')
-             WHERE status IN ('running','queued','awaiting_approval')",
+             WHERE status IN ('running','queued','awaiting_approval') AND kind != 'changeset'",
             [now()],
         )?)
+    }
+
+    /// When a proposed changeset is applied, rejected or superseded, resolve the
+    /// "awaiting approval" events that announced it so the feed stays truthful.
+    pub fn resolve_changeset(&self, changeset_id: &str, status: EventStatus, outcome: &str) {
+        let ids: Vec<String> = {
+            let conn = self.db.conn();
+            let Ok(mut stmt) = conn.prepare(
+                "SELECT id FROM activity WHERE kind = 'changeset' AND status = 'awaiting_approval'
+                   AND json_extract(detail_json, '$.changesetId') = ?1",
+            ) else {
+                return;
+            };
+            let Ok(rows) = stmt.query_map([changeset_id], |r| r.get::<_, String>(0)) else { return };
+            rows.flatten().collect()
+        };
+        for id in ids {
+            let found = self.db.conn().query_row(
+                "SELECT project_id, task_id, title, detail_json, ts FROM activity WHERE id = ?1",
+                [&id],
+                |r| Ok((r.get::<_, Option<String>>(0)?, r.get::<_, Option<String>>(1)?, r.get::<_, String>(2)?, r.get::<_, String>(3)?, r.get::<_, String>(4)?)),
+            );
+            if let Ok((project_id, task_id, title, detail, ts)) = found {
+                let mut detail: Value = serde_json::from_str(&detail).unwrap_or(json!({}));
+                detail["resolution"] = json!(outcome);
+                let ev = ActivityEvent { id, project_id, task_id, kind: EventKind::Changeset, status, title, detail, ts, updated_ts: now() };
+                self.persist(&ev);
+            }
+        }
     }
 
     pub fn prune(&self, project_id: &str) {
@@ -348,6 +377,21 @@ mod tests {
         let bus = EventBus::new(db, Arc::new(NullEmitter));
         let ev = bus.record(None, None, EventKind::Ai, EventStatus::Failed, "x", json!({"msg": "Bearer nvapi-123456789abcdef"}));
         assert!(!ev.detail.to_string().contains("nvapi-1234"));
+    }
+
+    #[test]
+    fn proposals_resolve_and_survive_restart() {
+        let db = Arc::new(Db::open_in_memory().unwrap());
+        let bus = EventBus::new(db, Arc::new(NullEmitter));
+        bus.record(None, None, EventKind::Changeset, EventStatus::AwaitingApproval, "Review", json!({"changesetId": "c1"}));
+        bus.record(None, None, EventKind::Changeset, EventStatus::AwaitingApproval, "Review", json!({"changesetId": "c2"}));
+        bus.close_stale().unwrap();
+        assert!(bus.list(None, 5).unwrap().iter().all(|e| e.status == EventStatus::AwaitingApproval), "still pending after restart");
+        bus.resolve_changeset("c1", EventStatus::Completed, "applied");
+        let all = bus.list(None, 5).unwrap();
+        assert_eq!(all[0].status, EventStatus::Completed);
+        assert_eq!(all[0].detail["resolution"], "applied");
+        assert_eq!(all[1].status, EventStatus::AwaitingApproval);
     }
 
     #[test]

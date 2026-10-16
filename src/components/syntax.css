@@ -1,0 +1,40 @@
+/* Token colours for @lezer/highlight classHighlighter, themed through CSS variables. */
+:root, [data-theme='dark'] {
+  --syn-kw: #c49bff;
+  --syn-str: #9fdc8e;
+  --syn-num: #f4b98a;
+  --syn-fn: #7cc4ff;
+  --syn-type: #f1d48a;
+  --syn-tag: #ff8fa3;
+  --syn-attr: #f4b98a;
+  --syn-com: #697387;
+  --syn-prop: #b9c6e4;
+  --syn-op: #93a0bd;
+}
+[data-theme='light'] {
+  --syn-kw: #7a3fd6;
+  --syn-str: #1f7a3a;
+  --syn-num: #b35a12;
+  --syn-fn: #1a62b8;
+  --syn-type: #946a00;
+  --syn-tag: #c22d50;
+  --syn-attr: #b35a12;
+  --syn-com: #8a93a6;
+  --syn-prop: #364766;
+  --syn-op: #5b6680;
+}
+.tok-keyword, .tok-controlKeyword, .tok-definitionKeyword, .tok-moduleKeyword, .tok-operatorKeyword { color: var(--syn-kw); }
+.tok-string, .tok-string2, .tok-regexp { color: var(--syn-str); }
+.tok-number, .tok-bool, .tok-null, .tok-atom { color: var(--syn-num); }
+.tok-variableName.tok-definition, .tok-function { color: var(--syn-fn); }
+.tok-typeName, .tok-className, .tok-namespace { color: var(--syn-type); }
+.tok-tagName { color: var(--syn-tag); }
+.tok-attributeName { color: var(--syn-attr); }
+.tok-comment, .tok-lineComment, .tok-blockComment { color: var(--syn-com); font-style: italic; }
+.tok-propertyName { color: var(--syn-prop); }
+.tok-operator, .tok-punctuation { color: var(--syn-op); }
+.tok-heading { color: var(--syn-fn); font-weight: 700; }
+.tok-link, .tok-url { color: var(--syn-str); text-decoration: underline; }
+.tok-emphasis { font-style: italic; }
+.tok-strong { font-weight: 700; }
+.tok-invalid { color: var(--bad); }

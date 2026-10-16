@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-suggest-commit-message"
+description = "Enables the suggest_commit_message command without any pre-configured scope."
+commands.allow = ["suggest_commit_message"]
+
+[[permission]]
+identifier = "deny-suggest-commit-message"
+description = "Denies the suggest_commit_message command without any pre-configured scope."
+commands.deny = ["suggest_commit_message"]

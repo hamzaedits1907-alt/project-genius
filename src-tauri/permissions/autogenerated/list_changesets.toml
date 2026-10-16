@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-list-changesets"
+description = "Enables the list_changesets command without any pre-configured scope."
+commands.allow = ["list_changesets"]
+
+[[permission]]
+identifier = "deny-list-changesets"
+description = "Denies the list_changesets command without any pre-configured scope."
+commands.deny = ["list_changesets"]

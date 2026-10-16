@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-needs-install"
+description = "Enables the needs_install command without any pre-configured scope."
+commands.allow = ["needs_install"]
+
+[[permission]]
+identifier = "deny-needs-install"
+description = "Denies the needs_install command without any pre-configured scope."
+commands.deny = ["needs_install"]

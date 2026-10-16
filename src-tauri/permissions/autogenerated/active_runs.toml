@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-active-runs"
+description = "Enables the active_runs command without any pre-configured scope."
+commands.allow = ["active_runs"]
+
+[[permission]]
+identifier = "deny-active-runs"
+description = "Denies the active_runs command without any pre-configured scope."
+commands.deny = ["active_runs"]

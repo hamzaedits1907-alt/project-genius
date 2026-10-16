@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-staged-findings"
+description = "Enables the staged_findings command without any pre-configured scope."
+commands.allow = ["staged_findings"]
+
+[[permission]]
+identifier = "deny-staged-findings"
+description = "Denies the staged_findings command without any pre-configured scope."
+commands.deny = ["staged_findings"]

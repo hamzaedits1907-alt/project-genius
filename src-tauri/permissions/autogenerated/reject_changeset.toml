@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-reject-changeset"
+description = "Enables the reject_changeset command without any pre-configured scope."
+commands.allow = ["reject_changeset"]
+
+[[permission]]
+identifier = "deny-reject-changeset"
+description = "Denies the reject_changeset command without any pre-configured scope."
+commands.deny = ["reject_changeset"]

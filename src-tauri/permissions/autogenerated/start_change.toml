@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-start-change"
+description = "Enables the start_change command without any pre-configured scope."
+commands.allow = ["start_change"]
+
+[[permission]]
+identifier = "deny-start-change"
+description = "Denies the start_change command without any pre-configured scope."
+commands.deny = ["start_change"]

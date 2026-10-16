@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-preview-context"
+description = "Enables the preview_context command without any pre-configured scope."
+commands.allow = ["preview_context"]
+
+[[permission]]
+identifier = "deny-preview-context"
+description = "Denies the preview_context command without any pre-configured scope."
+commands.deny = ["preview_context"]

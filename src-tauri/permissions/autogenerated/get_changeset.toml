@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-get-changeset"
+description = "Enables the get_changeset command without any pre-configured scope."
+commands.allow = ["get_changeset"]
+
+[[permission]]
+identifier = "deny-get-changeset"
+description = "Denies the get_changeset command without any pre-configured scope."
+commands.deny = ["get_changeset"]

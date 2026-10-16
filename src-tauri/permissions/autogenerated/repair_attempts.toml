@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-repair-attempts"
+description = "Enables the repair_attempts command without any pre-configured scope."
+commands.allow = ["repair_attempts"]
+
+[[permission]]
+identifier = "deny-repair-attempts"
+description = "Denies the repair_attempts command without any pre-configured scope."
+commands.deny = ["repair_attempts"]

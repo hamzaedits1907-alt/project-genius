@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-publish-plan"
+description = "Enables the publish_plan command without any pre-configured scope."
+commands.allow = ["publish_plan"]
+
+[[permission]]
+identifier = "deny-publish-plan"
+description = "Denies the publish_plan command without any pre-configured scope."
+commands.deny = ["publish_plan"]
