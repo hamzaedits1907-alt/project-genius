@@ -183,7 +183,8 @@ export default function Workspace({ projectId }: { projectId: string }) {
                 if (side === r.id && p && !p.isCollapsed()) p.collapse();
                 else {
                   setSide(r.id);
-                  p?.expand();
+                  // expand() on a panel that is already open is not a no-op in react-resizable-panels.
+                  if (p?.isCollapsed()) p.expand();
                 }
               }}
             >

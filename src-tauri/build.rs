@@ -85,6 +85,8 @@ fn main() {
         "github_clone",
         "publish_plan",
         "publish",
+        "recent_ui_errors",
+        "record_ui_error",
     ])))
     .expect("failed to run tauri-build");
 }

@@ -150,6 +150,8 @@ pub fn run() {
             commands::github_clone,
             commands::publish_plan,
             commands::publish,
+            commands::recent_ui_errors,
+            commands::record_ui_error,
         ])
         .build(tauri::generate_context!())
         .expect("error while building Genius");

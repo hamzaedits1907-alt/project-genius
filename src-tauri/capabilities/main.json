@@ -105,6 +105,8 @@
     "allow-github-orgs",
     "allow-github-clone",
     "allow-publish-plan",
-    "allow-publish"
+    "allow-publish",
+    "allow-record-ui-error",
+    "allow-recent-ui-errors"
   ]
 }

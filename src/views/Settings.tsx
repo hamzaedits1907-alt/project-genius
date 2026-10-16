@@ -506,7 +506,9 @@ function WorkspaceSettings() {
     setTools(null);
     void api.detectTools().then(setTools);
   };
-  useEffect(load, []);
+  useEffect(() => {
+    load();
+  }, []);
   const choose = async () => {
     const dir = await openDialog({ directory: true, title: 'Choose where new projects are created' });
     if (typeof dir === 'string') await save({ ...settings, workspaceDir: dir });

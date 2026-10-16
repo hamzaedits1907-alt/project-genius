@@ -11,7 +11,9 @@ export default function MemoryPanel() {
   const toast = useApp((s) => s.toast);
   const [notes, setNotes] = useState(project?.notes ?? '');
   const [busy, setBusy] = useState(false);
-  useEffect(() => setNotes(project?.notes ?? ''), [project?.notes]);
+  useEffect(() => {
+    setNotes(project?.notes ?? '');
+  }, [project?.notes]);
   if (!project) return null;
   const dirty = notes !== project.notes;
   const save = async () => {

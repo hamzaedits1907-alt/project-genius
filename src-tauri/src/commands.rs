@@ -462,3 +462,16 @@ pub async fn publish_plan(g: G<'_>, project_id: String) -> Result<PublishPlan> {
 pub async fn publish(g: G<'_>, project_id: String, request: PublishRequest) -> Result<Value> {
     g.publish(&project_id, &request, &CancellationToken::new()).await
 }
+
+// ---------------------------------------------------------------- diagnostics
+
+#[tauri::command]
+pub fn record_ui_error(g: G, report: genius_core::uilog::UiErrorReport) -> Result<String> {
+    log::error!("UI error in {}: {}", report.view, genius_core::redact::redact(&report.message));
+    genius_core::uilog::record(g.data_dir(), &report, &genius_core::db::now()).map(|p| p.display().to_string())
+}
+
+#[tauri::command]
+pub fn recent_ui_errors(g: G, limit: Option<usize>) -> Vec<Value> {
+    genius_core::uilog::recent(g.data_dir(), limit.unwrap_or(20).min(200))
+}

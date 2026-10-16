@@ -185,3 +185,9 @@ export const STATUS_LABEL: Record<string, string> = {
   cancelled: 'Cancelled',
   awaiting_approval: 'Awaiting approval',
 };
+
+/** Name of the innermost component in a React component stack ("    at Foo (url)" lines). */
+export function firstComponent(stack: string): string | null {
+  const m = /^\s*(?:at\s+)?([A-Z][\w$.]*)/m.exec(stack.trim());
+  return m ? m[1] : null;
+}

@@ -22,6 +22,7 @@ pub mod secrets;
 pub mod secretscan;
 pub mod settings;
 pub mod spec;
+pub mod uilog;
 pub mod prompts;
 pub mod vcs;
 pub mod workspace;

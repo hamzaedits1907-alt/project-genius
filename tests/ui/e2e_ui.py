@@ -55,8 +55,36 @@ def session():
     return d
 
 
+CRASH_HOOK = """
+if (!window.__crash) {
+  window.__crash = [];
+  const push = (m) => window.__crash.push(String(m).slice(0, 2000));
+  window.addEventListener('error', (e) => push('error: ' + ((e.error && e.error.stack) || e.message)));
+  window.addEventListener('unhandledrejection', (e) => push('rejection: ' + String((e.reason && (e.reason.stack || e.reason.message)) || e.reason)));
+  const ce = console.error.bind(console);
+  console.error = (...a) => { push('console: ' + a.map((x) => (x && x.stack) || String(x)).join(' ')); ce(...a); };
+}
+"""
+crashes = []
+
+
+def check_ui(d, name):
+    """Fail on any error-boundary screen or React effect-cleanup error (regression guard)."""
+    d.execute_script(CRASH_HOOK)
+    errs = d.execute_script("return window.__crash.splice(0)")
+    boundary = d.execute_script("const h=[...document.querySelectorAll('.empty h3')].find(x=>x.textContent.includes('Something went wrong'));return h?h.parentElement.textContent:null")
+    for e in errs:
+        log(f"  [{name}] {e[:600]}")
+    bad = [e for e in errs if 'is not a function' in e or 'must not return anything' in e]
+    if boundary or bad:
+        crashes.append((name, boundary, bad))
+        raise AssertionError(f"UI crash at {name}: {boundary or bad[0]}")
+
+
 def shot(d, name):
     global step_no
+    d.switch_to.default_content()
+    check_ui(d, name)
     step_no += 1
     path = os.path.join(SHOTS, f"{step_no:02d}-{name}.png")
     d.save_screenshot(path)

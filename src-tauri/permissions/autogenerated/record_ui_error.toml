@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-record-ui-error"
+description = "Enables the record_ui_error command without any pre-configured scope."
+commands.allow = ["record_ui_error"]
+
+[[permission]]
+identifier = "deny-record-ui-error"
+description = "Denies the record_ui_error command without any pre-configured scope."
+commands.deny = ["record_ui_error"]

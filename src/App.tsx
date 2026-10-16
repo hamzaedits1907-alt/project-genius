@@ -1,7 +1,10 @@
-import { Component, useEffect, type ReactNode } from 'react';
+import { Component, useEffect, type ErrorInfo, type ReactNode } from 'react';
 import { FolderKanban, Home as HomeIcon, Plus, Settings as SettingsIcon, Sparkles, X } from 'lucide-react';
 import { useApp } from './store/app';
 import { subscribeAll } from './store/events';
+import { useSubscription } from './lib/effects';
+import { api } from './lib/api';
+import { firstComponent } from './lib/logic';
 import Home from './views/Home';
 import CreateProject from './views/CreateProject';
 import SettingsView from './views/Settings';
@@ -9,24 +12,44 @@ import Workspace from './views/workspace/Workspace';
 import ApprovalDialog from './views/ApprovalDialog';
 import { useWorkspace } from './store/workspace';
 
-class ErrorBoundary extends Component<{ children: ReactNode }, { error: Error | null }> {
-  state = { error: null as Error | null };
+class ErrorBoundary extends Component<{ children: ReactNode; view: string }, { error: Error | null; componentStack: string; logPath: string | null }> {
+  state = { error: null as Error | null, componentStack: '', logPath: null as string | null };
   static getDerivedStateFromError(error: Error) {
     return { error };
   }
-  componentDidCatch(error: Error) {
-    console.error('UI error', error);
+  componentDidCatch(error: Error, info: ErrorInfo) {
+    const componentStack = info.componentStack ?? '';
+    console.error('UI error', error, componentStack);
+    this.setState({ componentStack });
+    // Persist (redacted) so the failing component can be identified without devtools.
+    api
+      .recordUiError({ view: this.props.view, message: String(error?.message ?? error), stack: String(error?.stack ?? ''), componentStack })
+      .then((logPath) => this.setState({ logPath }))
+      .catch((e) => console.error('could not record UI error', e));
+  }
+  details() {
+    const { error, componentStack } = this.state;
+    return `View: ${this.props.view}\nError: ${error?.message}\n\nStack:\n${error?.stack ?? ''}\n\nComponents:${componentStack}`;
   }
   render() {
-    if (this.state.error) {
+    const { error, componentStack, logPath } = this.state;
+    if (error) {
+      const failing = firstComponent(componentStack);
       return (
-        <div className="empty">
+        <div className="empty" role="alert">
           <h3>Something went wrong in this view</h3>
-          <p className="mono small">{this.state.error.message}</p>
+          <p className="mono small">{error.message}</p>
+          {failing && <p className="small">Failing component: <span className="mono">{failing}</span></p>}
           <p>Your projects and files are safe — this is a display error only.</p>
-          <button className="btn" onClick={() => this.setState({ error: null })}>
-            Try again
-          </button>
+          {logPath && <p className="small muted">Details were saved to <span className="mono">{logPath}</span></p>}
+          <div className="row" style={{ justifyContent: 'center' }}>
+            <button className="btn" onClick={() => this.setState({ error: null, componentStack: '', logPath: null })}>
+              Try again
+            </button>
+            <button className="btn ghost" onClick={() => void navigator.clipboard?.writeText(this.details())}>
+              Copy details
+            </button>
+          </div>
         </div>
       );
     }
@@ -62,12 +85,12 @@ export default function App() {
   const openProjectId = useWorkspace((s) => s.projectId);
   const openProjectName = useWorkspace((s) => s.project?.name);
 
+  // Backend events: released even if the app unmounts before `listen` resolves (StrictMode
+  // mounts twice in development; the old code leaked the first set and delivered every event twice).
+  useSubscription('backend events', subscribeAll, []);
   useEffect(() => {
-    let off: (() => void) | undefined;
-    void subscribeAll().then((u) => (off = u));
     void loadSettings();
     void refreshApprovals();
-    return () => off?.();
   }, [loadSettings, refreshApprovals]);
 
   useEffect(() => {
@@ -109,7 +132,7 @@ export default function App() {
         </button>
       </nav>
       <main className="main">
-        <ErrorBoundary key={route.name}>
+        <ErrorBoundary key={route.name} view={route.name}>
           {route.name === 'home' && <Home />}
           {route.name === 'create' && <CreateProject />}
           {route.name === 'settings' && <SettingsView initialTab={route.tab} />}

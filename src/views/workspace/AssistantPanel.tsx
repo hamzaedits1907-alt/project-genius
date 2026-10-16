@@ -30,7 +30,9 @@ export default function AssistantPanel() {
   useEffect(() => {
     if (project) api.listMessages(project.id).then(setMessages).catch(() => undefined);
   }, [project, finishedTasks]);
-  useEffect(() => bottom.current?.scrollIntoView({ block: 'end' }), [messages.length, taskEvents]);
+  useEffect(() => {
+    bottom.current?.scrollIntoView({ block: 'end' });
+  }, [messages.length, taskEvents]);
 
   // Recompute the context preview (no AI call) while typing, so the user sees what will be shared.
   useEffect(() => {

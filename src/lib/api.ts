@@ -119,5 +119,9 @@ export const api = {
   githubOrgs: () => call<string[]>('github_orgs'),
   githubClone: (nameWithOwner: string) => call<T.Project>('github_clone', { nameWithOwner }),
   publishPlan: (projectId: string) => call<T.PublishPlan>('publish_plan', { projectId }),
+  // diagnostics
+  recordUiError: (report: { view: string; message: string; stack: string; componentStack: string }) => call<string>('record_ui_error', { report }),
+  recentUiErrors: (limit?: number) => call<Record<string, string>[]>('recent_ui_errors', { limit: limit ?? null }),
+
   publish: (projectId: string, request: T.PublishRequest) => call<{ url: string; repo: string; branch: string; verified: boolean }>('publish', { projectId, request }),
 };
