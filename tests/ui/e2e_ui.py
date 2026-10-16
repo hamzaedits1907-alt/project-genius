@@ -201,6 +201,10 @@ try:
     wait(d, "//button[starts-with(normalize-space(.), 'Apply 1 file')]", 90)
     time.sleep(0.5)
     shot(d, "review-proposed")
+    # The conversation records the agent's real tool use and an honest report.
+    text_present(d, "Proposed changes")
+    text_present(d, "What Genius did")
+    text_present(d, "Files read: src/App.tsx")
     click(d, "//button[starts-with(normalize-space(.), 'Apply 1 file')]")
     wait(d, "//*[contains(@class,'ev')]//*[contains(., 'Production build')]", 30)
     WebDriverWait(d, 240).until(lambda drv: drv.find_elements(By.XPATH, "//header//span[contains(@class,'badge')][contains(., 'build succeeded')]") and not drv.find_elements(By.XPATH, "//header//span[contains(@class,'badge run')]"))
@@ -247,6 +251,11 @@ try:
     wait(d, "//h3[.='Genius Todo']", 30)
     text_present(d, "build succeeded")
     shot(d, "home-after-restart")
+    click(d, "//*[contains(@class,'project-card')]")
+    text_present(d, "Add a footer that says Made with Genius", 30)
+    text_present(d, "Added a footer below the list")
+    shot(d, "conversation-after-restart")
+    log("conversation history persisted across restart")
     d.quit()
     ok = True
     log("ALL UI STEPS PASSED")

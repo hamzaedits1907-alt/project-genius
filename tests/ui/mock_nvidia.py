@@ -58,7 +58,13 @@ def block(path, content):
     return f"<<<FILE: {path}>>>\n{content}<<<END FILE>>>\n"
 
 
-def answer(system, user):
+def answer(system, user, last=""):
+    if "You are Genius, an AI software engineer" in system:
+        # Agent tool protocol: inspect the file first, then propose the change.
+        if last.startswith('<tool_result name="read_file"'):
+            assert "Genius Todo" in last, "the agent received the real file"
+            return "<final>Added a footer below the list.\n" + block("src/App.tsx", APP_FOOTER) + "</final>"
+        return 'I will read the app first.\n<tool>{"name": "read_file", "args": {"path": "src/App.tsx"}}</tool>'
     if "planning engine" in system:
         return json.dumps({
             "name": "Genius Todo", "purpose": "A small todo list.",
@@ -106,7 +112,7 @@ class H(BaseHTTPRequestHandler):
             return self._json(401, {"status": 401, "detail": "Authentication failed"})
         req = json.loads(self.rfile.read(int(self.headers.get("content-length", 0))))
         msgs = req["messages"]
-        text = answer(msgs[0]["content"], msgs[1]["content"] if len(msgs) > 1 else "")
+        text = answer(msgs[0]["content"], msgs[1]["content"] if len(msgs) > 1 else "", msgs[-1]["content"] if isinstance(msgs[-1]["content"], str) else "")
         self.send_response(200)
         self.send_header("content-type", "text/event-stream")
         self.end_headers()

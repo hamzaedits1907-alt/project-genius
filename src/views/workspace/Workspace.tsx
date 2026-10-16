@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { Panel, PanelGroup, PanelResizeHandle, type ImperativePanelHandle } from 'react-resizable-panels';
-import { Brain, ClipboardList, Download, FolderTree, GitBranch, Hammer, History as HistoryIcon, Package, Play, Search, Square, Stethoscope, TestTube2, UploadCloud, X } from 'lucide-react';
+import { Brain, ClipboardList, FileStack, Plug, Download, FolderTree, GitBranch, Hammer, History as HistoryIcon, Package, Play, Search, Square, Stethoscope, TestTube2, UploadCloud, X } from 'lucide-react';
 import { api, errorMessage } from '../../lib/api';
 import type { Operation } from '../../lib/types';
 import { useApp } from '../../store/app';
@@ -11,6 +11,8 @@ import SearchPanel from './SearchPanel';
 import GitPanel from './GitPanel';
 import HistoryPanel from './HistoryPanel';
 import MemoryPanel from './MemoryPanel';
+import ReferencesPanel from './ReferencesPanel';
+import IntegrationsPanel from './IntegrationsPanel';
 import EditorArea from './EditorArea';
 import BottomPanel from './BottomPanel';
 import AssistantPanel from './AssistantPanel';
@@ -19,7 +21,7 @@ import ExportDialog from './ExportDialog';
 import PublishDialog from './PublishDialog';
 import QuickOpen from './QuickOpen';
 
-type Side = 'files' | 'search' | 'git' | 'history' | 'memory';
+type Side = 'files' | 'search' | 'git' | 'history' | 'memory' | 'references' | 'integrations';
 
 export default function Workspace({ projectId }: { projectId: string }) {
   const open = useWorkspace((s) => s.open);
@@ -120,6 +122,8 @@ export default function Workspace({ projectId }: { projectId: string }) {
     { id: 'git', label: 'Source control', icon: <GitBranch size={18} /> },
     { id: 'history', label: 'History & recovery', icon: <HistoryIcon size={18} /> },
     { id: 'memory', label: 'Project memory', icon: <Brain size={18} /> },
+    { id: 'references', label: 'Imported files', icon: <FileStack size={18} /> },
+    { id: 'integrations', label: 'Integrations', icon: <Plug size={18} /> },
   ];
 
   return (
@@ -200,6 +204,8 @@ export default function Workspace({ projectId }: { projectId: string }) {
               {side === 'git' && <GitPanel onPublish={() => setDialog('publish')} />}
               {side === 'history' && <HistoryPanel />}
               {side === 'memory' && <MemoryPanel />}
+              {side === 'references' && <ReferencesPanel />}
+              {side === 'integrations' && <IntegrationsPanel onPublish={() => setDialog('publish')} />}
             </div>
           </Panel>
           <PanelResizeHandle className="resize-h" />

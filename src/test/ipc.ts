@@ -31,6 +31,19 @@ export const project: T.Project = {
   lastOpenedAt: null,
 };
 
+export const conversation: T.Conversation = { id: 'c1', projectId: 'p1', title: 'Project conversation', createdAt: '2026-10-01T00:00:00Z', updatedAt: '2026-10-01T00:00:00Z', messageCount: 2 };
+
+export const messages: T.MessageRow[] = [
+  { id: 'u1', projectId: 'p1', taskId: 't0', role: 'user', content: 'Add a sidebar', createdAt: '2026-10-01T00:00:00Z', conversationId: 'c1', kind: 'chat', meta: {} },
+  {
+    id: 'a1', projectId: 'p1', taskId: 't0', role: 'assistant', content: 'Added a Sidebar component.', createdAt: '2026-10-01T00:00:01Z', conversationId: 'c1', kind: 'proposal',
+    meta: {
+      changesetId: 'cs1',
+      report: { steps: 2, filesRead: ['src/App.tsx'], searches: 1, checks: [], subagents: [], failedSteps: [], changeset: null, verification: null, notVerified: ['No build or test has run on these changes yet.'], warnings: ['The explanation mentions testing, but no successful build or test ran in this task.'], error: null },
+    },
+  },
+];
+
 const gh: T.AuthStatus = { ghInstalled: false, ghVersion: null, connected: false, login: null, scopes: [], detail: 'gh not installed' };
 
 const status: T.RepoStatus = { isRepo: false, branch: null, head: null, upstream: null, ahead: 0, behind: 0, files: [], merging: false, remotes: [] };
@@ -66,6 +79,20 @@ export const defaults: Record<string, Handler> = {
   github_status: () => gh,
   github_repos: () => [],
   github_orgs: () => [],
+  list_conversations: () => [conversation],
+  create_conversation: (_c, a) => ({ ...conversation, id: 'c-new', title: (a.title as string) ?? 'New conversation', messageCount: 0 }),
+  conversation_messages: () => messages,
+  start_agent: (_c, a) => ({ id: 't1', projectId: 'p1', kind: 'agent', title: `Genius: ${(a.request as { message: string }).message}`, startedAt: '2026-10-01T00:00:00Z' }),
+  agent_steps: () => [],
+  cancel_task: () => null,
+  list_memories: () => [{ id: 'm1', projectId: 'p1', kind: 'decision', content: 'Use CSS modules', source: 'agent', evidence: 'task x', createdAt: '2026-10-01T00:00:00Z', updatedAt: '2026-10-01T00:00:00Z' }],
+  list_attachments: () => [],
+  supported_import_types: () => ['md', 'pdf', 'png'],
+  integration_statuses: () => [],
+  supabase_status: () => ({ connected: false, linked: null, remote: null, envConfigured: false, clientLibrary: false, envGitignored: true, serviceRoleMentions: [], manualSteps: [] }),
+  supabase_migrations: () => [],
+  get_changeset: () => ({ changeset: { id: 'cs1', projectId: 'p1', taskId: 't0', kind: 'change', title: 'Add a sidebar', summary: '', status: 'proposed', createdAt: '2026-10-01T00:00:00Z', appliedAt: null, files: [{ path: 'src/Sidebar.tsx', op: 'create', added: 3, removed: 0 }] }, files: [] }),
+  capability_report: () => ({ generatedAt: '2026-10-01T00:00:00Z', provider: { name: 'NVIDIA', baseUrl: '', model: 'm', maxTokens: 1, keyStored: true }, capabilities: [{ id: 'vision', label: 'Image input (screenshots)', status: 'unverified', evidence: 'image input has not been tested with this model', remedy: 'Test image input' }], agentTools: [], integrations: [], permissions: {}, project: null, limitations: [] }),
   preview_context: () => ({ files: [], tree: [], budgetChars: 1000, usedChars: 0, excludedSensitive: [] }),
 };
 

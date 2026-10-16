@@ -67,7 +67,7 @@ try:
     for label in ["New project", "Settings", "Home"]:
         btn(d, label).click(); check(d, label)
     btn(d, "Settings").click()
-    for tab in ["GitHub", "Approvals", "Workspace & tools", "Appearance", "AI provider"]:
+    for tab in ["GitHub", "Integrations", "Approvals", "Workspace & tools", "Appearance", "AI provider"]:
         try:
             d.find_element(By.XPATH, f"//button[contains(normalize-space(.), {json.dumps(tab)})]").click()
         except Exception as e:
@@ -76,7 +76,7 @@ try:
     btn(d, "Home").click(); check(d, "home2")
     d.find_element(By.CSS_SELECTOR, ".project-card").click()
     time.sleep(2); check(d, "workspace")
-    for label in ["Search", "Source control", "History & recovery", "Project memory", "Files"]:
+    for label in ["Search", "Source control", "History & recovery", "Project memory", "Imported files", "Integrations", "Files"]:
         btn(d, label).click(); check(d, f"rail-{label}")
     for tab in ["Terminal", "Readiness", "Activity", "Preview", "Assistant"]:
         d.find_element(By.XPATH, f"//*[@role='tab' and contains(normalize-space(.), {json.dumps(tab)})]").click(); check(d, f"tab-{tab}")

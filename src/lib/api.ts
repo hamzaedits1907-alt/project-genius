@@ -123,5 +123,47 @@ export const api = {
   recordUiError: (report: { view: string; message: string; stack: string; componentStack: string }) => call<string>('record_ui_error', { report }),
   recentUiErrors: (limit?: number) => call<Record<string, string>[]>('recent_ui_errors', { limit: limit ?? null }),
 
+  // conversations & agent
+  listConversations: (projectId: string) => call<T.Conversation[]>('list_conversations', { projectId }),
+  createConversation: (projectId: string, title?: string) => call<T.Conversation>('create_conversation', { projectId, title: title ?? null }),
+  renameConversation: (conversationId: string, title: string) => call<void>('rename_conversation', { conversationId, title }),
+  deleteConversation: (conversationId: string) => call<void>('delete_conversation', { conversationId }),
+  conversationMessages: (conversationId: string) => call<T.MessageRow[]>('conversation_messages', { conversationId }),
+  startAgent: (projectId: string, request: T.AgentRequest) => call<T.TaskInfo>('start_agent', { projectId, request }),
+  agentSteps: (taskId: string) => call<T.AgentStep[]>('agent_steps', { taskId }),
+  capabilityReport: (projectId?: string) => call<T.CapabilityReport>('capability_report', { projectId: projectId ?? null }),
+
+  // memory
+  listMemories: (projectId: string) => call<T.Memory[]>('list_memories', { projectId }),
+  addMemory: (projectId: string, kind: string, content: string) => call<T.Memory>('add_memory', { projectId, kind, content }),
+  updateMemory: (memoryId: string, content: string) => call<void>('update_memory', { memoryId, content }),
+  deleteMemory: (projectId: string, memoryId: string) => call<void>('delete_memory', { projectId, memoryId }),
+
+  // imported files
+  importAttachment: (projectId: string, path: string, scope: 'message' | 'reference', conversationId?: string) =>
+    call<T.Attachment>('import_attachment', { projectId, path, scope, conversationId: conversationId ?? null }),
+  importAttachmentData: (projectId: string, name: string, dataBase64: string, scope: 'message' | 'reference', conversationId?: string) =>
+    call<T.Attachment>('import_attachment_data', { projectId, name, dataBase64, scope, conversationId: conversationId ?? null }),
+  listAttachments: (projectId: string) => call<T.Attachment[]>('list_attachments', { projectId }),
+  attachmentPreview: (projectId: string, attachmentId: string) => call<{ attachment: T.Attachment; preview: string }>('attachment_preview', { projectId, attachmentId }),
+  setAttachmentScope: (projectId: string, attachmentId: string, scope: 'message' | 'reference') => call<T.Attachment>('set_attachment_scope', { projectId, attachmentId, scope }),
+  deleteAttachment: (projectId: string, attachmentId: string) => call<void>('delete_attachment', { projectId, attachmentId }),
+  supportedImportTypes: () => call<string[]>('supported_import_types'),
+  importZipProject: (path: string) => call<T.Project>('import_zip_project', { path }),
+  probeVision: (model: string) => call<{ ok: boolean; answer: string; error: string | null; at: string }>('probe_vision', { model }),
+
+  // integrations
+  integrationStatuses: () => call<{ id: string; name: string; status: string; meta: Record<string, unknown> | null; spec: Record<string, unknown> }[]>('integration_statuses'),
+  supabaseConnect: (token: string) => call<{ connected: boolean; projects: T.SupabaseProject[] }>('supabase_connect', { token }),
+  supabaseDisconnect: () => call<{ connected: boolean; note: string }>('supabase_disconnect'),
+  supabaseProjects: () => call<T.SupabaseProject[]>('supabase_projects'),
+  supabaseLink: (projectId: string, reference: string) => call<Record<string, unknown>>('supabase_link', { projectId, reference }),
+  supabaseStatus: (projectId: string) => call<Record<string, unknown>>('supabase_status', { projectId }),
+  supabaseConfigure: (projectId: string) => call<{ envWritten: string; variables: string[]; changesetId: string | null; gitignoreAdded: string[] }>('supabase_configure', { projectId }),
+  supabaseProposeMigration: (projectId: string, name: string, sql: string) => call<{ changesetId: string; path: string }>('supabase_propose_migration', { projectId, name, sql }),
+  supabaseMigrations: (projectId: string) => call<{ path: string; size: number; appliedRemote: string | null }[]>('supabase_migrations', { projectId }),
+  supabaseApplyMigration: (projectId: string, path: string) => call<Record<string, unknown>>('supabase_apply_migration', { projectId, path }),
+  supabaseGenerateTypes: (projectId: string) => call<{ changesetId: string | null; note?: string }>('supabase_generate_types', { projectId }),
+
   publish: (projectId: string, request: T.PublishRequest) => call<{ url: string; repo: string; branch: string; verified: boolean }>('publish', { projectId, request }),
 };

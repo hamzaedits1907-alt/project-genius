@@ -114,6 +114,10 @@ export interface MessageRow {
   role: 'user' | 'assistant';
   content: string;
   createdAt: string;
+  conversationId?: string | null;
+  /** chat | answer | plan | proposal | error */
+  kind?: string;
+  meta?: Record<string, unknown>;
 }
 
 export interface FileEntry {
@@ -393,4 +397,108 @@ export interface PreviewEvent {
   status: 'starting' | 'ready' | 'stopped' | 'failed';
   url?: string;
   error?: string;
+}
+
+// ---- conversations & agent
+export interface Conversation {
+  id: string;
+  projectId: string;
+  title: string;
+  createdAt: string;
+  updatedAt: string;
+  messageCount: number;
+}
+
+export type AgentMode = 'build' | 'plan';
+
+export interface AgentRequest {
+  conversationId: string;
+  message: string;
+  mode: AgentMode;
+  attachmentIds: string[];
+  pinned: string[];
+}
+
+export interface AgentStep {
+  id: string;
+  projectId: string;
+  taskId: string;
+  conversationId: string | null;
+  agent: 'main' | 'architect' | 'reviewer' | 'ui';
+  seq: number;
+  tool: string;
+  args: Record<string, unknown>;
+  ok: boolean;
+  summary: string;
+  result: Record<string, unknown>;
+  startedAt: string;
+  endedAt: string;
+}
+
+export interface AgentReport {
+  steps: number;
+  filesRead: string[];
+  searches: number;
+  checks: { check: string; ok: boolean; status: string; exitCode: number | null; summary: string }[];
+  subagents: { role: string; ok: boolean }[];
+  failedSteps: string[];
+  changeset: { id: string; files: FileChangeStat[]; status: string } | null;
+  verification: Record<string, unknown> | null;
+  notVerified: string[];
+  warnings: string[];
+  error: string | null;
+}
+
+export interface Capability {
+  id: string;
+  label: string;
+  status: 'available' | 'unavailable' | 'unverified';
+  evidence: string;
+  remedy: string;
+}
+
+export interface CapabilityReport {
+  generatedAt: string;
+  provider: { name: string; baseUrl: string; model: string | null; maxTokens: number; keyStored: boolean };
+  capabilities: Capability[];
+  agentTools: { name: string; description: string; readOnly: boolean }[];
+  integrations: { id: string; name?: string; status: string; detail?: string; login?: string | null; meta?: Record<string, unknown> }[];
+  permissions: Record<string, string>;
+  project: Record<string, unknown> | null;
+  limitations: string[];
+}
+
+export interface Memory {
+  id: string;
+  projectId: string;
+  kind: string;
+  content: string;
+  source: 'user' | 'repo' | 'agent';
+  evidence: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface Attachment {
+  id: string;
+  projectId: string;
+  conversationId: string | null;
+  name: string;
+  kind: string;
+  mime: string;
+  size: number;
+  scope: 'message' | 'reference';
+  status: 'ready' | 'failed';
+  error: string | null;
+  chars: number;
+  meta: Record<string, unknown>;
+  createdAt: string;
+}
+
+export interface SupabaseProject {
+  reference: string;
+  name: string;
+  region: string;
+  status: string;
+  organizationId: string;
 }

@@ -8,7 +8,7 @@ export type Route =
   | { name: 'settings'; tab?: SettingsTab }
   | { name: 'project'; id: string };
 
-export type SettingsTab = 'ai' | 'github' | 'approvals' | 'workspace' | 'appearance';
+export type SettingsTab = 'ai' | 'github' | 'integrations' | 'approvals' | 'workspace' | 'appearance';
 
 export interface Toast {
   id: number;

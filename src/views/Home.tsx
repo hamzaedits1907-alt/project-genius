@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { Check, FolderOpen, KeyRound, Plus, Sparkles, Trash2, Wrench, X } from 'lucide-react';
+import { Check, FolderOpen, KeyRound, Plus, Sparkles, Trash2, Wrench, X, FileArchive } from 'lucide-react';
 import { open as openDialog } from '@tauri-apps/plugin-dialog';
 import { Github } from '../components/icons';
 import { api, errorMessage } from '../lib/api';
@@ -49,6 +49,18 @@ export default function Home() {
     }
   };
 
+  const importZip = async () => {
+    const file = await openDialog({ title: 'Import a project from a ZIP archive', filters: [{ name: 'ZIP archive', extensions: ['zip'] }] });
+    if (typeof file !== 'string') return;
+    try {
+      const p = await api.importZipProject(file);
+      toast('ok', 'Extracted safely — no scripts were run. Review package.json scripts before installing.');
+      navigate({ name: 'project', id: p.id });
+    } catch (e) {
+      toast('bad', errorMessage(e));
+    }
+  };
+
   const missingTools = tools?.filter((t) => !t.found) ?? [];
   const setup = [
     { done: !!keyStatus?.stored, label: keyStatus?.stored ? 'NVIDIA API key saved' : 'Save your NVIDIA API key', action: () => navigate({ name: 'settings', tab: 'ai' }), icon: <KeyRound size={14} /> },
@@ -75,6 +87,9 @@ export default function Home() {
               </Button>
               <Button size="lg" icon={<FolderOpen size={16} />} onClick={() => void importFolder()}>
                 Open folder
+              </Button>
+              <Button size="lg" icon={<FileArchive size={16} />} onClick={() => void importZip()}>
+                Import ZIP
               </Button>
               <Button size="lg" icon={<Github size={16} />} onClick={() => setCloning(true)}>
                 Clone from GitHub

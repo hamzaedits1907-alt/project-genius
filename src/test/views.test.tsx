@@ -60,7 +60,7 @@ describe('views mount, navigate and unmount', () => {
       await flush();
       assertHealthy(route.name);
     }
-    for (const label of ['GitHub', 'Approvals', 'Workspace', 'Appearance', 'AI provider']) {
+    for (const label of ['GitHub', 'Integrations', 'Approvals', 'Workspace', 'Appearance', 'AI provider']) {
       const btn = screen.getAllByRole('button').find((b) => b.textContent?.trim().startsWith(label));
       if (btn) await click(btn);
       assertHealthy(`settings:${label}`);
@@ -75,7 +75,7 @@ describe('views mount, navigate and unmount', () => {
     await act(async () => useApp.getState().navigate({ name: 'project', id: 'p1' }));
     await flush(60);
     assertHealthy('workspace');
-    for (const label of ['Search', 'Source control', 'History & recovery', 'Project memory', 'Files']) {
+    for (const label of ['Search', 'Source control', 'History & recovery', 'Project memory', 'Imported files', 'Integrations', 'Files']) {
       await click(screen.getByRole('button', { name: label }));
       assertHealthy(label);
     }

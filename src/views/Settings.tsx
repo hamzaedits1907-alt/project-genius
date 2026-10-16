@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { CheckCircle2, Copy, ExternalLink, FolderCog, KeyRound, Palette, RefreshCw, ShieldCheck, Sparkles, XCircle } from 'lucide-react';
+import { CheckCircle2, Copy, Plug, ExternalLink, FolderCog, KeyRound, Palette, RefreshCw, ShieldCheck, Sparkles, XCircle } from 'lucide-react';
 import { open as openDialog } from '@tauri-apps/plugin-dialog';
 import { openUrl } from '@tauri-apps/plugin-opener';
 import { Github } from '../components/icons';
@@ -12,6 +12,7 @@ import { Badge, Button, Callout, Field, Segmented, Spinner, Switch } from '../co
 const TABS: { id: SettingsTab; label: string; icon: React.ReactNode }[] = [
   { id: 'ai', label: 'AI provider', icon: <Sparkles size={15} /> },
   { id: 'github', label: 'GitHub', icon: <Github size={15} /> },
+  { id: 'integrations', label: 'Integrations', icon: <Plug size={15} /> },
   { id: 'approvals', label: 'Approvals', icon: <ShieldCheck size={15} /> },
   { id: 'workspace', label: 'Workspace & tools', icon: <FolderCog size={15} /> },
   { id: 'appearance', label: 'Appearance', icon: <Palette size={15} /> },
@@ -39,6 +40,7 @@ export default function SettingsView({ initialTab }: { initialTab?: SettingsTab 
             <div>
               {tab === 'ai' && <AiSettings />}
               {tab === 'github' && <GithubSettings />}
+              {tab === 'integrations' && <IntegrationSettings />}
               {tab === 'approvals' && <ApprovalSettings />}
               {tab === 'workspace' && <WorkspaceSettings />}
               {tab === 'appearance' && <AppearanceSettings />}
@@ -286,6 +288,8 @@ function AiSettings() {
         )}
       </div>
 
+      <VisionCheck model={settings.model} />
+
       <div className="card pad col" style={{ gap: 14 }}>
         <strong>Generation</strong>
         <div className="row" style={{ alignItems: 'flex-start', gap: 14 }}>
@@ -308,6 +312,130 @@ function AiSettings() {
           </Button>
         </div>
       </div>
+    </section>
+  );
+}
+
+/** Image input is never assumed: it is enabled only after a real request with an image succeeds. */
+function VisionCheck({ model }: { model: string | null }) {
+  const toast = useApp((s) => s.toast);
+  const [res, setRes] = useState<{ ok: boolean; answer: string; error: string | null } | null>(null);
+  const [busy, setBusy] = useState(false);
+  if (!model) return null;
+  const run = async () => {
+    setBusy(true);
+    try {
+      setRes(await api.probeVision(model));
+    } catch (e) {
+      toast('bad', errorMessage(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <div className="card pad col" style={{ gap: 8 }}>
+      <strong>Image input (screenshots)</strong>
+      <div className="small faint">Sends one small red test image to {model}. Screenshots can be attached only if this succeeds.</div>
+      <div className="row">
+        <Button size="sm" loading={busy} onClick={() => void run()}>
+          Test image input
+        </Button>
+        {res && (res.ok ? <Badge tone="ok">accepted — model answered “{res.answer}”</Badge> : <Badge tone="bad">not supported{res.error ? `: ${res.error}` : ''}</Badge>)}
+      </div>
+    </div>
+  );
+}
+
+// ------------------------------------------------------------------ Integrations
+
+function IntegrationSettings() {
+  const toast = useApp((s) => s.toast);
+  const [items, setItems] = useState<Awaited<ReturnType<typeof api.integrationStatuses>> | null>(null);
+  const [token, setToken] = useState('');
+  const [busy, setBusy] = useState<string | null>(null);
+  const load = () => {
+    api.integrationStatuses().then(setItems).catch((e) => toast('bad', errorMessage(e)));
+  };
+  useEffect(() => {
+    load();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+  const sb = items?.find((i) => i.id === 'supabase');
+  const connect = async () => {
+    setBusy('connect');
+    try {
+      const r = await api.supabaseConnect(token);
+      setToken('');
+      toast('ok', `Supabase connected — ${r.projects.length} project(s) visible`);
+      load();
+    } catch (e) {
+      toast('bad', errorMessage(e));
+    } finally {
+      setBusy(null);
+    }
+  };
+  const disconnect = async () => {
+    setBusy('disconnect');
+    try {
+      const r = await api.supabaseDisconnect();
+      toast('info', r.note);
+      load();
+    } catch (e) {
+      toast('bad', errorMessage(e));
+    } finally {
+      setBusy(null);
+    }
+  };
+  return (
+    <section>
+      <h2>Integrations</h2>
+      <p className="small faint">Genius only uses services listed here as connected, and only for the operations each one declares. Tokens are kept in your OS credential store, never in projects, prompts or logs.</p>
+      {!items && <Spinner />}
+      {items?.map((i) => {
+        const spec = i.spec as { authMethod: string; permissions: string[]; capabilities: string[]; credentialStorage: string; disconnect: string; docs: string };
+        return (
+          <div key={i.id} className="card pad col" style={{ gap: 8, marginBottom: 12 }}>
+            <div className="row">
+              <strong className="grow">{i.name}</strong>
+              <Badge tone={i.status === 'connected' ? 'ok' : i.status === 'not_connected' ? 'bad' : 'warn'}>{i.status.replace('_', ' ')}</Badge>
+            </div>
+            <ul className="small" style={{ margin: 0, paddingLeft: 18 }}>
+              <li>Sign-in: {spec.authMethod}</li>
+              <li>Permissions: {spec.permissions.join('; ')}</li>
+              <li>Can: {spec.capabilities.join('; ')}</li>
+              <li>Credentials: {spec.credentialStorage}</li>
+              <li>Disconnect: {spec.disconnect}</li>
+            </ul>
+            {i.id === 'github' && <div className="small faint">Manage the GitHub connection in the GitHub tab.</div>}
+            {i.id === 'supabase' && sb && (
+              sb.status === 'not_connected' ? (
+                <div className="col" style={{ gap: 6 }}>
+                  <div className="small">
+                    Create a personal access token at{' '}
+                    <button className="link" onClick={() => void openUrl('https://supabase.com/dashboard/account/tokens')}>
+                      supabase.com/dashboard/account/tokens
+                    </button>
+                    , then paste it here. Genius checks it with a real API call before saving.
+                  </div>
+                  <div className="row">
+                    <input className="input mono grow" type="password" value={token} onChange={(e) => setToken(e.target.value)} placeholder="sbp_…" aria-label="Supabase access token" autoComplete="off" />
+                    <Button variant="primary" loading={busy === 'connect'} disabled={!token.trim()} onClick={() => void connect()}>
+                      Connect
+                    </Button>
+                  </div>
+                </div>
+              ) : (
+                <div className="row">
+                  <span className="small grow">Connected{sb.meta && typeof sb.meta.projects === 'number' ? ` · ${sb.meta.projects} project(s) at last check` : ''}. Link a project from a workspace’s Integrations panel.</span>
+                  <Button variant="danger" size="sm" loading={busy === 'disconnect'} onClick={() => void disconnect()}>
+                    Disconnect
+                  </Button>
+                </div>
+              )
+            )}
+          </div>
+        );
+      })}
     </section>
   );
 }

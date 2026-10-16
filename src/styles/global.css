@@ -396,3 +396,22 @@ pre.block { margin: 0; padding: 10px 12px; background: var(--bg-0); border: 1px 
 .examples button:hover { color: var(--text); border-color: var(--accent); }
 
 .fade-in { animation: fade 0.2s var(--ease); }
+
+/* ---- conversations & agent */
+.conv-bar { padding: 6px 8px; border-bottom: 1px solid var(--border); gap: 4px; }
+.input.sm { height: 28px; font-size: 12px; padding: 0 8px; }
+.composer.dropping { outline: 2px dashed var(--accent); outline-offset: -4px; }
+.chip .x { border: 0; background: transparent; color: inherit; cursor: pointer; padding: 0 0 0 2px; display: inline-flex; }
+.chip.bad { background: var(--bad-soft); }
+.report { margin-top: 8px; font-size: 12px; white-space: normal; }
+.report summary { cursor: pointer; color: var(--text-2); }
+.report ul { margin: 6px 0 0; padding-left: 18px; }
+.steps { margin: 0; padding-left: 18px; display: flex; flex-direction: column; gap: 3px; font-size: 12px; }
+.warn-text { color: var(--warn); }
+.bad-text { color: var(--bad); }
+.table { width: 100%; border-collapse: collapse; }
+.table td { border-top: 1px solid var(--border); padding: 6px 8px; vertical-align: top; }
+.mem-row { border-bottom: 1px solid var(--border); padding: 8px 12px; display: flex; flex-direction: column; gap: 4px; }
+.dropping { outline: 2px dashed var(--accent); outline-offset: -4px; }
+.link { background: none; border: 0; color: var(--accent-2); cursor: pointer; padding: 0; font: inherit; }
+.link:hover { text-decoration: underline; }

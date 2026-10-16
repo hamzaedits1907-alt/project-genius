@@ -1,7 +1,7 @@
 import { create } from 'zustand';
 import { api, errorMessage } from '../lib/api';
 import { applyFileStream, upsertEvent, type Draft } from '../lib/logic';
-import type { ActivityEvent, FileEntry, FileStreamEvent, Project, RunInfo, RunOutcome, TaskInfo } from '../lib/types';
+import type { ActivityEvent, AgentStep, FileEntry, FileStreamEvent, Project, RunInfo, RunOutcome, TaskInfo } from '../lib/types';
 import { useApp } from './app';
 
 export type TabId = string; // "file:<path>" | "draft:<path>" | "review:<changesetId>" | "plan" | "commit:<sha>"
@@ -56,6 +56,9 @@ interface WorkspaceState {
   picked: PickedElement | null;
   picking: boolean;
   rightTab: 'assistant' | 'preview';
+  /** Live agent tool calls by task id (real operations pushed by the backend). */
+  agentSteps: Record<string, AgentStep[]>;
+  onAgentStep: (step: AgentStep) => void;
 
   open: (projectId: string) => Promise<void>;
   close: () => void;
@@ -101,10 +104,18 @@ const initial = {
   picked: null as PickedElement | null,
   picking: false,
   rightTab: 'assistant' as const,
+  agentSteps: {} as Record<string, AgentStep[]>,
 };
 
 export const useWorkspace = create<WorkspaceState>((set, get) => ({
   ...initial,
+
+  onAgentStep: (step) => {
+    if (step.projectId !== get().projectId) return;
+    const cur = get().agentSteps[step.taskId] ?? [];
+    if (cur.some((x) => x.id === step.id)) return;
+    set({ agentSteps: { ...get().agentSteps, [step.taskId]: [...cur, step] } });
+  },
 
   open: async (projectId) => {
     if (get().projectId === projectId) return;
