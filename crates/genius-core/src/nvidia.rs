@@ -191,7 +191,8 @@ impl NvidiaClient {
     pub async fn probe_model(&self, model: &str, cancel: &CancellationToken) -> PResult<ProbeResult> {
         let started = std::time::Instant::now();
         let msgs = vec![ChatMessage::user("Reply with the single word: ready")];
-        let opts = ChatOptions { temperature: 0.0, top_p: 1.0, max_tokens: 16, stream: true };
+        // Moderate sampling: some hosted models reject temperature 0.
+        let opts = ChatOptions { temperature: 0.2, top_p: 0.7, max_tokens: 16, stream: true };
         let res = self.chat(model, &msgs, &opts, cancel, |_| {}).await?;
         Ok(ProbeResult {
             model: model.into(),
@@ -217,11 +218,18 @@ impl NvidiaClient {
         }
         let mut attempt = 0;
         let mut stream = opts.stream;
+        let mut opts = opts.clone();
         loop {
             attempt += 1;
-            let res = self.chat_once(model, messages, opts, stream, cancel, &mut on_delta).await;
+            let res = self.chat_once(model, messages, &opts, stream, cancel, &mut on_delta).await;
             match res {
                 Ok(r) => return Ok(r),
+                Err(ProviderError::BadRequest { ref message, .. })
+                    if opts.max_tokens > 1024 && is_token_limit_error(message) =>
+                {
+                    // The model has a smaller output limit than requested: retry with less.
+                    opts.max_tokens = (opts.max_tokens / 2).max(1024);
+                }
                 Err(ProviderError::BadRequest { ref message, .. })
                     if stream && message.to_lowercase().contains("stream") =>
                 {
@@ -405,6 +413,12 @@ pub struct ProbeResult {
     pub streaming: bool,
     pub latency_ms: u64,
     pub sample: String,
+}
+
+fn is_token_limit_error(message: &str) -> bool {
+    let m = message.to_lowercase();
+    (m.contains("max_tokens") || m.contains("max tokens") || m.contains("maximum context") || m.contains("context length"))
+        && !m.contains("stream")
 }
 
 pub fn build_chat_body(model: &str, messages: &[ChatMessage], opts: &ChatOptions, stream: bool) -> Value {
@@ -788,6 +802,28 @@ mod tests {
         assert_eq!(deltas.concat(), "Hello world");
         assert!(r.streamed);
         assert_eq!(r.finish_reason.as_deref(), Some("stop"));
+    }
+
+    #[tokio::test]
+    async fn shrinks_max_tokens_when_model_limit_is_lower() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/chat/completions"))
+            .and(wiremock::matchers::body_partial_json(json!({"max_tokens": 8192})))
+            .respond_with(ResponseTemplate::new(422).set_body_string(r#"{"detail":"max_tokens must be less than or equal to 4096"}"#))
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/v1/chat/completions"))
+            .and(wiremock::matchers::body_partial_json(json!({"max_tokens": 4096})))
+            .respond_with(ResponseTemplate::new(200).set_body_raw(sse(&["ok"]), "text/event-stream"))
+            .mount(&server)
+            .await;
+        let r = client(&server, Some("nvapi-k-0000000000000"))
+            .chat("a/b", &[ChatMessage::user("x")], &ChatOptions::default(), &CancellationToken::new(), |_| {})
+            .await
+            .unwrap();
+        assert_eq!(r.content, "ok");
     }
 
     #[tokio::test]

@@ -1073,12 +1073,17 @@ impl Genius {
         self.gate_operation(project_id, task_id, Operation::Dev, true, &cancel).await?;
         let ws = self.workspace(project_id)?;
         self.bus.push(channels::PREVIEW, json!({ "projectId": project_id, "status": "starting" }));
-        let run = self.procs.start(project_id, task_id, ws.root(), Operation::Dev, "Live preview").await?;
+        // Element picker support; if it cannot be prepared the preview still runs without it.
+        let inspector = crate::inspector::prepare(ws.root()).unwrap_or_else(|e| {
+            log::warn!("preview inspector unavailable: {e}");
+            None
+        });
+        let run = self.procs.start_with(project_id, task_id, ws.root(), Operation::Dev, "Live preview", inspector.as_deref()).await?;
         match self.procs.wait_until_listening(&run, Duration::from_secs(90)).await {
             Ok(url) => {
                 self.previews.lock().unwrap().insert(project_id.into(), url.clone());
                 self.bus.record(Some(project_id), task_id, EventKind::Preview, EventStatus::Completed, format!("Preview is live at {url}"), json!({ "url": url, "runId": run.id }));
-                self.bus.push(channels::PREVIEW, json!({ "projectId": project_id, "status": "ready", "url": url, "runId": run.id }));
+                self.bus.push(channels::PREVIEW, json!({ "projectId": project_id, "status": "ready", "url": url, "runId": run.id, "inspector": inspector.is_some() }));
                 // Watch for the server exiting so the UI never shows a dead preview as live.
                 let procs = self.procs.clone();
                 let bus = self.bus.clone();

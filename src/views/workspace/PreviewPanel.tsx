@@ -1,7 +1,7 @@
-import { useState } from 'react';
-import { ExternalLink, Laptop, Lock, Monitor, Play, RotateCw, Smartphone, Tablet } from 'lucide-react';
+import { useEffect, useRef, useState } from 'react';
+import { Crosshair, ExternalLink, Laptop, Lock, Monitor, Play, RotateCw, Smartphone, Tablet } from 'lucide-react';
 import { openUrl } from '@tauri-apps/plugin-opener';
-import { useWorkspace } from '../../store/workspace';
+import { useWorkspace, type PickedElement } from '../../store/workspace';
 import { Button, Callout, Empty, IconButton, Spinner } from '../../components/ui';
 
 const DEVICES = { full: '100%', laptop: '1280px', tablet: '820px', phone: '390px' } as const;
@@ -18,7 +18,33 @@ export default function PreviewPanel({ onStart }: { onStart: () => void }) {
   const setPreview = useWorkspace((s) => s.setPreview);
   const set = useWorkspace((s) => s.set);
   const [device, setDevice] = useState<keyof typeof DEVICES>('full');
+  const picking = useWorkspace((s) => s.picking);
+  const frameRef = useRef<HTMLIFrameElement>(null);
   const devRun = order.map((id) => runs[id]).find((r) => r?.info.op === 'dev');
+  const origin = preview.url ? new URL(preview.url).origin : null;
+
+  // Messages from the preview are accepted only from the preview's own origin and only
+  // as data (an element description the user can see before anything is sent).
+  useEffect(() => {
+    const onMsg = (e: MessageEvent) => {
+      if (!origin || e.origin !== origin || e.source !== frameRef.current?.contentWindow) return;
+      const data = e.data as { type?: string; element?: PickedElement };
+      if (data?.type === 'genius:picked' && data.element && typeof data.element.tag === 'string') {
+        set({ picked: data.element, picking: false, rightTab: 'assistant' });
+      } else if (data?.type === 'genius:pick-cancelled') {
+        set({ picking: false });
+      }
+    };
+    window.addEventListener('message', onMsg);
+    return () => window.removeEventListener('message', onMsg);
+  }, [origin, set]);
+
+  const togglePick = () => {
+    const win = frameRef.current?.contentWindow;
+    if (!win || !origin) return;
+    win.postMessage({ type: 'genius:pick', on: !picking }, origin);
+    set({ picking: !picking });
+  };
 
   if (preview.status === 'stopped' || (preview.status === 'failed' && !preview.url)) {
     return (
@@ -53,6 +79,9 @@ export default function PreviewPanel({ onStart }: { onStart: () => void }) {
           <span className="mono ellipsis">{preview.url ?? 'starting…'}</span>
           {preview.status === 'starting' && <Spinner size={10} />}
         </div>
+        <IconButton label={picking ? 'Cancel element selection (Esc)' : 'Select an element to change'} active={picking} disabled={preview.status !== 'ready'} onClick={togglePick}>
+          <Crosshair size={14} />
+        </IconButton>
         <IconButton label="Full width" active={device === 'full'} onClick={() => setDevice('full')}>
           <Monitor size={14} />
         </IconButton>
@@ -77,6 +106,7 @@ export default function PreviewPanel({ onStart }: { onStart: () => void }) {
         ) : (
           <div className="device-frame" style={{ width: DEVICES[device], maxWidth: '100%' }}>
             <iframe
+              ref={frameRef}
               key={`${preview.url}#${preview.nonce}`}
               className="preview-frame"
               title="Application preview"
@@ -88,7 +118,7 @@ export default function PreviewPanel({ onStart }: { onStart: () => void }) {
         )}
       </div>
       <div className="faint tiny" style={{ padding: '4px 10px', borderTop: '1px solid var(--border)' }}>
-        Vite reloads the page automatically after files change. Compile errors appear inside the preview and in the Terminal.
+        {picking ? 'Click an element in the app to ask Genius to change it. Esc cancels.' : 'Vite reloads the page automatically after files change. Compile errors appear inside the preview and in the Terminal.'}
       </div>
     </div>
   );

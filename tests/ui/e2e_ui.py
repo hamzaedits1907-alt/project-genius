@@ -154,6 +154,17 @@ try:
     shot(d, "preview-interacted")
     log("generated app runs and responds inside the preview")
 
+    # ---- Element picker: select the heading inside the running app
+    click(d, "//button[@aria-label='Select an element to change']")
+    frame = wait(d, "//iframe[@title='Application preview']")
+    d.switch_to.frame(frame)
+    wait(d, "//h1[.='Genius Todo']")
+    d.execute_script("document.querySelector('h1').click()")
+    d.switch_to.default_content()
+    text_present(d, "Selected in preview:", 15)
+    shot(d, "element-picked")
+    log("element picker returned the clicked element")
+
     # ---- Change request → review diff → apply → verified build
     click(d, "//button[@role='tab'][contains(., 'Assistant')]")
     set_input(wait(d, "//textarea[@aria-label='Change request']"), "Add a footer that says Made with Genius")

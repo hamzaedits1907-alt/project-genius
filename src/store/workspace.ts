@@ -13,6 +13,21 @@ export interface RunView {
   outcome?: RunOutcome;
 }
 
+/** Element selected in the live preview with the inspector. */
+export interface PickedElement {
+  tag: string;
+  selector: string;
+  text: string;
+  attributes: Record<string, string>;
+  html: string;
+  page: string;
+}
+
+export function describePicked(p: PickedElement): string {
+  const attrs = Object.entries(p.attributes).map(([k, v]) => `${k}="${v}"`).join(' ');
+  return `Selected element in the running app (page ${p.page}): <${p.tag}> at "${p.selector}"${p.text ? ` with text "${p.text}"` : ''}${attrs ? ` [${attrs}]` : ''}.\nHTML: ${p.html}`;
+}
+
 export interface OpenFile {
   content: string; // editor buffer
   saved: string; // content on disk at last load/save
@@ -38,6 +53,8 @@ interface WorkspaceState {
   historyVersion: number;
   bottomTab: 'activity' | 'terminal' | 'readiness';
   selectedRun: string | null;
+  picked: PickedElement | null;
+  picking: boolean;
   rightTab: 'assistant' | 'preview';
 
   open: (projectId: string) => Promise<void>;
@@ -81,6 +98,8 @@ const initial = {
   historyVersion: 0,
   bottomTab: 'activity' as const,
   selectedRun: null as string | null,
+  picked: null as PickedElement | null,
+  picking: false,
   rightTab: 'assistant' as const,
 };
 

@@ -1,10 +1,10 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { ChevronDown, ChevronRight, FileDiff, Paperclip, Send, Square, Eye } from 'lucide-react';
+import { ChevronDown, ChevronRight, Crosshair, FileDiff, Paperclip, Send, Square, Eye, X } from 'lucide-react';
 import { api, errorMessage } from '../../lib/api';
 import { bytes, clockTime, STATUS_LABEL } from '../../lib/logic';
 import type { ContextPlan, MessageRow, TaskInfo } from '../../lib/types';
 import { useApp } from '../../store/app';
-import { useWorkspace } from '../../store/workspace';
+import { describePicked, useWorkspace } from '../../store/workspace';
 import { Badge, Button, Dot, Empty, Kbd, Spinner } from '../../components/ui';
 
 export default function AssistantPanel() {
@@ -12,6 +12,8 @@ export default function AssistantPanel() {
   const tasks = useWorkspace((s) => s.tasks);
   const activity = useWorkspace((s) => s.activity);
   const active = useWorkspace((s) => s.active);
+  const picked = useWorkspace((s) => s.picked);
+  const setWs = useWorkspace((s) => s.set);
   const settings = useApp((s) => s.settings);
   const toast = useApp((s) => s.toast);
   const [messages, setMessages] = useState<MessageRow[]>([]);
@@ -37,10 +39,11 @@ export default function AssistantPanel() {
       return;
     }
     const t = setTimeout(() => {
-      api.previewContext(project.id, request, pinned, excluded).then(setCtx).catch(() => setCtx(null));
+      const full = picked ? `${request}\n\n${describePicked(picked)}` : request;
+      api.previewContext(project.id, full, pinned, excluded).then(setCtx).catch(() => setCtx(null));
     }, 350);
     return () => clearTimeout(t);
-  }, [project, request, pinned, excluded]);
+  }, [project, request, pinned, excluded, picked]);
 
   const recentProposals = useMemo(
     () => activity.filter((e) => e.kind === 'changeset' && e.status === 'awaiting_approval' && typeof e.detail.changesetId === 'string').slice(-3),
@@ -55,7 +58,8 @@ export default function AssistantPanel() {
     if (!request.trim() || busyTask) return;
     setSending(true);
     try {
-      await api.startChange(project.id, request, pinned, excluded);
+      await api.startChange(project.id, picked ? `${request}\n\n${describePicked(picked)}` : request, pinned, excluded);
+      setWs({ picked: null });
       setRequest('');
       setPinned([]);
       setExcluded([]);
@@ -96,9 +100,25 @@ export default function AssistantPanel() {
         <div ref={bottom} />
       </div>
       <div className="composer">
+        {picked && (
+          <div className="callout info" style={{ alignItems: 'center' }}>
+            <Crosshair size={14} color="var(--accent-2)" />
+            <div className="grow" style={{ minWidth: 0 }}>
+              <div className="small" style={{ fontWeight: 600 }}>
+                Selected in preview: <span className="mono">&lt;{picked.tag}&gt;</span> {picked.text && `“${picked.text.slice(0, 50)}”`}
+              </div>
+              <div className="mono tiny faint ellipsis" title={picked.selector}>
+                {picked.selector}
+              </div>
+            </div>
+            <button className="icon-btn" style={{ width: 22, height: 22 }} aria-label="Clear selected element" onClick={() => setWs({ picked: null })}>
+              <X size={13} />
+            </button>
+          </div>
+        )}
         <textarea
           className="textarea"
-          placeholder={busyTask ? `Waiting for “${busyTask.title}”…` : 'Describe a change…'}
+          placeholder={busyTask ? `Waiting for “${busyTask.title}”…` : picked ? 'What should change about the selected element?' : 'Describe a change…'}
           value={request}
           onChange={(e) => setRequest(e.target.value)}
           onKeyDown={(e) => {

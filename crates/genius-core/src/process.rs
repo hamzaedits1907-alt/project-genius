@@ -85,7 +85,7 @@ impl Operation {
     }
 
     /// Fixed argument vector for npm. Dev servers are bound to loopback on a Genius-chosen port.
-    pub fn npm_args(&self, port: Option<u16>) -> Vec<String> {
+    pub fn npm_args(&self, port: Option<u16>, dev_config: Option<&str>) -> Vec<String> {
         match self {
             Operation::Install => vec!["install".into(), "--no-audit".into(), "--no-fund".into()],
             Operation::Dev => {
@@ -93,6 +93,10 @@ impl Operation {
                 if let Some(p) = port {
                     a.push("--port".into());
                     a.push(p.to_string());
+                }
+                if let Some(c) = dev_config {
+                    a.push("--config".into());
+                    a.push(c.into());
                 }
                 a
             }
@@ -198,6 +202,15 @@ impl ProcessManager {
 
     /// Start an allowlisted npm operation.
     pub async fn start(&self, project_id: &str, task_id: Option<&str>, cwd: &Path, op: Operation, reason: &str) -> Result<RunInfo> {
+        self.start_with(project_id, task_id, cwd, op, reason, None).await
+    }
+
+    /// Like [`start`], optionally pointing the dev server at a Genius-generated config wrapper
+    /// (a fixed, validated relative path inside node_modules/.genius).
+    pub async fn start_with(&self, project_id: &str, task_id: Option<&str>, cwd: &Path, op: Operation, reason: &str, dev_config: Option<&str>) -> Result<RunInfo> {
+        if dev_config.is_some_and(|c| c != "node_modules/.genius/preview.config.mjs") {
+            return Err(GeniusError::Validation("unexpected dev server config".into()));
+        }
         let npm = self.npm_path()?;
         if !cwd.join("package.json").is_file() {
             return Err(GeniusError::Validation("This project has no package.json, so npm commands cannot run.".into()));
@@ -208,7 +221,7 @@ impl ProcessManager {
             }
         }
         let port = if op == Operation::Dev { Some(free_port()?) } else { None };
-        let args = op.npm_args(port);
+        let args = op.npm_args(port, if op == Operation::Dev { dev_config } else { None });
         self.spawn(project_id, task_id, cwd, op, reason, &npm, &args, port).await
     }
 
@@ -617,10 +630,12 @@ mod tests {
 
     #[test]
     fn args_are_fixed() {
-        assert_eq!(Operation::Build.npm_args(None), vec!["run", "build"]);
-        let dev = Operation::Dev.npm_args(Some(5000));
+        assert_eq!(Operation::Build.npm_args(None, None), vec!["run", "build"]);
+        let dev = Operation::Dev.npm_args(Some(5000), None);
         assert!(dev.contains(&"127.0.0.1".to_string()) && dev.ends_with(&["--port".into(), "5000".into()]));
-        assert_eq!(Operation::Install.npm_args(None)[0], "install");
+        let dev = Operation::Dev.npm_args(Some(5000), Some("node_modules/.genius/preview.config.mjs"));
+        assert!(dev.ends_with(&["--config".into(), "node_modules/.genius/preview.config.mjs".into()]));
+        assert_eq!(Operation::Install.npm_args(None, None)[0], "install");
     }
 
     #[test]

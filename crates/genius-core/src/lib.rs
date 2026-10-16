@@ -13,6 +13,7 @@ pub mod events;
 pub mod export;
 pub mod git;
 pub mod github;
+pub mod inspector;
 pub mod nvidia;
 pub mod process;
 pub mod redact;

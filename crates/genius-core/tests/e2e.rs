@@ -253,6 +253,8 @@ async fn full_mvp_workflow() {
     assert!(!files.iter().any(|f| f.starts_with("node_modules")), "node_modules hidden from tree");
     let html = reqwest::get(&url).await.unwrap().text().await.unwrap();
     assert!(html.contains("<div id=\"root\"></div>"), "dev server serves the real index.html");
+    assert!(html.contains("__geniusInspector"), "preview inspector injected through the wrapper config");
+    assert!(!g.list_files(&pid).unwrap().iter().any(|f| f.path.contains(".genius")), "wrapper is not part of the project");
     let app_module = reqwest::get(format!("{url}src/App.tsx")).await.unwrap().text().await.unwrap();
     assert!(app_module.contains("Genius Counter"), "dev server serves the generated App");
 
