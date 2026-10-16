@@ -1,0 +1,4 @@
+[package]
+name = "genius"
+version.workspace = true
+edition.workspace = true
