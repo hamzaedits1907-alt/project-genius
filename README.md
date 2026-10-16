@@ -15,6 +15,16 @@
 - **Git & GitHub.** Status, diffs, staging, commits (secret-scanned), branches, fetch/pull/push (never forced), conflict resolution, and one-click *Publish to GitHub* with verified push.
 - **Secure by design.** Your NVIDIA key lives in the OS credential store and never reaches the UI, logs, projects, or the preview.
 
+## New in this release
+
+- **Talk to Genius about your project.** Every project has persistent conversations. Follow-ups ("add a sidebar", "the sidebar is broken on mobile — fix it") run a bounded agent that inspects the real code with tools, proposes a targeted diff, and reports exactly what it read, ran and has *not* verified.
+- **Your files as context.** Attach or import TXT/MD/CSV/JSON/code/PDF/DOCX/images/ZIP; import a ZIP as a new project with safe extraction.
+- **Knows what it can do.** A live capability report (model, verified features, tools, integrations, permissions) — also what the agent consults when you ask about it.
+- **Subagents.** A reviewer checks multi-file proposals; architect/reviewer/UI specialists can be consulted read-only. Every step shows which agent ran it.
+- **Integrations.** Registry with GitHub and Supabase (connect with a token, link a project, configure the client safely, migrations and types as reviewable changes, remote SQL only after explicit approval).
+
+Windows setup: [docs/WINDOWS.md](docs/WINDOWS.md).
+
 ## Requirements
 
 | | |

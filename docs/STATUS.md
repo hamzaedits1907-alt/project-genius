@@ -40,6 +40,24 @@ Legend: ✅ done and verified by automated tests · 🟡 implemented, verified o
 | Addendum: GitHub | 🟡 | gh-based auth, repo list/clone/create, publish with verified push. Publish flow tested end-to-end with a fake `gh` + local bare remotes; **live github.com unverified** (device-code endpoint fails through the sandbox proxy) |
 | 7 Advanced | 🟡 | Done: project memory, readiness report, element picker, context transparency, script trust, change attribution. Planned: see `docs/IDEAS.md` |
 
+## Evolution release (conversations, agent, imports, integrations)
+
+| # | Acceptance criterion | Status | Evidence |
+|---|---|---|---|
+| 1 | `destroy is not a function` fixed + regression test | ✅ / 🟡 | Mechanism reproduced in a test (React 19 calls a non-function effect return on unmount). The three effects that could leak a value were converted; ESLint now rejects expression-bodied, async and by-reference effects (verified to flag the original code); the racy event subscription was replaced. **The exact crash did not reproduce on Linux** (dev and production builds, full UI e2e); the boundary now records the failing component to `logs/ui-errors.log` for confirmation on Windows. |
+| 2 | Tauri app starts on Windows | ⛔ | Not run on Windows here; Windows target type-checks. See `docs/WINDOWS.md`. |
+| 3–4 | Create a project, continue the conversation with a targeted change | ✅ | Rust agent tests + real-app UI e2e (mock model) |
+| 5 | Agent inspects code before modifying it | ✅ | Tool steps recorded and asserted (search → read_file → proposal) |
+| 6 | Import a file and reference it | ✅ | Parser/zip tests; attachments sent with a message; reference search tool. UI drag-and-drop tested only in jsdom. |
+| 7 | Review, apply, reject, verify | ✅ | Existing changeset flow, UI e2e |
+| 8 | Capabilities reflect real availability | ✅ | `capabilities_reflect_runtime_state` |
+| 9 | Subagent assignments/results recorded | ✅ | Reviewer run asserted; steps stored with agent role |
+| 10–11 | GitHub failures handled / real push | 🟡 | Existing fake-`gh` publish test; **live github.com push not verified** (no credentials in this environment) |
+| 12 | Supabase connected vs unconfigured | 🟡 | Status distinguishes not connected / connected / linked / configured; key selection and validation unit-tested; **no live Supabase call made** |
+| 13 | Secrets absent from logs, prompts, bundle, commits | ✅ (scoped) | Agent test asserts `.env` content never reaches the provider; redaction tests; frontend bundle scanned for key patterns; commit secret scan (existing) |
+| 14 | Existing projects/history intact | ✅ | v1→v2 migration test keeps messages |
+| 15 | Restart preserves data and conversations | ✅ | Rust test + UI e2e restart |
+
 ## Known limitations
 
 - **One project type** (Vite + React + TypeScript web app). Desktop targets are shown as "not yet supported".

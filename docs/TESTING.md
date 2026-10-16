@@ -44,6 +44,16 @@ Note: WebKitWebDriver cannot focus inputs inside a cross-origin iframe, so the t
 
 Vitest covers the pure state logic (activity upserts and ordering, filters, file tree, live-draft reducer, diff classification, formatting). `src-tauri` has a unit test ensuring every registered command is in the ACL manifest and granted to the main window.
 
+## 5. Agent, conversations, imports — `cargo test -p genius-core --test agent`
+
+A scripted **mock** provider plays the model's side of the tool protocol (labelled in the file). Real: conversation storage, tool execution on a real project folder, sandbox refusals (`.env`, `../`), unknown tools, invalid arguments, duplicate suppression, 14-step bound, plan mode, reviewer subagent, changesets, evidence-based reports, restart persistence, and that `.env` contents never reach the provider.
+
+## 6. Regression guards for the view crash
+
+- `src/lib/effects.test.tsx` — reproduces React 19's "destroy is not a function", tests the ESLint rule, and the StrictMode-safe `useSubscription`.
+- `src/test/views.test.tsx` — mounts the real `App` in StrictMode with a mocked IPC and walks every view, tab and panel through mount/unmount.
+- `tests/ui/walk_views.py` — the same walk in the **real webview**; `tests/ui/e2e_ui.py` fails on any error boundary or effect-cleanup error at every step.
+
 ## Not covered automatically (manual verification needed)
 
 - Live NVIDIA authentication, model listing and inference against `integrate.api.nvidia.com` (blocked from the build environment by its network policy).
