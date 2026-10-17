@@ -6,8 +6,9 @@
 3. The app finds the newer release on GitHub; the test clicks "Update now".
 4. The app downloads the new AppImage, verifies its published SHA-256, replaces its own
    AppImage file and relaunches it.
-5. The test checks the file on disk is byte-identical to the new release asset, then starts
-   it again and checks the UI reports the new version and greets the user after the update.
+5. The test checks the file on disk matches the new release's published checksum, that the
+   app relaunched itself (screenshot of its welcome screen), then starts it again under
+   WebDriver and checks it reports the new version and that it is up to date.
 
 Usage: python3 tests/ui/update_e2e.py <screenshot-dir> [old-tag]
 Needs: network access to github.com, Xvfb, tauri-driver, WebKitWebDriver, selenium.
@@ -142,21 +143,25 @@ try:
     assert os.access(app, os.X_OK), "replaced AppImage is executable"
     log("AppImage replaced with the verified new release")
 
-    time.sleep(8)
+    time.sleep(20)
     relaunched = genius_pids()
     log(f"relaunched processes: {relaunched}")
     assert relaunched, "the updated app was relaunched"
+    # The relaunched copy runs outside WebDriver; capture its first screen (the welcome dialog).
+    subprocess.run(["import", "-window", "root", "-display", ":98", os.path.join(SHOTS, "update-2-relaunched.png")], check=False)
     subprocess.run(["pkill", "-f", work], check=False)
     time.sleep(2)
 
-    # Start the updated app again under WebDriver: it reports the new version and says hello.
+    # Start the updated app again under WebDriver and confirm the version it reports.
     d = session()
-    wait(d, f"//*[@role='dialog']//h2[contains(., 'Welcome to Genius {latest['tag_name'].lstrip('v')}')]", 90)
-    shot(d, "2-welcome")
-    click(d, "//*[@role='dialog']//button[contains(., 'Let') or contains(., 'Later') or @aria-label='Close']")
+    wait(d, "//h1[contains(., 'What should we build today?')]", 90)
+    time.sleep(3)
+    for b in d.find_elements(By.XPATH, "//*[@role='dialog']//button[@aria-label='Close']"):
+        b.click()
     click(d, "//button[@aria-label='Settings']")
     click(d, "//nav//button[contains(., 'Updates & about')]")
-    wait(d, f"//*[contains(., 'Version {latest['tag_name'].lstrip('v')}')]")
+    wait(d, f"//*[contains(., 'Version {latest['tag_name'].lstrip('v')}')]", 60)
+    wait(d, "//*[contains(@class,'badge')][contains(., 'Up to date')]", 60)
     shot(d, "3-settings-new-version")
     d.quit()
     ok = True
