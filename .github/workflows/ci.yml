@@ -48,7 +48,15 @@ jobs:
       - uses: swatinem/rust-cache@v2
       - run: npm ci
       - name: Core unit tests (Windows)
-        run: cargo test -p genius-core --lib
+        shell: bash
+        run: |
+          set -o pipefail
+          if ! cargo test -p genius-core --lib 2>&1 | tee core-tests.log; then
+            # Surface the failing tests and their panics as one annotation (readable via the API).
+            summary=$(sed -n '/^failures:$/,$p' core-tests.log | head -c 6000 | sed ':a;N;$!ba;s/%/%25/g;s/\r//g;s/\n/%0A/g')
+            echo "::error title=Windows core test failures::${summary}"
+            exit 1
+          fi
       - name: Tauri shell tests (command ACL)
         run: cargo test -p genius
       - name: Build Windows installers
