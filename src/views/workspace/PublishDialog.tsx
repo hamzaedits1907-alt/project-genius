@@ -1,9 +1,9 @@
-import { useEffect, useState } from 'react';
-import { CheckCircle2, ExternalLink, UploadCloud } from 'lucide-react';
+import { useCallback, useEffect, useState } from 'react';
+import { CheckCircle2, ExternalLink, Globe, UploadCloud } from 'lucide-react';
 import { openUrl } from '@tauri-apps/plugin-opener';
 import { Github } from '../../components/icons';
 import { api, errorMessage } from '../../lib/api';
-import type { PublishPlan, PublishRequest } from '../../lib/types';
+import type { DeployStatus, PublishPlan, PublishRequest } from '../../lib/types';
 import { useApp } from '../../store/app';
 import { useWorkspace } from '../../store/workspace';
 import { Badge, Button, Callout, Field, Modal, Segmented, Spinner } from '../../components/ui';
@@ -60,6 +60,7 @@ export default function PublishDialog({ onClose }: { onClose: () => void }) {
         <Button icon={<ExternalLink size={14} />} onClick={() => void openUrl(done.url)}>
           Open {done.url}
         </Button>
+        <DeploySection projectId={project.id} published />
       </Modal>
     );
   }
@@ -161,6 +162,7 @@ export default function PublishDialog({ onClose }: { onClose: () => void }) {
               </pre>
             )}
           </div>
+          <DeploySection projectId={project.id} published={!!plan.remoteUrl?.includes('github.com')} />
           {hasFindings && (
             <Callout tone="bad" title="Possible secrets detected">
               {plan.findings.map((f) => `${f.path}${f.line ? `:${f.line}` : ''} — ${f.kind}`).join('\n')}
@@ -172,5 +174,86 @@ export default function PublishDialog({ onClose }: { onClose: () => void }) {
         </>
       )}
     </Modal>
+  );
+}
+
+const DEPLOY_STEPS: Record<string, string> = {
+  building: 'Building your app for the web…',
+  uploading: 'Uploading the website to GitHub (approve the push when asked)…',
+  enabling: 'Turning on GitHub Pages…',
+};
+
+/**
+ * One-click website: builds the app and serves it with GitHub Pages from the repository's
+ * gh-pages branch. Progress and the live link come from the persisted deploy status.
+ */
+export function DeploySection({ projectId, published }: { projectId: string; published: boolean }) {
+  const [st, setSt] = useState<DeployStatus | null>(null);
+  const [starting, setStarting] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  const refresh = useCallback(() => api.deployStatus(projectId).then(setSt).catch(() => undefined), [projectId]);
+
+  useEffect(() => {
+    void refresh();
+  }, [refresh]);
+  const running = starting || !!st?.running;
+  useEffect(() => {
+    if (!running) return;
+    const t = setInterval(() => void refresh(), 1500);
+    return () => clearInterval(t);
+  }, [running, refresh]);
+
+  const deploy = async () => {
+    setStarting(true);
+    setErr(null);
+    try {
+      await api.deployPages(projectId);
+      await refresh();
+    } catch (e) {
+      setErr(errorMessage(e));
+    } finally {
+      setStarting(false);
+    }
+  };
+
+  const live = st?.url;
+  return (
+    <div className="card pad col" style={{ gap: 8 }}>
+      <div className="row">
+        <Globe size={16} />
+        <strong className="grow">Website</strong>
+        {st?.step === 'deployed' && !running && <Badge tone="ok">live</Badge>}
+        <Button size="sm" variant={live ? 'secondary' : 'primary'} icon={<UploadCloud size={13} />} loading={running} disabled={!published || running} onClick={() => void deploy()}>
+          {live ? 'Redeploy' : 'Deploy website'}
+        </Button>
+      </div>
+      <div className="small muted">
+        {published
+          ? 'Builds the app and publishes it with GitHub Pages (branch gh-pages of your repository). Your code and branches are not changed.'
+          : 'Publish the project to GitHub first; the website is served from that repository with GitHub Pages.'}
+      </div>
+      {running && (
+        <div className="row small">
+          <Spinner size={12} /> {DEPLOY_STEPS[st?.step ?? 'building'] ?? 'Starting…'}
+        </div>
+      )}
+      {!running && st?.step === 'failed' && st.error && <Callout tone="bad" title="The website was not deployed">{st.error}</Callout>}
+      {err && <Callout tone="bad">{err}</Callout>}
+      {live && (
+        <div className="row small">
+          <a
+            href={live}
+            className="mono"
+            onClick={(e) => {
+              e.preventDefault();
+              void openUrl(live);
+            }}
+          >
+            {live}
+          </a>
+          {st?.step === 'deployed' && !running && <span className="faint">GitHub can take a minute to show a new version.</span>}
+        </div>
+      )}
+    </div>
   );
 }

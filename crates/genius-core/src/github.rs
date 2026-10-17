@@ -233,6 +233,26 @@ impl GitHub {
         self.view(&full).await?.ok_or_else(|| GeniusError::GitHub("GitHub reported success but the repository could not be found".into()))
     }
 
+    /// Serve GitHub Pages for `full` from the root of `branch`, creating the Pages site if
+    /// needed (POST) or re-pointing it (PUT). Returns the site URL GitHub reports.
+    pub async fn enable_pages(&self, full: &str, branch: &str) -> Result<Option<String>> {
+        validate_full_name(full)?;
+        crate::git::validate_ref_name(branch)?;
+        let path = format!("repos/{full}/pages");
+        let src = format!("source[branch]={branch}");
+        let (c, _, e) = self.gh(&["api", &path], 30).await?;
+        let exists = c == 0;
+        if !exists && !e.contains("404") && !e.to_lowercase().contains("not found") {
+            return Err(GeniusError::GitHub(classify_pages_error(&e)));
+        }
+        let (c, o, e) = self.gh(&["api", "-X", if exists { "PUT" } else { "POST" }, &path, "-f", &src, "-f", "source[path]=/"], 60).await?;
+        if c != 0 && !(e.contains("409") || e.to_lowercase().contains("already")) {
+            return Err(GeniusError::GitHub(classify_pages_error(if e.trim().is_empty() { &o } else { &e })));
+        }
+        let url = self.gh_ok(&["api", &path, "--jq", ".html_url"], 30).await.ok().map(|u| u.trim().to_string()).filter(|u| u.starts_with("https://"));
+        Ok(url)
+    }
+
     pub async fn orgs(&self) -> Result<Vec<String>> {
         let out = self.gh_ok(&["api", "user/orgs", "--jq", ".[].login"], 30).await?;
         Ok(out.lines().map(|l| l.trim().to_string()).filter(|l| !l.is_empty()).collect())
@@ -282,6 +302,14 @@ fn classify_gh_error(stderr: &str, stdout: &str) -> String {
         ""
     };
     redact(&format!("{hint}{}", text.trim()))
+}
+
+fn classify_pages_error(stderr: &str) -> String {
+    let l = stderr.to_lowercase();
+    if l.contains("422") || l.contains("upgrade") {
+        return redact(&format!("GitHub Pages is not available for this repository on your GitHub plan (private repositories need a paid plan). Make the repository public or upgrade, then deploy again.\n\n{}", stderr.trim()));
+    }
+    classify_gh_error(stderr, "")
 }
 
 fn repo_from_json(v: &Value) -> RepoInfo {

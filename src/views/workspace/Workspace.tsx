@@ -4,7 +4,8 @@ import { Brain, ClipboardList, Code2, FileStack, Plug, Download, FolderTree, Git
 import { api, errorMessage } from '../../lib/api';
 import type { Operation } from '../../lib/types';
 import { useApp } from '../../store/app';
-import { runApp, useWorkspace } from '../../store/workspace';
+import { askGenius, runApp, useWorkspace } from '../../store/workspace';
+import { fixMessage, problemSummary } from '../../lib/runtime';
 import { Badge, Button, IconButton, Segmented, Spinner, StatusBadge } from '../../components/ui';
 import PlanView from './PlanView';
 import FileExplorer from './FileExplorer';
@@ -38,6 +39,7 @@ export default function Workspace({ projectId }: { projectId: string }) {
   const setUiMode = useApp((s) => s.setUiMode);
   const stage = useWorkspace((s) => s.stage);
   const hasPkg = useWorkspace((s) => s.files.some((f) => f.path === 'package.json'));
+  const previewErrors = useWorkspace((s) => s.previewErrors);
   const [side, setSide] = useState<Side>('files');
   const [dialog, setDialog] = useState<'export' | 'publish' | 'quick' | null>(null);
   const [busyOp, setBusyOp] = useState<string | null>(null);
@@ -110,6 +112,17 @@ export default function Workspace({ projectId }: { projectId: string }) {
     try {
       await api.startDiagnose(project.id, null);
       setWs({ rightTab: 'assistant' });
+    } catch (e) {
+      toast('bad', errorMessage(e));
+    }
+  };
+  // A failed build comes first (the Build Doctor); otherwise send what the preview showed.
+  const runtimeProblem = problemSummary(previewErrors);
+  const fixForMe = async () => {
+    if (lastBuild?.status === 'failed' || !runtimeProblem) return diagnose();
+    if (!project) return;
+    try {
+      await askGenius(project.id, fixMessage(previewErrors));
     } catch (e) {
       toast('bad', errorMessage(e));
     }
@@ -219,7 +232,7 @@ export default function Workspace({ projectId }: { projectId: string }) {
           {project.name}
         </span>
         {simple ? (
-          <FriendlyStatus building={running.length > 0 || verifying.length > 0} lastBuild={lastBuild?.status} />
+          <FriendlyStatus building={running.length > 0 || verifying.length > 0} lastBuild={runtimeProblem && lastBuild?.status !== 'failed' ? 'failed' : lastBuild?.status} />
         ) : lastBuild ? (
           <StatusBadge status={lastBuild.status} label={`build ${lastBuild.status}`} />
         ) : (
@@ -244,8 +257,8 @@ export default function Workspace({ projectId }: { projectId: string }) {
         {modeToggle}
         {simple ? (
           <>
-            {lastBuild?.status === 'failed' && (
-              <Button size="sm" variant="ghost" icon={<Wand2 size={14} />} onClick={() => void diagnose()} disabled={running.length > 0}>
+            {(lastBuild?.status === 'failed' || runtimeProblem) && (
+              <Button size="sm" variant="ghost" icon={<Wand2 size={14} />} onClick={() => void fixForMe()} disabled={running.length > 0}>
                 Fix it for me
               </Button>
             )}

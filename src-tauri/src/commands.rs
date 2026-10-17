@@ -12,7 +12,9 @@ use genius_core::export::ExportResult;
 use genius_core::git::{Branch, Commit, RepoStatus};
 use genius_core::github::{AuthStatus, RepoInfo};
 use genius_core::nvidia::ProbeResult;
+use genius_core::pages::DeployStatus;
 use genius_core::process::{Operation, RunInfo, ToolStatus};
+use genius_core::runtime_errors::PreviewRuntimeError;
 use genius_core::secretscan::SecretFinding;
 use genius_core::settings::Settings;
 use genius_core::spec::ProjectSpec;
@@ -297,6 +299,23 @@ pub fn preview_status(g: G, project_id: String) -> Option<String> {
     g.preview_url(&project_id)
 }
 
+/// Runtime errors posted by the preview page; returns the merged current list.
+#[tauri::command]
+pub fn report_preview_errors(g: G, project_id: String, errors: Vec<PreviewRuntimeError>) -> Result<Vec<PreviewRuntimeError>> {
+    g.report_preview_errors(&project_id, errors)?;
+    Ok(g.preview_errors(&project_id))
+}
+
+#[tauri::command]
+pub fn preview_errors(g: G, project_id: String) -> Vec<PreviewRuntimeError> {
+    g.preview_errors(&project_id)
+}
+
+#[tauri::command]
+pub fn clear_preview_errors(g: G, project_id: String) {
+    g.clear_preview_errors(&project_id)
+}
+
 // ---------------------------------------------------------------- activity, export, readiness
 
 #[tauri::command]
@@ -467,6 +486,16 @@ pub async fn publish_plan(g: G<'_>, project_id: String) -> Result<PublishPlan> {
 #[tauri::command]
 pub async fn publish(g: G<'_>, project_id: String, request: PublishRequest) -> Result<Value> {
     g.publish(&project_id, &request, &CancellationToken::new()).await
+}
+
+#[tauri::command]
+pub fn deploy_pages(g: G, project_id: String) -> Result<TaskInfo> {
+    g.start_deploy_pages(&project_id)
+}
+
+#[tauri::command]
+pub fn deploy_status(g: G, project_id: String) -> Result<Option<DeployStatus>> {
+    g.deploy_status(&project_id)
 }
 
 // ---------------------------------------------------------------- diagnostics

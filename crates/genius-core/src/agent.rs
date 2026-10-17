@@ -1192,8 +1192,9 @@ impl Genius {
     }
 
     /// Runtime errors reported by the live preview, rendered for the model (None if none).
-    fn preview_errors_text(&self, _project_id: &str) -> Option<String> {
-        None
+    fn preview_errors_text(&self, project_id: &str) -> Option<String> {
+        let errors = self.preview_errors(project_id);
+        (!errors.is_empty()).then(|| Genius::render_preview_errors(&errors))
     }
 
     /// Run a read-only specialist subagent with its own bounded loop and a fresh, minimal

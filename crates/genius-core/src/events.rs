@@ -91,6 +91,7 @@ pub mod channels {
     pub const PROCESS_STATE: &str = "genius://process-state";
     pub const FS_CHANGED: &str = "genius://fs-changed";
     pub const PREVIEW: &str = "genius://preview";
+    pub const PREVIEW_ERRORS: &str = "genius://preview-errors";
 }
 
 #[derive(Default)]

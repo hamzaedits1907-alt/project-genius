@@ -1,8 +1,12 @@
 import { useEffect, useRef, useState } from 'react';
-import { Crosshair, ExternalLink, Laptop, Lock, Monitor, Play, RotateCw, Smartphone, Tablet } from 'lucide-react';
+import { AlertTriangle, ChevronDown, ChevronRight, Crosshair, ExternalLink, Laptop, Lock, Monitor, Play, RotateCw, Smartphone, Tablet, Wand2, X } from 'lucide-react';
 import { openUrl } from '@tauri-apps/plugin-opener';
-import { useWorkspace, type PickedElement } from '../../store/workspace';
-import { Button, Callout, Empty, IconButton, Spinner } from '../../components/ui';
+import { api, errorMessage } from '../../lib/api';
+import { errorLocation, fixMessage, kindLabel, parseRuntimeReport, problemSummary } from '../../lib/runtime';
+import type { PreviewRuntimeError } from '../../lib/types';
+import { useApp } from '../../store/app';
+import { askGenius, useWorkspace, type PickedElement } from '../../store/workspace';
+import { Badge, Button, Callout, Empty, IconButton, Spinner } from '../../components/ui';
 
 const DEVICES = { full: '100%', laptop: '1280px', tablet: '820px', phone: '390px' } as const;
 
@@ -23,9 +27,24 @@ export default function PreviewPanel({ onStart }: { onStart: () => void }) {
   const devRun = order.map((id) => runs[id]).find((r) => r?.info.op === 'dev');
   const origin = preview.url ? new URL(preview.url).origin : null;
 
+  const pending = useRef<PreviewRuntimeError[]>([]);
+  const flushTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
   // Messages from the preview are accepted only from the preview's own origin and only
-  // as data (an element description the user can see before anything is sent).
+  // as data (an element description the user can see before anything is sent; runtime
+  // errors that are validated, then forwarded to the backend in batches).
   useEffect(() => {
+    const flush = () => {
+      flushTimer.current = null;
+      const batch = pending.current;
+      pending.current = [];
+      const pid = useWorkspace.getState().projectId;
+      if (!pid || !batch.length) return;
+      api
+        .reportPreviewErrors(pid, batch)
+        .then((list) => useWorkspace.getState().projectId === pid && set({ previewErrors: list }))
+        .catch(() => undefined);
+    };
     const onMsg = (e: MessageEvent) => {
       if (!origin || e.origin !== origin || e.source !== frameRef.current?.contentWindow) return;
       const data = e.data as { type?: string; element?: PickedElement };
@@ -33,10 +52,25 @@ export default function PreviewPanel({ onStart }: { onStart: () => void }) {
         set({ picked: data.element, picking: false, rightTab: 'assistant' });
       } else if (data?.type === 'genius:pick-cancelled') {
         set({ picking: false });
+      } else if (data?.type === 'genius:runtime') {
+        pending.current.push(...parseRuntimeReport(data));
+        if (!flushTimer.current) flushTimer.current = setTimeout(flush, 300);
+      } else if (data?.type === 'genius:runtime-healthy') {
+        // Reloaded / hot-updated without errors and the page shows content: problems are gone.
+        pending.current = [];
+        const pid = useWorkspace.getState().projectId;
+        if (pid && useWorkspace.getState().previewErrors.length) {
+          set({ previewErrors: [] });
+          api.clearPreviewErrors(pid).catch(() => undefined);
+        }
       }
     };
     window.addEventListener('message', onMsg);
-    return () => window.removeEventListener('message', onMsg);
+    return () => {
+      window.removeEventListener('message', onMsg);
+      if (flushTimer.current) clearTimeout(flushTimer.current);
+      flushTimer.current = null;
+    };
   }, [origin, set]);
 
   const togglePick = () => {
@@ -98,6 +132,7 @@ export default function PreviewPanel({ onStart }: { onStart: () => void }) {
           <ExternalLink size={14} />
         </IconButton>
       </div>
+      {preview.status === 'ready' && <ProblemBar />}
       <div style={{ flex: 1, minHeight: 0, background: 'var(--bg-0)', overflow: 'auto' }}>
         {preview.status === 'starting' || !preview.url ? (
           <Empty icon={<Spinner size={18} />} title="Starting the development server…">
@@ -120,6 +155,73 @@ export default function PreviewPanel({ onStart }: { onStart: () => void }) {
       <div className="faint tiny" style={{ padding: '4px 10px', borderTop: '1px solid var(--border)' }}>
         {picking ? 'Click an element in the app to ask Genius to change it. Esc cancels.' : 'Vite reloads the page automatically after files change. Compile errors appear inside the preview and in the Terminal.'}
       </div>
+    </div>
+  );
+}
+
+/** Friendly summary of runtime problems in the running app, with a one-click fix. */
+export function ProblemBar() {
+  const project = useWorkspace((s) => s.project);
+  const errors = useWorkspace((s) => s.previewErrors);
+  const busy = useWorkspace((s) => s.tasks.some((t) => t.kind !== 'verify'));
+  const set = useWorkspace((s) => s.set);
+  const toast = useApp((s) => s.toast);
+  const [open, setOpen] = useState(false);
+  const [sending, setSending] = useState(false);
+  const sum = problemSummary(errors);
+  if (!project || !sum) return null;
+
+  const fix = async () => {
+    setSending(true);
+    try {
+      await askGenius(project.id, fixMessage(errors));
+    } catch (e) {
+      toast('bad', errorMessage(e));
+    } finally {
+      setSending(false);
+    }
+  };
+  const dismiss = () => {
+    set({ previewErrors: [] });
+    api.clearPreviewErrors(project.id).catch(() => undefined);
+  };
+
+  return (
+    <div className={`problem-bar ${sum.severity === 'error' ? 'soft' : ''}`} role="alert">
+      <div className="problem-row">
+        <AlertTriangle size={15} className="problem-icon" />
+        <div className="grow problem-text" title={sum.detail}>
+          <strong>{sum.title}</strong>
+          {sum.detail && <span className="mono">: {sum.detail}</span>}
+          {sum.location && <span className="faint"> — {sum.location}</span>}
+        </div>
+        {sum.count > 1 && <Badge tone="bad">×{sum.count}</Badge>}
+        <Button size="sm" variant="ghost" icon={open ? <ChevronDown size={13} /> : <ChevronRight size={13} />} aria-expanded={open} onClick={() => setOpen(!open)}>
+          Details
+        </Button>
+        <Button size="sm" variant="primary" icon={<Wand2 size={13} />} loading={sending} disabled={busy} title={busy ? 'Genius is working on something else' : 'Ask Genius to find the cause and fix it'} onClick={() => void fix()}>
+          Fix it
+        </Button>
+        <IconButton label="Dismiss" onClick={dismiss}>
+          <X size={13} />
+        </IconButton>
+      </div>
+      {open && (
+        <ul className="problem-details">
+          {errors.map((e, i) => (
+            <li key={`${e.kind}:${e.message}:${e.source ?? ''}:${e.line ?? ''}:${i}`}>
+              <div className="small">
+                <strong>{kindLabel(e)}</strong>
+                {e.count > 1 && <span className="faint"> ×{e.count}</span>}
+                {errorLocation(e) && <span className="faint"> · {errorLocation(e)}</span>}
+                <span className="faint"> · page {e.page}</span>
+              </div>
+              <div className="mono small problem-msg">{e.message}</div>
+              {e.stack && <pre className="block problem-stack">{e.stack}</pre>}
+            </li>
+          ))}
+        </ul>
+      )}
     </div>
   );
 }

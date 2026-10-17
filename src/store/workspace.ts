@@ -1,7 +1,7 @@
 import { create } from 'zustand';
 import { api, errorMessage } from '../lib/api';
 import { applyFileStream, upsertEvent, type Draft } from '../lib/logic';
-import type { ActivityEvent, AgentStep, FileEntry, FileStreamEvent, Project, RunInfo, RunOutcome, TaskInfo } from '../lib/types';
+import type { ActivityEvent, AgentStep, FileEntry, FileStreamEvent, PreviewRuntimeError, Project, RunInfo, RunOutcome, TaskInfo } from '../lib/types';
 import { useApp } from './app';
 
 export type TabId = string; // "file:<path>" | "draft:<path>" | "review:<changesetId>" | "plan" | "commit:<sha>"
@@ -89,6 +89,10 @@ interface WorkspaceState {
   updateQueued: (id: string, patch: Partial<QueuedMessage>) => void;
   removeQueued: (ids: string[]) => void;
   onAgentSteered: (taskId: string, message: string) => void;
+  /** Runtime problems seen in the live preview (crashes, rejections, console errors, blank page). */
+  previewErrors: PreviewRuntimeError[];
+  /** Conversation the assistant panel shows; messages sent from elsewhere (e.g. "Fix it") go there. */
+  activeConversationId: string | null;
 
   open: (projectId: string) => Promise<void>;
   close: () => void;
@@ -168,6 +172,8 @@ const initial = {
   agentSteps: {} as Record<string, AgentStep[]>,
   thinking: {} as Record<string, ThinkingState>,
   queue: [] as QueuedMessage[],
+  previewErrors: [] as PreviewRuntimeError[],
+  activeConversationId: null as string | null,
 };
 
 export const useWorkspace = create<WorkspaceState>((set, get) => ({
@@ -202,7 +208,7 @@ export const useWorkspace = create<WorkspaceState>((set, get) => ({
     if (get().projectId === projectId) return;
     set({ ...initial, projectId });
     try {
-      const [project, files, activity, tasks, runs, active, url] = await Promise.all([
+      const [project, files, activity, tasks, runs, active, url, previewErrors] = await Promise.all([
         api.openProject(projectId),
         api.listFiles(projectId).catch(() => [] as FileEntry[]),
         api.listActivity(projectId),
@@ -210,6 +216,7 @@ export const useWorkspace = create<WorkspaceState>((set, get) => ({
         api.listRuns(projectId),
         api.activeRuns(projectId),
         api.previewStatus(projectId),
+        api.previewErrors(projectId).catch(() => [] as PreviewRuntimeError[]),
       ]);
       if (get().projectId !== projectId) return;
       // Rehydrate terminal history from persisted run tails (real output from previous runs).
@@ -236,6 +243,7 @@ export const useWorkspace = create<WorkspaceState>((set, get) => ({
         runs: runViews,
         runOrder: order,
         preview: url ? { status: 'ready', url, nonce: 0 } : { status: 'stopped', nonce: 0 },
+        previewErrors,
         tabs: showPlan ? ['plan'] : [],
         active: showPlan ? 'plan' : null,
         stage: showPlan && !planning && !!project.spec ? 'plan' : 'preview',
@@ -417,4 +425,21 @@ export async function runApp(projectId: string): Promise<void> {
     useWorkspace.getState().setPreview({ status: 'failed', error: errorMessage(e) });
     throw e;
   }
+}
+
+/**
+ * Send a message to Genius in the current conversation, as if typed in the chat (used by
+ * "Fix it" buttons outside the assistant panel). Goes through the normal agent and approvals.
+ */
+export async function askGenius(projectId: string, message: string): Promise<void> {
+  const ws = useWorkspace.getState();
+  let conversationId = ws.activeConversationId;
+  if (!conversationId) {
+    const list = await api.listConversations(projectId);
+    conversationId = list[0]?.id ?? (await api.createConversation(projectId, 'Project conversation')).id;
+  }
+  await api.startAgent(projectId, { conversationId, message, mode: 'build', attachmentIds: [], pinned: [] });
+  const cur = useWorkspace.getState();
+  if (cur.projectId === projectId) cur.set({ rightTab: 'assistant', historyVersion: cur.historyVersion + 1 });
+  void cur.refreshTasks();
 }

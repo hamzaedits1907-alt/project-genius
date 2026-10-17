@@ -1,6 +1,6 @@
 // Subscribes once to every backend channel and routes payloads into the stores.
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
-import type { ActivityEvent, AgentSteered, AgentStep, AiDelta, AiThinking, AuthStatus, FileStreamEvent, PreviewEvent, ProcessOutput, ProcessState } from '../lib/types';
+import type { ActivityEvent, AgentSteered, AgentStep, AiDelta, AiThinking, AuthStatus, FileStreamEvent, PreviewEvent, PreviewRuntimeError, ProcessOutput, ProcessState } from '../lib/types';
 import { api } from '../lib/api';
 import { noticeFor, notificationsEnabled, notifyIfAway, windowFocused } from '../lib/notify';
 import { useApp } from './app';
@@ -85,6 +85,9 @@ export async function subscribeAll(): Promise<UnlistenFn> {
     }),
     listen<AgentSteered>('genius://agent-steered', ({ payload }) => {
       if (payload.projectId === ws().projectId) ws().onAgentSteered(payload.taskId, payload.message);
+    }),
+    listen<{ projectId: string; errors: PreviewRuntimeError[] }>('genius://preview-errors', ({ payload }) => {
+      if (payload.projectId === ws().projectId) ws().set({ previewErrors: payload.errors });
     }),
   ]);
   return () => unlisteners.forEach((u) => u());
