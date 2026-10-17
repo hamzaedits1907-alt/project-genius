@@ -50,6 +50,14 @@ pub struct Settings {
     pub max_repair_attempts: u32,
     pub theme: String,
     pub onboarding_done: bool,
+    /// Interface density: "simple" (guided) or "advanced" (all tools visible).
+    pub ui_mode: String,
+    /// Check GitHub Releases for a newer version on startup.
+    pub auto_check_updates: bool,
+    /// Allow the assistant to use internet/web tools.
+    pub internet_access: bool,
+    /// Display name of the assistant.
+    pub assistant_name: String,
 }
 
 impl Default for Settings {
@@ -66,6 +74,10 @@ impl Default for Settings {
             max_repair_attempts: 3,
             theme: "dark".into(),
             onboarding_done: false,
+            ui_mode: "simple".into(),
+            auto_check_updates: true,
+            internet_access: true,
+            assistant_name: "Genius".into(),
         }
     }
 }
@@ -100,6 +112,13 @@ impl Settings {
         if !["dark", "light", "system"].contains(&self.theme.as_str()) {
             return Err(GeniusError::Validation("unknown theme".into()));
         }
+        if !["simple", "advanced"].contains(&self.ui_mode.as_str()) {
+            return Err(GeniusError::Validation("ui mode must be \"simple\" or \"advanced\"".into()));
+        }
+        let name_len = self.assistant_name.trim().chars().count();
+        if !(1..=40).contains(&name_len) {
+            return Err(GeniusError::Validation("assistant name must be 1 to 40 characters".into()));
+        }
         Ok(())
     }
 }
@@ -128,6 +147,28 @@ mod tests {
         assert!(s.save(&db).is_err());
         let s = Settings { max_tokens: 10, ..Default::default() };
         assert!(s.save(&db).is_err());
+        let s = Settings { ui_mode: "expert".into(), ..Default::default() };
+        assert!(s.save(&db).is_err());
+        let s = Settings { assistant_name: "   ".into(), ..Default::default() };
+        assert!(s.save(&db).is_err());
+        let s = Settings { assistant_name: "x".repeat(41), ..Default::default() };
+        assert!(s.save(&db).is_err());
+        let s = Settings { ui_mode: "advanced".into(), assistant_name: "Nova".into(), ..Default::default() };
+        assert!(s.save(&db).is_ok());
+    }
+
+    #[test]
+    fn new_fields_have_defaults() {
+        let s = Settings::default();
+        assert_eq!(s.ui_mode, "simple");
+        assert!(s.auto_check_updates);
+        assert!(s.internet_access);
+        assert_eq!(s.assistant_name, "Genius");
+        let v = serde_json::to_value(&s).unwrap();
+        assert_eq!(v["uiMode"], "simple");
+        assert_eq!(v["autoCheckUpdates"], true);
+        assert_eq!(v["internetAccess"], true);
+        assert_eq!(v["assistantName"], "Genius");
     }
 
     #[test]
@@ -137,5 +178,7 @@ mod tests {
         let s = Settings::load(&db).unwrap();
         assert_eq!(s.model.as_deref(), Some("x/y"));
         assert_eq!(s.max_tokens, 8192);
+        assert_eq!(s.ui_mode, "simple");
+        assert!(s.internet_access);
     }
 }

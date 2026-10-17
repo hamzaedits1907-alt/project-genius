@@ -56,6 +56,8 @@ interface WorkspaceState {
   picked: PickedElement | null;
   picking: boolean;
   rightTab: 'assistant' | 'preview';
+  /** Right-hand "stage" in simple mode. */
+  stage: 'preview' | 'plan' | 'code';
   /** Live agent tool calls by task id (real operations pushed by the backend). */
   agentSteps: Record<string, AgentStep[]>;
   onAgentStep: (step: AgentStep) => void;
@@ -81,6 +83,36 @@ interface WorkspaceState {
 }
 
 const MAX_LINES = 5000;
+const AUTO_BUILD_KEY = 'genius.autoBuild';
+
+function autoBuildList(): string[] {
+  try {
+    return JSON.parse(localStorage.getItem(AUTO_BUILD_KEY) ?? '[]') as string[];
+  } catch {
+    return [];
+  }
+}
+
+/** Remember that this project should be generated as soon as its plan is ready. */
+export function markAutoBuild(projectId: string) {
+  try {
+    localStorage.setItem(AUTO_BUILD_KEY, JSON.stringify([...autoBuildList().filter((x) => x !== projectId), projectId].slice(-20)));
+  } catch {
+    /* storage unavailable: the user can press Generate on the plan instead */
+  }
+}
+
+function takeAutoBuild(projectId: string | null): boolean {
+  if (!projectId) return false;
+  const list = autoBuildList();
+  if (!list.includes(projectId)) return false;
+  try {
+    localStorage.setItem(AUTO_BUILD_KEY, JSON.stringify(list.filter((x) => x !== projectId)));
+  } catch {
+    /* ignore */
+  }
+  return true;
+}
 
 const initial = {
   projectId: null,
@@ -104,6 +136,7 @@ const initial = {
   picked: null as PickedElement | null,
   picking: false,
   rightTab: 'assistant' as const,
+  stage: 'preview' as 'preview' | 'plan' | 'code',
   agentSteps: {} as Record<string, AgentStep[]>,
 };
 
@@ -145,6 +178,7 @@ export const useWorkspace = create<WorkspaceState>((set, get) => ({
         order.push(r.id);
       }
       const hasCode = files.some((f) => f.path === 'src/App.tsx');
+      const planning = tasks.some((t) => t.kind === 'plan' || t.kind === 'generate');
       const showPlan = !hasCode && (!!project.spec || project.status.stage === 'created' || tasks.some((t) => t.kind === 'plan'));
       set({
         project,
@@ -156,6 +190,7 @@ export const useWorkspace = create<WorkspaceState>((set, get) => ({
         preview: url ? { status: 'ready', url, nonce: 0 } : { status: 'stopped', nonce: 0 },
         tabs: showPlan ? ['plan'] : [],
         active: showPlan ? 'plan' : null,
+        stage: showPlan && !planning && !!project.spec ? 'plan' : 'preview',
       });
       if (hasCode) void get().openFile('src/App.tsx');
     } catch (e) {
@@ -248,7 +283,15 @@ export const useWorkspace = create<WorkspaceState>((set, get) => ({
     set({ activity: upsertEvent(s.activity, ev) });
     if (ev.kind === 'task') {
       void s.refreshTasks();
-      if (ev.detail.taskKind === 'plan' && ev.status === 'completed') get().openTab('plan');
+      if (ev.detail.taskKind === 'plan' && ev.status === 'completed') {
+        get().openTab('plan');
+        // Projects started from the Home prompt go straight from plan to code.
+        const pid = ev.projectId;
+        if (pid && takeAutoBuild(pid)) {
+          api.startGenerate(pid).catch((e) => useApp.getState().toast('bad', `Could not start building: ${errorMessage(e)}`));
+        } else set({ stage: 'plan' });
+      }
+      if (ev.detail.taskKind === 'generate' && ev.status === 'completed') set({ stage: 'preview' });
       if (ev.status !== 'running') {
         void s.refreshProject();
         set({ gitVersion: get().gitVersion + 1, historyVersion: get().historyVersion + 1 });

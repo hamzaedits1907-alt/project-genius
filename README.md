@@ -15,7 +15,16 @@
 - **Git & GitHub.** Status, diffs, staging, commits (secret-scanned), branches, fetch/pull/push (never forced), conflict resolution, and one-click *Publish to GitHub* with verified push.
 - **Secure by design.** Your NVIDIA key lives in the OS credential store and never reaches the UI, logs, projects, or the preview.
 
-## New in this release
+## New in 0.2
+
+- **Meet Genius.** An animated character who shows what it is doing (listening, thinking, working, happy, stuck), with a friendlier chat: Markdown answers, live narration, a progress checklist, and one-click answers when Genius asks you a question.
+- **Simple and Advanced modes.** Simple (default) is just the chat and your running app: type an idea on Home and Genius plans and builds it. Advanced keeps the full IDE (files, terminal, Git, history, memory, integrations). Switch any time from the top bar.
+- **Smarter agent.** Knows who and what it is (including the model it runs on), chats naturally, asks clarifying questions, builds whole multi-page websites in batches (`write_files`), keeps a visible todo list, and follows a built-in design guide.
+- **More agents.** New *designer* and *tester* subagents alongside architect, reviewer and UI.
+- **Internet access.** `web_search` and `fetch_url` tools for docs and inspiration (SSRF-protected, content treated as data; toggle in Settings → AI provider).
+- **In-app updates** from GitHub Releases (see below).
+
+## Earlier releases
 
 - **Talk to Genius about your project.** Every project has persistent conversations. Follow-ups ("add a sidebar", "the sidebar is broken on mobile — fix it") run a bounded agent that inspects the real code with tools, proposes a targeted diff, and reports exactly what it read, ran and has *not* verified.
 - **Your files as context.** Attach or import TXT/MD/CSV/JSON/code/PDF/DOCX/images/ZIP; import a ZIP as a new project with safe extraction.
@@ -55,6 +64,16 @@ npx tauri build --debug --no-bundle && python3 tests/ui/e2e_ui.py /tmp/shots   #
 ```
 
 Details in [docs/TESTING.md](docs/TESTING.md).
+
+## Updates & releases
+
+Genius checks [GitHub Releases](https://github.com/hamzaedits1907-alt/project-genius/releases) for a newer version when it starts (turn this off in **Settings** with *Check for updates automatically*). When an update is available it downloads the installer for your platform from GitHub, verifies its SHA-256 checksum when the release publishes one, and launches it: the Windows installer or macOS disk image opens and Genius closes; an AppImage is replaced in place and Genius restarts; a `.deb` opens in your software installer. Downloads are only accepted from GitHub hosts.
+
+To publish a release:
+
+1. Bump the version in `Cargo.toml` (workspace), `src-tauri/tauri.conf.json` and `package.json`.
+2. Commit, then tag and push: `git tag v0.2.0 && git push origin v0.2.0`.
+3. The [Release workflow](.github/workflows/release.yml) builds installers for Windows, macOS (Apple silicon and Intel) and Linux and creates the GitHub release with them attached. Installed copies pick it up on their next start.
 
 ## Layout
 

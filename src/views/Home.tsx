@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { Check, FolderOpen, KeyRound, Plus, Sparkles, Trash2, Wrench, X, FileArchive } from 'lucide-react';
+import { ArrowUp, Check, FolderOpen, KeyRound, Plus, SlidersHorizontal, Sparkles, Trash2, Wrench, X, FileArchive } from 'lucide-react';
 import { open as openDialog } from '@tauri-apps/plugin-dialog';
 import { Github } from '../components/icons';
 import { api, errorMessage } from '../lib/api';
@@ -7,6 +7,33 @@ import { timeAgo } from '../lib/logic';
 import type { Project, RepoInfo, ToolStatus } from '../lib/types';
 import { useApp } from '../store/app';
 import { Badge, Button, Callout, Empty, Modal, Spinner, StatusBadge } from '../components/ui';
+import { GeniusAvatar } from '../components/GeniusAvatar';
+import { markAutoBuild } from '../store/workspace';
+
+const IDEAS = [
+  { label: 'Portfolio website', text: 'A personal portfolio website with a bold hero, project gallery with filters, about section, testimonials and a contact form. Modern, elegant, responsive.' },
+  { label: 'Landing page', text: 'A landing page for a specialty coffee shop: hero with call to action, menu highlights, story section, opening hours, location and newsletter signup. Warm, inviting design.' },
+  { label: 'Task manager', text: 'A modern task manager with projects, a kanban board with drag and drop, search, due dates and a clean responsive interface. Data saved in the browser.' },
+  { label: 'Finance tracker', text: 'A personal finance tracker: add income and expenses, categories, monthly charts, and data saved in the browser.' },
+  { label: 'Recipe book', text: 'A recipe book where I can add recipes with ingredients and steps, tag them, and filter by tag. Beautiful food-magazine style.' },
+];
+
+/** A short project name from a description: "A landing page for a coffee shop" → "Coffee Shop Landing". */
+export function nameFromIdea(text: string): string {
+  const stop = new Set(['a', 'an', 'the', 'for', 'with', 'and', 'my', 'me', 'build', 'make', 'create', 'i', 'want', 'to', 'of', 'that', 'where', 'can', 'app', 'application', 'website', 'site', 'page', 'please', 'in', 'on', 'which', 'is', 'it']);
+  const words = text
+    .replace(/[^\p{L}\p{N}\s-]/gu, ' ')
+    .split(/\s+/)
+    .filter((w) => w && !stop.has(w.toLowerCase()))
+    .slice(0, 3);
+  const name = words.map((w) => w[0].toUpperCase() + w.slice(1).toLowerCase()).join(' ');
+  return name || 'My App';
+}
+
+function greeting(): string {
+  const h = new Date().getHours();
+  return h < 5 ? 'Up late?' : h < 12 ? 'Good morning!' : h < 18 ? 'Good afternoon!' : 'Good evening!';
+}
 
 function stageLabel(p: Project): { text: string; tone: 'ok' | 'warn' | 'accent' | 'idle' } {
   switch (p.status.stage) {
@@ -30,6 +57,8 @@ export default function Home() {
   const [tools, setTools] = useState<ToolStatus[] | null>(null);
   const [deleting, setDeleting] = useState<Project | null>(null);
   const [cloning, setCloning] = useState(false);
+  const [idea, setIdea] = useState('');
+  const [starting, setStarting] = useState(false);
 
   const load = () => api.listProjects().then(setProjects).catch((e) => toast('bad', errorMessage(e)));
   useEffect(() => {
@@ -61,6 +90,23 @@ export default function Home() {
     }
   };
 
+  const ready = !!keyStatus?.stored && !!settings?.model;
+  const buildIdea = async () => {
+    const text = idea.trim();
+    if (text.length < 10 || !ready) return;
+    setStarting(true);
+    try {
+      const p = await api.createProject(nameFromIdea(text), text);
+      markAutoBuild(p.id);
+      await api.startPlan(p.id, text, '');
+      navigate({ name: 'project', id: p.id });
+    } catch (e) {
+      toast('bad', errorMessage(e));
+    } finally {
+      setStarting(false);
+    }
+  };
+
   const missingTools = tools?.filter((t) => !t.found) ?? [];
   const setup = [
     { done: !!keyStatus?.stored, label: keyStatus?.stored ? 'NVIDIA API key saved' : 'Save your NVIDIA API key', action: () => navigate({ name: 'settings', tab: 'ai' }), icon: <KeyRound size={14} /> },
@@ -77,24 +123,56 @@ export default function Home() {
   return (
     <div className="page">
       <div className="page-inner">
-        <div className="hero">
-          <div>
-            <h1>What do you want to build?</h1>
-            <p className="lead">Describe an app. Genius plans it, writes real source code, runs it, and helps you fix and ship it.</p>
-            <div className="row" style={{ marginTop: 16 }}>
-              <Button variant="primary" size="lg" icon={<Plus size={16} />} onClick={() => navigate({ name: 'create' })}>
-                New application
-              </Button>
-              <Button size="lg" icon={<FolderOpen size={16} />} onClick={() => void importFolder()}>
-                Open folder
-              </Button>
-              <Button size="lg" icon={<FileArchive size={16} />} onClick={() => void importZip()}>
-                Import ZIP
-              </Button>
-              <Button size="lg" icon={<Github size={16} />} onClick={() => setCloning(true)}>
-                Clone from GitHub
-              </Button>
+        <div className="home-hero">
+          <GeniusAvatar size={96} mood={starting ? 'working' : idea.trim() ? 'listening' : 'idle'} />
+          <div className="home-greet">{greeting()} I'm Genius.</div>
+          <h1>What should we build today?</h1>
+          <div className="prompt-box">
+            <textarea
+              aria-label="Describe your app"
+              placeholder="Describe your app or website… e.g. “A portfolio site for a photographer with a dark, elegant look”"
+              value={idea}
+              rows={3}
+              onChange={(e) => setIdea(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' && !e.shiftKey) {
+                  e.preventDefault();
+                  void buildIdea();
+                }
+              }}
+              autoFocus
+            />
+            <div className="row prompt-tools">
+              <button className="btn ghost sm" onClick={() => navigate({ name: 'create' })} title="Name, tech and design preferences, and review the plan before code is written">
+                <SlidersHorizontal size={13} /> Detailed setup
+              </button>
+              <span className="spacer" />
+              <span className="faint tiny">{ready ? 'Genius plans it, then writes the code' : 'Finish setup below first'}</span>
+              <button className="send-btn lg" aria-label="Build it" title="Build it (Enter)" disabled={idea.trim().length < 10 || !ready || starting} onClick={() => void buildIdea()}>
+                {starting ? <span className="spinner" /> : <ArrowUp size={18} />}
+              </button>
             </div>
+          </div>
+          <div className="suggestions center-row">
+            {IDEAS.map((x) => (
+              <button key={x.label} onClick={() => setIdea(x.text)}>
+                {x.label}
+              </button>
+            ))}
+          </div>
+          <div className="row home-actions">
+            <Button variant="ghost" icon={<Plus size={15} />} onClick={() => navigate({ name: 'create' })}>
+              New application
+            </Button>
+            <Button variant="ghost" icon={<FolderOpen size={15} />} onClick={() => void importFolder()}>
+              Open folder
+            </Button>
+            <Button variant="ghost" icon={<FileArchive size={15} />} onClick={() => void importZip()}>
+              Import ZIP
+            </Button>
+            <Button variant="ghost" icon={<Github size={15} />} onClick={() => setCloning(true)}>
+              Clone from GitHub
+            </Button>
           </div>
         </div>
 

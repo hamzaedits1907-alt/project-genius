@@ -1,5 +1,5 @@
 import { Component, useEffect, type ErrorInfo, type ReactNode } from 'react';
-import { FolderKanban, Home as HomeIcon, Plus, Settings as SettingsIcon, Sparkles, X } from 'lucide-react';
+import { ArrowDownCircle, FolderKanban, Home as HomeIcon, Plus, Settings as SettingsIcon, X } from 'lucide-react';
 import { useApp } from './store/app';
 import { subscribeAll } from './store/events';
 import { useSubscription } from './lib/effects';
@@ -10,6 +10,8 @@ import CreateProject from './views/CreateProject';
 import SettingsView from './views/Settings';
 import Workspace from './views/workspace/Workspace';
 import ApprovalDialog from './views/ApprovalDialog';
+import UpdateDialog from './views/UpdateDialog';
+import { GeniusAvatar } from './components/GeniusAvatar';
 import { useWorkspace } from './store/workspace';
 
 class ErrorBoundary extends Component<{ children: ReactNode; view: string }, { error: Error | null; componentStack: string; logPath: string | null }> {
@@ -84,6 +86,10 @@ export default function App() {
   const approvals = useApp((s) => s.approvals);
   const openProjectId = useWorkspace((s) => s.projectId);
   const openProjectName = useWorkspace((s) => s.project?.name);
+  const update = useApp((s) => s.update);
+  const showUpdate = useApp((s) => s.showUpdate);
+  const setShowUpdate = useApp((s) => s.setShowUpdate);
+  const busy = useWorkspace((s) => s.tasks.some((t) => t.kind !== 'verify'));
 
   // Backend events: released even if the app unmounts before `listen` resolves (StrictMode
   // mounts twice in development; the old code leaked the first set and delivered every event twice).
@@ -111,9 +117,9 @@ export default function App() {
   return (
     <div className="shell">
       <nav className="rail" aria-label="Main navigation">
-        <div className="logo" aria-hidden>
-          <Sparkles size={17} />
-        </div>
+        <button className="logo" onClick={() => navigate({ name: 'home' })} title="Genius" aria-label="Genius home">
+          <GeniusAvatar size={34} mood={busy ? 'working' : 'idle'} />
+        </button>
         <button className={route.name === 'home' ? 'on' : ''} onClick={() => navigate({ name: 'home' })} title="Home" aria-label="Home">
           <HomeIcon size={19} />
         </button>
@@ -127,6 +133,12 @@ export default function App() {
           </button>
         )}
         <div className="spacer" />
+        {update?.available && (
+          <button className="update-dot" onClick={() => setShowUpdate(true)} title={`Update available: ${update.latestVersion}`} aria-label="Update available">
+            <ArrowDownCircle size={19} />
+            <span className="count ok" />
+          </button>
+        )}
         <button className={route.name === 'settings' ? 'on' : ''} onClick={() => navigate({ name: 'settings' })} title="Settings (Ctrl+,)" aria-label="Settings">
           <SettingsIcon size={19} />
         </button>
@@ -140,6 +152,7 @@ export default function App() {
         </ErrorBoundary>
       </main>
       {approvals.length > 0 && <ApprovalDialog request={approvals[0]} remaining={approvals.length - 1} />}
+      {showUpdate && <UpdateDialog onClose={() => setShowUpdate(false)} />}
       <Toasts />
     </div>
   );

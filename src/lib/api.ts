@@ -29,6 +29,12 @@ export const api = {
   detectTools: () => call<T.ToolStatus[]>('detect_tools'),
   appInfo: () => call<T.AppInfo>('app_info'),
 
+  // updates (GitHub Releases)
+  appVersion: () => call<string>('app_version'),
+  checkForUpdate: () => call<T.UpdateInfo>('check_for_update'),
+  /** Downloads and launches the installer; progress arrives on `genius://update-progress`. */
+  installUpdate: () => call<string>('install_update'),
+
   // projects
   listProjects: () => call<T.Project[]>('list_projects'),
   getProject: (projectId: string) => call<T.Project>('get_project', { projectId }),

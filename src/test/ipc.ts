@@ -15,6 +15,10 @@ export const settings: T.Settings = {
   maxRepairAttempts: 2,
   theme: 'dark',
   onboardingDone: true,
+  uiMode: 'advanced',
+  autoCheckUpdates: true,
+  internetAccess: true,
+  assistantName: 'Genius',
 };
 
 export const project: T.Project = {
@@ -55,6 +59,9 @@ export const defaults: Record<string, Handler> = {
   save_settings: (_c, a) => a.settings,
   key_status: () => ({ stored: false, hint: null, backend: 'memory', error: null }),
   app_info: () => ({ version: '0.1.0', dataDir: '/tmp/d', workspaceDir: '/tmp/ws', secretBackend: 'memory', platform: 'linux' }),
+  app_version: () => '0.2.0',
+  check_for_update: (): T.UpdateInfo => ({ currentVersion: '0.2.0', latestVersion: '0.2.0', available: false, notes: '', publishedAt: null, releaseUrl: null, asset: null, detail: "You're on the latest version (0.2.0)." }),
+  install_update: () => 'Genius is already up to date.',
   list_models: () => ({ models: [], fetchedAt: null, source: 'cache', stale: true, baseUrl: settings.baseUrl, probes: {} }),
   detect_tools: () => [],
   list_projects: () => [project],

@@ -1,6 +1,6 @@
 import { create } from 'zustand';
 import { api, errorMessage } from '../lib/api';
-import type { ApprovalRequest, AppInfo, KeyStatus, Settings } from '../lib/types';
+import type { ApprovalRequest, AppInfo, KeyStatus, Settings, UpdateInfo } from '../lib/types';
 
 export type Route =
   | { name: 'home' }
@@ -8,7 +8,7 @@ export type Route =
   | { name: 'settings'; tab?: SettingsTab }
   | { name: 'project'; id: string };
 
-export type SettingsTab = 'ai' | 'github' | 'integrations' | 'approvals' | 'workspace' | 'appearance';
+export type SettingsTab = 'ai' | 'github' | 'integrations' | 'approvals' | 'workspace' | 'appearance' | 'updates';
 
 export interface Toast {
   id: number;
@@ -24,6 +24,9 @@ interface AppState {
   approvals: ApprovalRequest[];
   toasts: Toast[];
   deviceCode: { code: string; url: string } | null;
+  /** Latest result of a GitHub Releases update check (null = not checked yet). */
+  update: UpdateInfo | null;
+  showUpdate: boolean;
   navigate: (r: Route) => void;
   toast: (tone: Toast['tone'], text: string) => void;
   dismissToast: (id: number) => void;
@@ -32,6 +35,10 @@ interface AppState {
   setKeyStatus: (k: KeyStatus) => void;
   refreshApprovals: () => Promise<void>;
   setDeviceCode: (c: AppState['deviceCode']) => void;
+  /** Simple mode hides the IDE; advanced shows files, terminal, git and every tool. */
+  setUiMode: (mode: Settings['uiMode']) => Promise<void>;
+  checkUpdate: (manual?: boolean) => Promise<UpdateInfo | null>;
+  setShowUpdate: (v: boolean) => void;
 }
 
 let toastId = 0;
@@ -44,6 +51,8 @@ export const useApp = create<AppState>((set, get) => ({
   approvals: [],
   toasts: [],
   deviceCode: null,
+  update: null,
+  showUpdate: false,
   navigate: (route) => set({ route }),
   toast: (tone, text) => {
     const id = ++toastId;
@@ -56,6 +65,7 @@ export const useApp = create<AppState>((set, get) => ({
       const [settings, keyStatus, appInfo] = await Promise.all([api.getSettings(), api.keyStatus(), api.appInfo()]);
       set({ settings, keyStatus, appInfo });
       applyTheme(settings.theme);
+      if (settings.autoCheckUpdates !== false) void get().checkUpdate(false);
     } catch (e) {
       get().toast('bad', `Could not load settings: ${errorMessage(e)}`);
     }
@@ -73,6 +83,28 @@ export const useApp = create<AppState>((set, get) => ({
     }
   },
   setDeviceCode: (deviceCode) => set({ deviceCode }),
+  setUiMode: async (uiMode) => {
+    const cur = get().settings;
+    if (!cur || cur.uiMode === uiMode) return;
+    set({ settings: { ...cur, uiMode } });
+    try {
+      set({ settings: await api.saveSettings({ ...cur, uiMode }) });
+    } catch (e) {
+      get().toast('bad', `Could not save the interface mode: ${errorMessage(e)}`);
+    }
+  },
+  checkUpdate: async (manual = false) => {
+    try {
+      const update = await api.checkForUpdate();
+      set({ update });
+      if (manual && !update.available) get().toast('ok', update.detail ?? `You're on the latest version (${update.currentVersion}).`);
+      return update;
+    } catch (e) {
+      if (manual) get().toast('bad', `Could not check for updates: ${errorMessage(e)}`);
+      return null;
+    }
+  },
+  setShowUpdate: (showUpdate) => set({ showUpdate }),
 }));
 
 export function applyTheme(theme: Settings['theme']) {

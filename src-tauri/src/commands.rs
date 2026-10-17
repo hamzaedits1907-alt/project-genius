@@ -21,7 +21,7 @@ use genius_core::workspace::{FileEntry, SearchHit};
 use genius_core::Result;
 use serde_json::{json, Value};
 use std::sync::Arc;
-use tauri::State;
+use tauri::{AppHandle, Emitter as _, State};
 use tokio_util::sync::CancellationToken;
 
 type G<'a> = State<'a, Arc<Genius>>;
@@ -652,4 +652,65 @@ pub async fn supabase_apply_migration(g: G<'_>, project_id: String, path: String
 #[tauri::command]
 pub async fn supabase_generate_types(g: G<'_>, project_id: String) -> Result<Value> {
     g.supabase_generate_types(&project_id).await
+}
+
+// ---------------------------------------------------------------- updates
+
+const UPDATE_PROGRESS_EVENT: &str = "genius://update-progress";
+
+fn current_version(app: &AppHandle) -> String {
+    app.package_info().version.to_string()
+}
+
+#[tauri::command]
+pub fn app_version(app: AppHandle) -> String {
+    current_version(&app)
+}
+
+#[tauri::command]
+pub async fn check_for_update(app: AppHandle) -> Result<genius_core::updater::UpdateInfo> {
+    genius_core::updater::check(&current_version(&app)).await
+}
+
+/// Re-check, download (reporting progress on `genius://update-progress`), verify and launch
+/// the installer. Quits or restarts the app afterwards when the platform requires it.
+#[tauri::command]
+pub async fn install_update(app: AppHandle) -> Result<String> {
+    use genius_core::updater::{self, PostInstall};
+    let info = updater::check(&current_version(&app)).await?;
+    if !info.available {
+        return Err(genius_core::GeniusError::Validation(
+            info.detail.unwrap_or_else(|| "Genius is already up to date.".into()),
+        ));
+    }
+    let asset = info.asset.ok_or_else(|| {
+        genius_core::GeniusError::Validation(
+            info.detail.unwrap_or_else(|| "This release has no installer for your platform.".into()),
+        )
+    })?;
+    let emitter = app.clone();
+    let outcome = updater::download_and_install(&asset, move |p| {
+        if let Err(e) = emitter.emit_to("main", UPDATE_PROGRESS_EVENT, &p) {
+            log::warn!("failed to emit update progress: {e}");
+        }
+    })
+    .await?;
+    match outcome.action {
+        PostInstall::Exit => {
+            let app = app.clone();
+            std::thread::spawn(move || {
+                std::thread::sleep(std::time::Duration::from_millis(800));
+                app.exit(0);
+            });
+        }
+        PostInstall::Restart => {
+            let app = app.clone();
+            std::thread::spawn(move || {
+                std::thread::sleep(std::time::Duration::from_millis(800));
+                app.restart();
+            });
+        }
+        PostInstall::Nothing => {}
+    }
+    Ok(outcome.message)
 }

@@ -119,6 +119,9 @@ fn main() {
         "list_conversations",
         "recent_ui_errors",
         "record_ui_error",
+        "app_version",
+        "check_for_update",
+        "install_update",
     ])))
     .expect("failed to run tauri-build");
 }

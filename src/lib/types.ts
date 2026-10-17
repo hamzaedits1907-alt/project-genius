@@ -14,6 +14,36 @@ export interface Settings {
   maxRepairAttempts: number;
   theme: 'dark' | 'light' | 'system';
   onboardingDone: boolean;
+  uiMode: 'simple' | 'advanced';
+  autoCheckUpdates: boolean;
+  internetAccess: boolean;
+  assistantName: string;
+}
+
+export interface UpdateAsset {
+  name: string;
+  size: number;
+  url: string;
+  sha256Url: string | null;
+}
+
+export interface UpdateInfo {
+  currentVersion: string;
+  latestVersion: string | null;
+  available: boolean;
+  notes: string;
+  publishedAt: string | null;
+  releaseUrl: string | null;
+  asset: UpdateAsset | null;
+  /** Human-readable status, e.g. "No releases have been published yet". */
+  detail: string | null;
+}
+
+/** Payload of the `genius://update-progress` event. */
+export interface UpdateProgress {
+  downloaded: number;
+  total: number | null;
+  stage: 'downloading' | 'verifying' | 'installing' | 'done';
 }
 
 export interface GeniusError {
@@ -424,7 +454,7 @@ export interface AgentStep {
   projectId: string;
   taskId: string;
   conversationId: string | null;
-  agent: 'main' | 'architect' | 'reviewer' | 'ui';
+  agent: 'main' | 'architect' | 'reviewer' | 'ui' | 'designer' | 'tester';
   seq: number;
   tool: string;
   args: Record<string, unknown>;

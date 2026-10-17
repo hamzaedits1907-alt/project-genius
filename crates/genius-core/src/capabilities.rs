@@ -127,7 +127,19 @@ impl Genius {
             caps.push(cap("checks", "Run builds and tests", "unverified", "tool detection not run in this quick report", ""));
         }
         caps.push(cap("shell", "Arbitrary shell commands", "unavailable", "deliberately not provided: only fixed, allowlisted operations run", ""));
-        caps.push(cap("web", "Browse the web", "unavailable", "Genius has no web-browsing tool; documentation must be imported as files", "import the documentation as a reference file"));
+        caps.push(if s.internet_access {
+            cap("web", "Search the web and read pages", "available", "internet access is on: the agent can use web_search (DuckDuckGo, no key) and fetch_url (public http/https pages only; local and private network addresses are blocked; pages are treated as untrusted data). Results depend on your network.", "")
+        } else {
+            cap("web", "Search the web and read pages", "unavailable", "internet access is turned off in Settings", "Settings → AI provider → turn on internet access")
+        });
+        caps.push(cap(
+            "subagents",
+            "Specialist subagents",
+            "available",
+            "the main agent can delegate bounded, read-only analyses to: architect (implementation plan), designer (visual design direction), reviewer (code review), ui (UI/accessibility audit), tester (test cases); multi-file proposals are reviewed by the reviewer automatically",
+            "",
+        ));
+        caps.push(cap("large_builds", "Build whole apps and multi-page websites", if project_id.is_some() { "available" } else { "unavailable" }, "the agent writes files in batches (write_files) and proposes them as one reviewable changeset; it can ask clarifying questions and shows a live progress checklist", if project_id.is_some() { "" } else { "open a project" }));
 
         let mut integrations = self.integration_statuses();
         if let Some(gh) = gh {
@@ -185,7 +197,8 @@ impl Genius {
             limitations: vec![
                 "one project type is fully supported (Vite + React + TypeScript web apps)".into(),
                 "model capabilities other than chat/streaming/image input are not assumed".into(),
-                "the agent cannot browse the web or run arbitrary commands".into(),
+                "the agent cannot run arbitrary commands; it can only use its listed tools".into(),
+                if s.internet_access { "web access is read-only search and page fetching (no logins, forms or JavaScript execution)".into() } else { "internet access is turned off, so the agent cannot search or browse the web".into() },
                 "live NVIDIA, GitHub and Supabase calls depend on your network and credentials".into(),
             ],
         })

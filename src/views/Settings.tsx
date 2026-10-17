@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { CheckCircle2, Copy, Plug, ExternalLink, FolderCog, KeyRound, Palette, RefreshCw, ShieldCheck, Sparkles, XCircle } from 'lucide-react';
+import { ArrowDownCircle, CheckCircle2, Copy, Globe, Plug, ExternalLink, FolderCog, KeyRound, Palette, RefreshCw, ShieldCheck, Sparkles, XCircle } from 'lucide-react';
 import { open as openDialog } from '@tauri-apps/plugin-dialog';
 import { openUrl } from '@tauri-apps/plugin-opener';
 import { Github } from '../components/icons';
@@ -8,6 +8,7 @@ import { timeAgo } from '../lib/logic';
 import type { AuthStatus, ModelList, Policy, Settings, ToolStatus } from '../lib/types';
 import { useApp, type SettingsTab } from '../store/app';
 import { Badge, Button, Callout, Field, Segmented, Spinner, Switch } from '../components/ui';
+import { GeniusAvatar } from '../components/GeniusAvatar';
 
 const TABS: { id: SettingsTab; label: string; icon: React.ReactNode }[] = [
   { id: 'ai', label: 'AI provider', icon: <Sparkles size={15} /> },
@@ -16,6 +17,7 @@ const TABS: { id: SettingsTab; label: string; icon: React.ReactNode }[] = [
   { id: 'approvals', label: 'Approvals', icon: <ShieldCheck size={15} /> },
   { id: 'workspace', label: 'Workspace & tools', icon: <FolderCog size={15} /> },
   { id: 'appearance', label: 'Appearance', icon: <Palette size={15} /> },
+  { id: 'updates', label: 'Updates & about', icon: <ArrowDownCircle size={15} /> },
 ];
 
 export default function SettingsView({ initialTab }: { initialTab?: SettingsTab }) {
@@ -44,6 +46,7 @@ export default function SettingsView({ initialTab }: { initialTab?: SettingsTab 
               {tab === 'approvals' && <ApprovalSettings />}
               {tab === 'workspace' && <WorkspaceSettings />}
               {tab === 'appearance' && <AppearanceSettings />}
+              {tab === 'updates' && <UpdateSettings />}
             </div>
           )}
         </div>
@@ -179,6 +182,8 @@ function AiSettings() {
           .
         </p>
       </div>
+
+      <InternetCard />
 
       <div className="card pad col" style={{ gap: 12 }}>
         <div className="row">
@@ -696,10 +701,108 @@ function AppearanceSettings() {
         </div>
         <Segmented label="Theme" value={settings.theme} onChange={(v) => void save({ ...settings, theme: v }, true)} options={[{ value: 'dark', label: 'Dark' }, { value: 'light', label: 'Light' }, { value: 'system', label: 'System' }]} />
       </div>
+      <div className="card pad row">
+        <div className="grow">
+          <div style={{ fontWeight: 600 }}>Interface</div>
+          <div className="muted small">Simple shows just the chat and your app. Advanced adds files, terminal, Git, history and every tool.</div>
+        </div>
+        <Segmented label="Interface" value={settings.uiMode} onChange={(v) => void save({ ...settings, uiMode: v }, true)} options={[{ value: 'simple', label: 'Simple' }, { value: 'advanced', label: 'Advanced' }]} />
+      </div>
+      <div className="card pad row">
+        <div className="grow">
+          <div style={{ fontWeight: 600 }}>Assistant name</div>
+          <div className="muted small">What the assistant is called in chats.</div>
+        </div>
+        <AssistantName />
+      </div>
       <div className="card pad col small muted" style={{ gap: 4 }}>
         <strong style={{ color: 'var(--text)' }}>Keyboard shortcuts</strong>
-        <span>Ctrl/⌘ + S — save file · Ctrl/⌘ + Enter — send request · Ctrl/⌘ + B — toggle sidebar · Ctrl/⌘ + J — toggle bottom panel</span>
+        <span>Ctrl/⌘ + S — save file · Enter — send message (Shift + Enter for a new line) · Ctrl/⌘ + B — toggle sidebar · Ctrl/⌘ + J — toggle bottom panel</span>
         <span>Ctrl/⌘ + , — settings · Ctrl/⌘ + Shift + N — new project · Ctrl/⌘ + P — quick open file</span>
+      </div>
+    </section>
+  );
+}
+
+function InternetCard() {
+  const settings = useApp((s) => s.settings)!;
+  const save = useSave();
+  return (
+    <div className="card pad row">
+      <Globe size={16} />
+      <div className="grow">
+        <div style={{ fontWeight: 600 }}>Internet access</div>
+        <div className="muted small">Lets Genius search the web and read public pages (docs, examples, design inspiration). Private and local network addresses are always blocked; web content is treated as data, never as instructions.</div>
+      </div>
+      <Switch label="Internet access" checked={settings.internetAccess} onChange={(v) => void save({ ...settings, internetAccess: v }, true)} />
+    </div>
+  );
+}
+
+function AssistantName() {
+  const settings = useApp((s) => s.settings)!;
+  const save = useSave();
+  const [name, setName] = useState(settings.assistantName || 'Genius');
+  return (
+    <input
+      className="input"
+      style={{ width: 180 }}
+      maxLength={40}
+      value={name}
+      aria-label="Assistant name"
+      onChange={(e) => setName(e.target.value)}
+      onBlur={() => name.trim() && name.trim() !== settings.assistantName && void save({ ...settings, assistantName: name.trim() }, true)}
+    />
+  );
+}
+
+// ------------------------------------------------------------------ updates
+
+function UpdateSettings() {
+  const settings = useApp((s) => s.settings)!;
+  const appInfo = useApp((s) => s.appInfo);
+  const update = useApp((s) => s.update);
+  const checkUpdate = useApp((s) => s.checkUpdate);
+  const setShowUpdate = useApp((s) => s.setShowUpdate);
+  const save = useSave();
+  const [checking, setChecking] = useState(false);
+  const check = async () => {
+    setChecking(true);
+    const u = await checkUpdate(true);
+    setChecking(false);
+    if (u?.available) setShowUpdate(true);
+  };
+  return (
+    <section>
+      <div className="card pad row" style={{ gap: 16 }}>
+        <GeniusAvatar size={64} mood="happy" />
+        <div className="grow">
+          <h2>Project Genius</h2>
+          <div className="muted small">Version {update?.currentVersion ?? appInfo?.version ?? '—'} · your AI software studio</div>
+        </div>
+      </div>
+      <div className="card pad col" style={{ gap: 12 }}>
+        <div className="row">
+          <ArrowDownCircle size={16} />
+          <strong className="grow">Updates</strong>
+          {update?.available ? <Badge tone="accent">{update.latestVersion} available</Badge> : update ? <Badge tone="ok">Up to date</Badge> : null}
+        </div>
+        <div className="muted small">New versions are published as GitHub releases. Genius downloads the installer for your system, verifies it, and restarts into the new version. Your projects and settings are kept.</div>
+        {update?.detail && !update.available && <div className="faint small">{update.detail}</div>}
+        <div className="row">
+          <Button icon={<RefreshCw size={14} />} loading={checking} onClick={() => void check()}>
+            Check for updates
+          </Button>
+          {update?.available && (
+            <Button variant="primary" onClick={() => setShowUpdate(true)}>
+              Install {update.latestVersion}
+            </Button>
+          )}
+        </div>
+        <div className="row" style={{ gap: 10 }}>
+          <Switch label="Check for updates on startup" checked={settings.autoCheckUpdates} onChange={(v) => void save({ ...settings, autoCheckUpdates: v }, true)} />
+          <span className="small">Check for updates when Genius starts</span>
+        </div>
       </div>
     </section>
   );

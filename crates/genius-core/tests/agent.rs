@@ -14,12 +14,17 @@ use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, Request, Respond, ResponseTemplate};
 
 fn sse(text: &str) -> ResponseTemplate {
+    // A reply starting with "@@LENGTH@@" simulates output cut off by the token limit.
+    let (text, finish) = match text.strip_prefix("@@LENGTH@@") {
+        Some(t) => (t, "length"),
+        None => (text, "stop"),
+    };
     let mut s = String::new();
     for chunk in text.chars().collect::<Vec<_>>().chunks(29) {
         let c: String = chunk.iter().collect();
         s.push_str(&format!("data: {}\n\n", json!({"choices":[{"index":0,"delta":{"content":c},"finish_reason":null}]})));
     }
-    s.push_str("data: {\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n");
+    s.push_str(&format!("data: {{\"choices\":[{{\"index\":0,\"delta\":{{}},\"finish_reason\":\"{finish}\"}}]}}\n\ndata: [DONE]\n\n"));
     ResponseTemplate::new(200).set_body_raw(s, "text/event-stream")
 }
 
@@ -225,8 +230,8 @@ async fn loop_is_bounded_and_plan_mode_never_proposes_files() {
     let conv = g.db.create_conversation(&pid, "New conversation").unwrap();
     let r = run(&g, &pid, &conv.id, "Explore forever", AgentMode::Build).await;
     assert_eq!(r["status"], json!(EventStatus::Completed));
-    assert_eq!(g.agent_steps(r["taskId"].as_str().unwrap()).unwrap().len(), 14, "bounded at 14 steps");
-    assert_eq!(*calls.lock().unwrap(), 15, "14 tool turns + 1 forced final");
+    assert_eq!(g.agent_steps(r["taskId"].as_str().unwrap()).unwrap().len(), 32, "bounded at 32 steps");
+    assert_eq!(*calls.lock().unwrap(), 33, "32 tool turns + 1 forced final");
 
     let r = run(&g, &pid, &conv.id, "Plan it", AgentMode::Plan).await;
     assert_eq!(r["detail"]["result"]["kind"], "plan");
@@ -257,4 +262,97 @@ async fn capabilities_reflect_runtime_state() {
     g.remove_api_key().unwrap();
     let rep = g.capability_report_quick(Some(&pid)).unwrap();
     assert_eq!(rep.capabilities.iter().find(|c| c.id == "provider_key").unwrap().status, "unavailable");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn large_builds_stage_files_track_progress_and_ask_questions() {
+    let (_tmp, g, pid, _log, _server) = setup(|system, last, _msgs| {
+        if system.contains("Reviewer subagent") {
+            return "<final>No blocking issues found.</final>".into();
+        }
+        if last.contains("USER MESSAGE:\nMake me a website") {
+            assert!(system.contains("You are Genius, the AI software engineer built into the Project Genius desktop app"), "identity");
+            assert!(system.contains("mock/coder-1"), "actual model id in the prompt");
+            assert!(system.contains("DESIGN GUIDE") && system.contains("<ask>"));
+            return "<final>Happy to! One quick question first.\n<ask>{\"question\": \"What is the website for?\", \"options\": [\"Portfolio\", \"Restaurant\", \"  \", \"Portfolio\"], \"multi\": false}</ask></final>".into();
+        }
+        if last.contains("USER MESSAGE:\nA restaurant") {
+            return "I'll lay out the plan first.\n<tool>{\"name\":\"todo\",\"args\":{\"items\":[{\"text\":\"Design tokens\",\"status\":\"active\"},{\"text\":\"Pages\",\"status\":\"pending\"}]}}</tool>".into();
+        }
+        if last.starts_with("<tool_result name=\"todo\"") {
+            // Staged file content mentions <tool> — only the trailing call counts.
+            return format!("Writing the tokens and the menu page.\n{}{}<tool>{{\"name\":\"write_files\",\"args\":{{}}}}</tool>", file_block("src/index.css", ":root { --accent: #c2410c; }\n"), file_block("src/pages/Menu.tsx", "// renders <tool> text safely\nexport default function Menu() {\n  return <h1>Menu</h1>;\n}\n"));
+        }
+        if last.starts_with("<tool_result name=\"write_files\"") {
+            assert!(last.contains("src/index.css (1 lines)") && last.contains("src/pages/Menu.tsx (4 lines)"), "{last}");
+            return "<tool>{\"name\":\"read_file\",\"args\":{\"path\":\"src/pages/Menu.tsx\"}}</tool>".into();
+        }
+        if last.starts_with("<tool_result name=\"read_file\"") {
+            assert!(last.contains("STAGED"), "staged files are readable: {last}");
+            return "<tool>{\"name\":\"web_search\",\"args\":{\"query\":\"restaurant website ideas\"}}</tool>".into();
+        }
+        if last.starts_with("<tool_result name=\"web_search\"") {
+            assert!(last.contains("Internet access is turned off"), "{last}");
+            return format!("<final>Built the restaurant site.\n{}<ask>{{\"question\": \"Add online booking next?\", \"options\": [\"Yes\", \"No\"]}}</ask></final>", file_block("src/index.css", ":root { --accent: #b45309; }\n"));
+        }
+        panic!("unexpected turn: {last}");
+    })
+    .await;
+    let mut s = g.settings().unwrap();
+    s.internet_access = false;
+    g.save_settings(&s).unwrap();
+    let conv = g.db.create_conversation(&pid, "New conversation").unwrap();
+
+    // 1. Ambiguous request → structured question, no tools, no changes.
+    let r = run(&g, &pid, &conv.id, "Make me a website", AgentMode::Build).await;
+    assert_eq!(r["detail"]["result"]["kind"], "question", "{r}");
+    let msgs = g.db.list_conversation_messages(&conv.id, 10).unwrap();
+    assert_eq!(msgs[1].kind, "question");
+    assert_eq!(msgs[1].meta["ask"], json!({ "question": "What is the website for?", "options": ["Portfolio", "Restaurant"], "multi": false }));
+    assert_eq!(msgs[1].content, "Happy to! One quick question first.");
+
+    // 2. Staged batch + final files → one changeset (final wins), todo + narration recorded.
+    let r = run(&g, &pid, &conv.id, "A restaurant", AgentMode::Build).await;
+    assert_eq!(r["detail"]["result"]["kind"], "proposal", "{r}");
+    let (_, files) = g.changeset(r["detail"]["result"]["changesetId"].as_str().unwrap()).unwrap();
+    let mut paths: Vec<&str> = files.iter().map(|f| f.path.as_str()).collect();
+    paths.sort();
+    assert_eq!(paths, vec!["src/index.css", "src/pages/Menu.tsx"]);
+    assert!(files.iter().find(|f| f.path == "src/index.css").unwrap().after.as_deref().unwrap().contains("#b45309"), "final answer wins over staged");
+    let steps = g.agent_steps(r["taskId"].as_str().unwrap()).unwrap();
+    let main: Vec<(&str, bool)> = steps.iter().filter(|s| s.agent == "main").map(|s| (s.tool.as_str(), s.ok)).collect();
+    assert_eq!(main, vec![("todo", true), ("write_files", true), ("read_file", true), ("web_search", false)]);
+    assert_eq!(steps[0].args["items"][0]["text"], "Design tokens");
+    assert_eq!(steps[0].result["note"], "I'll lay out the plan first.");
+    assert_eq!(steps[1].result["note"], "Writing the tokens and the menu page.");
+    let msgs = g.db.list_conversation_messages(&conv.id, 10).unwrap();
+    assert_eq!(msgs[3].kind, "proposal");
+    assert_eq!(msgs[3].meta["ask"]["question"], "Add online booking next?");
+    assert!(!msgs[3].content.contains("<ask>"));
+    assert!(!g.workspace(&pid).unwrap().exists("src/pages/Menu.tsx"), "nothing written before review");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn output_cut_off_mid_file_is_staged_and_continued() {
+    let (_tmp, g, pid, _log, _server) = setup(|system, last, _msgs| {
+        if system.contains("Reviewer subagent") {
+            return "<final>No blocking issues found.</final>".into();
+        }
+        if last.contains("USER MESSAGE:\nBuild the landing page") {
+            return format!("@@LENGTH@@<final>Here is the site.\n{}<<<FILE: src/Hero.tsx>>>\nexport default function Hero() {{\n  return <se", file_block("src/tokens.css", ":root { --space: 8px; }\n"));
+        }
+        if last.contains("cut off by the length limit") {
+            assert!(last.contains("src/tokens.css") && last.contains("must be written again in full: src/Hero.tsx"), "{last}");
+            return format!("<final>Landing page ready.\n{}</final>", file_block("src/Hero.tsx", "export default function Hero() {\n  return <section>Hi</section>;\n}\n"));
+        }
+        panic!("unexpected turn: {last}");
+    })
+    .await;
+    let conv = g.db.create_conversation(&pid, "New conversation").unwrap();
+    let r = run(&g, &pid, &conv.id, "Build the landing page", AgentMode::Build).await;
+    assert_eq!(r["detail"]["result"]["kind"], "proposal", "{r}");
+    let (_, files) = g.changeset(r["detail"]["result"]["changesetId"].as_str().unwrap()).unwrap();
+    let mut paths: Vec<&str> = files.iter().map(|f| f.path.as_str()).collect();
+    paths.sort();
+    assert_eq!(paths, vec!["src/Hero.tsx", "src/tokens.css"], "complete file from the cut-off turn is kept");
 }

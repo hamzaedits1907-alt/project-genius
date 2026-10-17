@@ -139,6 +139,9 @@
     "allow-supabase-propose-migration",
     "allow-supabase-migrations",
     "allow-supabase-apply-migration",
-    "allow-supabase-generate-types"
+    "allow-supabase-generate-types",
+    "allow-app-version",
+    "allow-check-for-update",
+    "allow-install-update"
   ]
 }

@@ -28,9 +28,11 @@ pub mod settings;
 pub mod spec;
 pub mod supabase;
 pub mod uilog;
+pub mod updater;
 pub mod project_context;
 pub mod prompts;
 pub mod vcs;
+pub mod web;
 pub mod workspace;
 
 pub use error::{GeniusError, Result};

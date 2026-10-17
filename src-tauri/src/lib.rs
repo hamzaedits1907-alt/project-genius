@@ -184,6 +184,9 @@ pub fn run() {
             commands::list_conversations,
             commands::recent_ui_errors,
             commands::record_ui_error,
+            commands::app_version,
+            commands::check_for_update,
+            commands::install_update,
         ])
         .build(tauri::generate_context!())
         .expect("error while building Genius");
