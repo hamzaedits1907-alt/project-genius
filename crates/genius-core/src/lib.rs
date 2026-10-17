@@ -17,6 +17,7 @@ pub mod events;
 pub mod export;
 pub mod git;
 pub mod github;
+pub mod hookshape;
 pub mod inspector;
 pub mod integrations;
 pub mod lifecycle;

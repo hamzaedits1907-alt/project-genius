@@ -244,8 +244,67 @@ pub fn check(ws: &Workspace, changes: &[FileChange]) -> Result<ProposalCheck> {
             if files.len() == 1 { "s" } else { "" }
         ));
     }
+    // ---- hook contracts: callers must destructure a hook the way it returns
+    if changes.iter().any(|c| is_source(&c.path)) {
+        check_hook_contracts(&all_paths, &after, &content_after, &mut out);
+    }
     out.blockers.dedup();
     Ok(out)
+}
+
+/// Compare every hook call site's destructuring with the hook's return shape (project hooks
+/// and well-known library hooks). Mismatches touching the proposal block it; mismatches that
+/// already existed elsewhere are warnings so unrelated changes are not held hostage.
+fn check_hook_contracts(all_paths: &BTreeSet<String>, after: &BTreeMap<String, Option<String>>, content_after: &dyn Fn(&str) -> Option<String>, out: &mut ProposalCheck) {
+    use crate::hookshape::{destructuring_calls, hook_definitions, imported_bindings, incompatible, known_shape, mismatch_message, Shape};
+    let mut defs_cache: BTreeMap<String, BTreeMap<String, Shape>> = BTreeMap::new();
+    let mut defs_of = |path: &str| -> BTreeMap<String, Shape> {
+        defs_cache.entry(path.to_string()).or_insert_with(|| content_after(path).filter(|t| t.len() <= 300_000).map(|t| hook_definitions(&t)).unwrap_or_default()).clone()
+    };
+    for file in all_paths.iter().filter(|p| is_source(p)) {
+        let Some(text) = content_after(file) else { continue };
+        if text.len() > 300_000 || !text.contains("use") {
+            continue;
+        }
+        // (local name, shape, origin description, defining file if local)
+        let mut bindings: Vec<(String, Shape, String, Option<String>)> = Vec::new();
+        for (name, shape) in defs_of(file) {
+            if name != "default" {
+                bindings.push((name, shape, "this file".into(), Some(file.clone())));
+            }
+        }
+        for (local, spec, imported) in imported_bindings(&text) {
+            if !(imported.starts_with("use") || imported == "default") {
+                continue;
+            }
+            if spec.starts_with('.') {
+                let Some(target) = join_rel(file, spec.split('?').next().unwrap_or(&spec)) else { continue };
+                let Some(def_file) = RESOLVE_EXT.iter().map(|e| format!("{target}{e}")).find(|p| all_paths.contains(p) && is_source(p)) else { continue };
+                if let Some(shape) = defs_of(&def_file).get(&imported).copied() {
+                    bindings.push((local, shape, def_file.clone(), Some(def_file)));
+                }
+            } else if let Some(pkg) = package_of(&spec) {
+                if let Some(shape) = known_shape(&pkg, &imported) {
+                    bindings.push((local, shape, format!("'{pkg}'"), None));
+                }
+            }
+        }
+        for (local, shape, origin, def_file) in bindings {
+            for (offset, destructured) in destructuring_calls(&text, &local) {
+                if !incompatible(shape, destructured) {
+                    continue;
+                }
+                let line = text[..offset].matches('\n').count() + 1;
+                let msg = mismatch_message(file, &local, destructured, shape, &origin, line);
+                let involved = after.contains_key(file) || def_file.as_ref().is_some_and(|d| after.contains_key(d));
+                if involved {
+                    out.blockers.push(msg);
+                } else {
+                    out.warnings.push(msg);
+                }
+            }
+        }
+    }
 }
 
 /// Problems with a proposed package.json (each a user-readable sentence), or the parsed value
@@ -324,6 +383,63 @@ mod tests {
         ws.write_text("src/index.css", "body{}\n").unwrap();
         ws.write_text("src/App.tsx", "import { useState } from 'react';\nexport default function App() { return null; }\n").unwrap();
         (d, ws)
+    }
+
+    // Regression: generated app crashed with "useDrag is not a function or its return value
+    // is not iterable" — the hook returned an object, the caller destructured an array.
+    const USE_DRAG_OBJECT: &str = "import { useRef, useState } from 'react';\nexport function useDrag(id: string) {\n  const ref = useRef<HTMLDivElement>(null);\n  const [isDragging, setDragging] = useState(false);\n  const onPointerDown = () => { setDragging(true); return [id]; };\n  return { ref, isDragging, onPointerDown };\n}\n";
+    const CARD_ARRAY: &str = "import { useDrag } from '../hooks/useDrag';\nexport function Card({ id }: { id: string }) {\n  const [isDragging, ref] = useDrag(id);\n  return <div ref={ref}>{isDragging ? 'moving' : id}</div>;\n}\n";
+    const CARD_OBJECT: &str = "import { useDrag } from '../hooks/useDrag';\nexport function Card({ id }: { id: string }) {\n  const { ref, isDragging, onPointerDown } = useDrag(id);\n  return <div ref={ref} onPointerDown={onPointerDown}>{isDragging ? 'moving' : id}</div>;\n}\n";
+
+    #[test]
+    fn blocks_hook_returning_object_destructured_as_array() {
+        let (_d, ws) = ws();
+        let changes = vec![change(&ws, "src/hooks/useDrag.ts", Some(USE_DRAG_OBJECT)), change(&ws, "src/components/Card.tsx", Some(CARD_ARRAY))];
+        let c = check(&ws, &changes).unwrap();
+        assert!(!c.ok(), "{c:?}");
+        let msg = c.blockers.iter().find(|b| b.contains("useDrag")).expect("hook contract blocker");
+        assert!(msg.contains("src/components/Card.tsx:3"), "{msg}");
+        assert!(msg.contains("as an array") && msg.contains("returns an object") && msg.contains("src/hooks/useDrag.ts"), "{msg}");
+    }
+
+    #[test]
+    fn accepts_matching_destructuring() {
+        let (_d, ws) = ws();
+        let changes = vec![change(&ws, "src/hooks/useDrag.ts", Some(USE_DRAG_OBJECT)), change(&ws, "src/components/Card.tsx", Some(CARD_OBJECT))];
+        let c = check(&ws, &changes).unwrap();
+        assert!(c.ok(), "{:?}", c.blockers);
+    }
+
+    #[test]
+    fn changing_a_hook_shape_breaks_existing_callers() {
+        let (_d, ws) = ws();
+        ws.write_text("src/hooks/useDrag.ts", "export function useDrag(id: string) { return [false, id] as const; }\n").unwrap();
+        ws.write_text("src/components/Card.tsx", CARD_ARRAY).unwrap();
+        // the AI rewrites only the hook to return an object; the untouched caller would crash
+        let c = check(&ws, &[change(&ws, "src/hooks/useDrag.ts", Some(USE_DRAG_OBJECT))]).unwrap();
+        assert!(c.blockers.iter().any(|b| b.contains("Card.tsx") && b.contains("useDrag")), "{c:?}");
+    }
+
+    #[test]
+    fn library_hook_shapes_are_enforced() {
+        let (_d, ws) = ws();
+        let pkg = r#"{"name":"x","scripts":{"dev":"vite","build":"tsc --noEmit && vite build"},"dependencies":{"react":"^19.0.0","react-dom":"^19.0.0","@use-gesture/react":"^10.3.0","react-dnd":"^16.0.1"}}"#;
+        let gesture = "import { useDrag } from '@use-gesture/react';\nexport function A() {\n  const [x] = useDrag(() => {});\n  return null;\n}\n";
+        let c = check(&ws, &[change(&ws, "package.json", Some(pkg)), change(&ws, "src/A.tsx", Some(gesture))]).unwrap();
+        assert!(c.blockers.iter().any(|b| b.contains("'@use-gesture/react'") && b.contains("returns a function")), "{c:?}");
+        let dnd = "import { useDrag } from 'react-dnd';\nexport function A() {\n  const [{ isDragging }, drag] = useDrag(() => ({ type: 'card' }));\n  return null;\n}\n";
+        let c = check(&ws, &[change(&ws, "package.json", Some(pkg)), change(&ws, "src/A.tsx", Some(dnd))]).unwrap();
+        assert!(c.ok(), "react-dnd useDrag is an array: {:?}", c.blockers);
+    }
+
+    #[test]
+    fn preexisting_unrelated_mismatch_is_only_a_warning() {
+        let (_d, ws) = ws();
+        ws.write_text("src/hooks/useDrag.ts", USE_DRAG_OBJECT).unwrap();
+        ws.write_text("src/components/Card.tsx", CARD_ARRAY).unwrap();
+        let c = check(&ws, &[change(&ws, "src/Other.tsx", Some("export const x = 1;\n"))]).unwrap();
+        assert!(c.ok(), "{:?}", c.blockers);
+        assert!(c.warnings.iter().any(|w| w.contains("useDrag")), "{c:?}");
     }
 
     fn change(ws: &Workspace, path: &str, after: Option<&str>) -> FileChange {

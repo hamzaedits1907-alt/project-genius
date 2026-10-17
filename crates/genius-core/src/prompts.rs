@@ -21,6 +21,7 @@ const STACK: &str = r#"TARGET STACK: Vite 7 + React 19 + TypeScript 5 (strict) s
 The project template already contains: package.json (scripts dev/build/typecheck/test/preview), index.html, tsconfig.json, vite.config.ts, src/main.tsx (renders the default export of ./App and imports ./index.css), src/index.css, .gitignore.
 CODE RULES:
 - src/App.tsx must default-export the root component `App`.
+- Custom hooks: give every custom hook an explicit TypeScript return type, and destructure its result exactly as declared (object → `const { a } = useX()`, tuple → `const [a, b] = useX()`). Library hooks: react-dnd `useDrag`/`useDrop` return arrays, @use-gesture/react `useDrag` returns a bind function, @dnd-kit `useDraggable`/`useDroppable`/`useSortable` return objects.
 - Plain CSS files (imported from components) for styling; modern, responsive, accessible UI (semantic HTML, labels, focus states, sufficient contrast).
 - No backend server: persist data with localStorage when persistence is needed.
 - Only import packages listed in package.json dependencies. If a new package is truly needed, output the full updated package.json keeping every existing script EXACTLY unchanged, and only add well-known, actively maintained npm packages.
