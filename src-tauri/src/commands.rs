@@ -14,6 +14,7 @@ use genius_core::github::{AuthStatus, RepoInfo};
 use genius_core::nvidia::ProbeResult;
 use genius_core::pages::DeployStatus;
 use genius_core::process::{Operation, RunInfo, ToolStatus};
+use genius_core::inspection::InspectionReport;
 use genius_core::runtime_errors::PreviewRuntimeError;
 use genius_core::secretscan::SecretFinding;
 use genius_core::settings::Settings;
@@ -326,6 +327,12 @@ pub fn preview_errors(g: G, project_id: String) -> Vec<PreviewRuntimeError> {
 #[tauri::command]
 pub fn clear_preview_errors(g: G, project_id: String) {
     g.clear_preview_errors(&project_id)
+}
+
+/// The window's answer to a `genius://inspect-request`: the combined report, or why it failed.
+#[tauri::command]
+pub fn report_preview_inspection(g: G, request_id: String, report: Option<InspectionReport>, error: Option<String>) -> Result<()> {
+    g.report_preview_inspection(&request_id, report, error)
 }
 
 // ---------------------------------------------------------------- activity, export, readiness

@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-report-preview-inspection"
+description = "Enables the report_preview_inspection command without any pre-configured scope."
+commands.allow = ["report_preview_inspection"]
+
+[[permission]]
+identifier = "deny-report-preview-inspection"
+description = "Denies the report_preview_inspection command without any pre-configured scope."
+commands.deny = ["report_preview_inspection"]

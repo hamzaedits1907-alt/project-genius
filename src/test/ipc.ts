@@ -86,6 +86,7 @@ export const defaults: Record<string, Handler> = {
   preview_errors: () => [],
   report_preview_errors: (_c, a) => a.errors,
   clear_preview_errors: () => null,
+  report_preview_inspection: () => null,
   deploy_status: () => null,
   deploy_pages: () => ({ id: 't-deploy', projectId: 'p1', kind: 'deploy', title: 'Deploy website to GitHub Pages', startedAt: '2026-10-01T00:00:00Z' }),
   needs_install: () => false,

@@ -79,6 +79,7 @@
     "allow-report-preview-errors",
     "allow-preview-errors",
     "allow-clear-preview-errors",
+    "allow-report-preview-inspection",
     "allow-list-activity",
     "allow-export-project",
     "allow-readiness",

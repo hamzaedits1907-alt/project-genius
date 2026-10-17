@@ -93,6 +93,8 @@ describe('injected preview script', () => {
     expect(posted).toHaveLength(0);
     await vi.advanceTimersByTimeAsync(300);
     expect(posted).toHaveLength(1);
+    // totals since load, read by the page inspector
+    expect((window as unknown as { __geniusCounts: unknown }).__geniusCounts).toEqual({ errors: 6, warnings: 0 });
     const [e1, c1, r1, res] = errs();
     expect(e1).toMatchObject({ kind: 'error', message: "TypeError: Cannot read properties of undefined (reading 'map')", source: 'http://127.0.0.1:5173/src/components/WidgetGrid.tsx?t=1', line: 42, column: 13, count: 3, page: '/' });
     expect(e1.stack).toContain('WidgetGrid');

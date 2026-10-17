@@ -1,7 +1,8 @@
 // Subscribes once to every backend channel and routes payloads into the stores.
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
-import type { ActivityEvent, AgentSteered, AgentStep, AiDelta, AiThinking, AuthStatus, FileStreamEvent, PreviewEvent, PreviewRuntimeError, ProcessOutput, ProcessState } from '../lib/types';
+import type { ActivityEvent, AgentSteered, AgentStep, AiDelta, AiThinking, AuthStatus, FileStreamEvent, InspectRequest, PreviewEvent, PreviewRuntimeError, ProcessOutput, ProcessState } from '../lib/types';
 import { api } from '../lib/api';
+import { handleInspectRequest } from '../lib/inspection';
 import { noticeFor, notificationsEnabled, notifyIfAway, windowFocused } from '../lib/notify';
 import { useApp } from './app';
 import { useWorkspace } from './workspace';
@@ -88,6 +89,11 @@ export async function subscribeAll(): Promise<UnlistenFn> {
     }),
     listen<{ projectId: string; errors: PreviewRuntimeError[] }>('genius://preview-errors', ({ payload }) => {
       if (payload.projectId === ws().projectId) ws().set({ previewErrors: payload.errors });
+    }),
+    // Genius asks to look at the running app: inspect the preview and answer (always answers,
+    // with an error when the preview is not shown, so the backend never waits for nothing).
+    listen<InspectRequest>('genius://inspect-request', ({ payload }) => {
+      void handleInspectRequest(payload);
     }),
   ]);
   return () => unlisteners.forEach((u) => u());

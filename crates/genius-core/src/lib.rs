@@ -18,6 +18,7 @@ pub mod events;
 pub mod export;
 pub mod git;
 pub mod github;
+pub mod inspection;
 pub mod inspector;
 pub mod integrations;
 pub mod nvidia;

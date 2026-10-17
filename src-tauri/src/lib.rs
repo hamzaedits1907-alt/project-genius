@@ -123,6 +123,7 @@ pub fn run() {
             commands::report_preview_errors,
             commands::preview_errors,
             commands::clear_preview_errors,
+            commands::report_preview_inspection,
             commands::list_activity,
             commands::export_project,
             commands::readiness,
