@@ -19,6 +19,9 @@ export const settings: T.Settings = {
   autoCheckUpdates: true,
   internetAccess: true,
   assistantName: 'Genius',
+  modelMode: 'manual',
+  effort: 'max',
+  thinking: true,
 };
 
 export const project: T.Project = {
@@ -91,6 +94,22 @@ export const defaults: Record<string, Handler> = {
   conversation_messages: () => messages,
   start_agent: (_c, a) => ({ id: 't1', projectId: 'p1', kind: 'agent', title: `Genius: ${(a.request as { message: string }).message}`, startedAt: '2026-10-01T00:00:00Z' }),
   agent_steps: () => [],
+  list_commands: (): T.SlashCommand[] => [
+    { name: 'review', description: 'Review code for bugs and risks', args: '<file>', kind: 'prompt' },
+    { name: 'explain', description: 'Explain how something works', args: '<topic>', kind: 'prompt' },
+    { name: 'clear', description: 'Start a new conversation', kind: 'action' },
+    { name: 'plan', description: 'Switch to Plan-only mode', kind: 'action' },
+    { name: 'build', description: 'Switch to Build mode', kind: 'action' },
+    { name: 'effort', description: 'Set how hard Genius works', args: '<fast|balanced|max>', kind: 'action' },
+    { name: 'autopilot', description: 'Turn Autopilot on or off', args: '<on|off>', kind: 'action' },
+    { name: 'undo', description: 'Undo the last turn and its file changes', kind: 'action' },
+    { name: 'compact', description: 'Summarize the conversation to free up context', kind: 'action' },
+    { name: 'model', description: 'Choose the AI model', kind: 'action' },
+    { name: 'help', description: 'Show all commands', kind: 'action' },
+  ],
+  steer_agent: () => null,
+  rewind_conversation: (): T.RewindResult => ({ removedMessages: 2, revertedChangesets: 1 }),
+  compact_conversation: () => null,
   cancel_task: () => null,
   list_memories: () => [{ id: 'm1', projectId: 'p1', kind: 'decision', content: 'Use CSS modules', source: 'agent', evidence: 'task x', createdAt: '2026-10-01T00:00:00Z', updatedAt: '2026-10-01T00:00:00Z' }],
   list_attachments: () => [],

@@ -1,24 +1,21 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent } from 'react';
 import { open as openDialog } from '@tauri-apps/plugin-dialog';
-import { ArrowUp, Check, ChevronDown, ChevronRight, Circle, CircleDot, Crosshair, FileDiff, FileText, Globe, ImageIcon, Info, MessageSquarePlus, Paperclip, ShieldCheck, Square, Trash2, X } from 'lucide-react';
+import { ArrowUp, AtSign, Crosshair, FileText, Globe, ImageIcon, Info, MessageSquarePlus, Paperclip, ShieldCheck, Slash, Square, Trash2, X } from 'lucide-react';
 import { api, errorMessage } from '../../lib/api';
-import { bytes, clockTime } from '../../lib/logic';
-import { AGENTS, askOf, fileToBase64, latestNote, latestTodo, reportSummary, stepLabel, type Ask } from '../../lib/agent';
-import type { AgentMode, AgentReport, AgentStep, Attachment, Changeset, Conversation, MessageRow, TaskInfo } from '../../lib/types';
+import { bytes } from '../../lib/logic';
+import { fileToBase64 } from '../../lib/agent';
+import type { AgentMode, Attachment, Conversation, Effort, FileEntry, MessageRow, RewindResult, SlashCommand } from '../../lib/types';
 import { useApp } from '../../store/app';
 import { describePicked, useWorkspace } from '../../store/workspace';
-import { Badge, Button, Segmented } from '../../components/ui';
+import { Button, Segmented } from '../../components/ui';
 import { GeniusAvatar, moodFor } from '../../components/GeniusAvatar';
-import { Markdown } from '../../components/Markdown';
 import CapabilitiesDialog from './CapabilitiesDialog';
-
-const KIND_LABEL: Record<string, { label: string; tone: 'ok' | 'bad' | 'warn' | 'accent' | 'idle' }> = {
-  answer: { label: 'Answer', tone: 'idle' },
-  plan: { label: 'Plan / suggestion', tone: 'accent' },
-  question: { label: 'Question', tone: 'accent' },
-  proposal: { label: 'Proposed changes', tone: 'warn' },
-  error: { label: 'Stopped with an error', tone: 'bad' },
-};
+import { ACTION_NAMES, EFFORTS, filterCommands, filterFiles, isEffort, loadAutopilot, mentionQuery, parseCommand, saveAutopilot, slashQuery } from './assistant/commands';
+import { useCommands } from './assistant/useCommands';
+import { SuggestPopup, type SuggestItem } from './assistant/SuggestPopup';
+import { Message, changedFiles, type MessageActions } from './assistant/Message';
+import { TaskCard } from './assistant/TaskCard';
+import { AutopilotToggle, ContextMeter, EffortSelect, HelpPanel, QueuedBubble } from './assistant/ComposerExtras';
 
 /** Tasks shown live in the conversation. */
 const CHAT_TASKS = ['agent', 'change', 'diagnose', 'verify', 'plan', 'generate'];
@@ -29,35 +26,48 @@ function suggestions(hasCode: boolean): string[] {
     : ['Build me a portfolio website', 'What can you do?', 'Plan a landing page for a coffee shop'];
 }
 
+const queueId = () => `q-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+
 /** A persistent, per-project conversation with the Genius agent. */
 export default function AssistantPanel({ variant = 'advanced' }: { variant?: 'simple' | 'advanced' }) {
   const project = useWorkspace((s) => s.project);
   const tasks = useWorkspace((s) => s.tasks);
   const active = useWorkspace((s) => s.active);
   const picked = useWorkspace((s) => s.picked);
+  const files = useWorkspace((s) => s.files);
+  const queue = useWorkspace((s) => s.queue);
   const historyVersion = useWorkspace((s) => s.historyVersion);
-  const hasCode = useWorkspace((s) => s.files.some((f) => f.path === 'src/App.tsx'));
   const drafting = useWorkspace((s) => Object.values(s.drafts).some((d) => d.status === 'streaming'));
   const setWs = useWorkspace((s) => s.set);
   const settings = useApp((s) => s.settings);
   const toast = useApp((s) => s.toast);
+  const navigate = useApp((s) => s.navigate);
+  const commands = useCommands();
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [convId, setConvId] = useState<string | null>(null);
   const [messages, setMessages] = useState<MessageRow[]>([]);
   const [request, setRequest] = useState('');
+  const [caret, setCaret] = useState(0);
+  const [popupIndex, setPopupIndex] = useState(0);
+  const [dismissed, setDismissed] = useState<string | null>(null);
   const [mode, setMode] = useState<AgentMode>('build');
+  const [effort, setEffort] = useState<Effort>(() => (isEffort(settings?.effort) ? settings.effort : 'max'));
+  const [autopilot, setAutopilotState] = useState(() => loadAutopilot(variant));
   const [attachments, setAttachments] = useState<Attachment[]>([]);
   const [pinned, setPinned] = useState<string[]>([]);
   const [sending, setSending] = useState(false);
   const [dragging, setDragging] = useState(false);
   const [showCaps, setShowCaps] = useState(false);
+  const [showHelp, setShowHelp] = useState(false);
   const [happyUntil, setHappyUntil] = useState(0);
   const bottom = useRef<HTMLDivElement>(null);
   const input = useRef<HTMLTextAreaElement>(null);
+  const pendingCaret = useRef<number | null>(null);
   const projectId = project?.id;
   const agentTask = tasks.find((t) => t.kind === 'agent');
   const busyTask = tasks.find((t) => t.kind !== 'verify');
   const name = settings?.assistantName?.trim() || 'Genius';
+  const settingsEffort = settings?.effort;
 
   const loadConversations = useCallback(async () => {
     if (!projectId) return;
@@ -70,6 +80,18 @@ export default function AssistantPanel({ variant = 'advanced' }: { variant?: 'si
   useEffect(() => {
     loadConversations().catch((e) => toast('bad', errorMessage(e)));
   }, [loadConversations, toast]);
+
+  // The saved default effort wins whenever settings change; Autopilot is remembered per mode.
+  useEffect(() => {
+    if (isEffort(settingsEffort)) setEffort(settingsEffort);
+  }, [settingsEffort]);
+  useEffect(() => {
+    setAutopilotState(loadAutopilot(variant));
+  }, [variant]);
+  const setAutopilot = (on: boolean) => {
+    setAutopilotState(on);
+    saveAutopilot(variant, on);
+  };
 
   // Reload messages when the conversation changes and whenever an agent task finishes.
   const finished = useWorkspace((s) => s.activity.filter((e) => e.kind === 'task' && e.status !== 'running').length);
@@ -89,7 +111,7 @@ export default function AssistantPanel({ variant = 'advanced' }: { variant?: 'si
 
   useEffect(() => {
     bottom.current?.scrollIntoView({ block: 'end' });
-  }, [messages.length, agentTask?.id, tasks.length]);
+  }, [messages.length, agentTask?.id, tasks.length, queue.length]);
 
   useEffect(() => {
     if (happyUntil <= Date.now()) return;
@@ -97,13 +119,30 @@ export default function AssistantPanel({ variant = 'advanced' }: { variant?: 'si
     return () => clearTimeout(t);
   }, [happyUntil]);
 
-  // Grow the composer with its content.
-  useEffect(() => {
+  // Grow the composer with its content, and place the caret after programmatic edits.
+  useLayoutEffect(() => {
     const el = input.current;
     if (!el) return;
     el.style.height = 'auto';
     el.style.height = `${Math.min(el.scrollHeight, 220)}px`;
+    if (pendingCaret.current != null) {
+      el.focus();
+      el.setSelectionRange(pendingCaret.current, pendingCaret.current);
+      pendingCaret.current = null;
+    }
   }, [request]);
+
+  // Messages queued while Genius worked: once it is free, whatever it did not read is sent as a
+  // normal message (and delivered ones are cleared — the conversation now holds them).
+  const sendRef = useRef<(text?: string) => Promise<void>>(async () => {});
+  useEffect(() => {
+    if (busyTask || sending || !convId) return;
+    const mine = queue.filter((q) => q.conversationId === convId);
+    if (!mine.length) return;
+    const pending = mine.filter((q) => q.status !== 'delivered');
+    useWorkspace.getState().removeQueued(mine.map((q) => q.id));
+    if (pending.length) void sendRef.current(pending.map((q) => q.text).join('\n\n'));
+  }, [busyTask, sending, convId, queue]);
 
   if (!project) return null;
   const openPath = active?.startsWith('file:') ? active.slice(5) : null;
@@ -114,6 +153,43 @@ export default function AssistantPanel({ variant = 'advanced' }: { variant?: 'si
     typing: request.trim().length > 0,
     justFinished: happyUntil > Date.now(),
   });
+
+  const setText = (text: string, at = text.length) => {
+    setRequest(text);
+    setCaret(at);
+    setPopupIndex(0);
+    pendingCaret.current = at;
+  };
+
+  const refreshAfterRewind = async () => {
+    if (convId) setMessages(await api.conversationMessages(convId));
+    useWorkspace.setState((s) => ({ historyVersion: s.historyVersion + 1, gitVersion: s.gitVersion + 1 }));
+    const ws = useWorkspace.getState();
+    void ws.refreshFiles();
+    void ws.refreshProject();
+    void loadConversations().catch(() => undefined);
+  };
+
+  const rewind = async (messageId: string): Promise<RewindResult | null> => {
+    if (!convId) return null;
+    try {
+      const r = await api.rewindConversation(convId, messageId, true);
+      await refreshAfterRewind();
+      return r;
+    } catch (e) {
+      toast('bad', `Could not rewind: ${errorMessage(e)}`);
+      return null;
+    }
+  };
+
+  const rewound = (r: RewindResult) =>
+    toast('ok', `Rewound ${r.removedMessages} message${r.removedMessages === 1 ? '' : 's'}${r.revertedChangesets ? ` and undid ${r.revertedChangesets} change${r.revertedChangesets === 1 ? '' : 's'}` : ''}. Everything stays revertible in History.`);
+
+  const idleOrWarn = () => {
+    if (!busyTask) return true;
+    toast('info', `Wait until ${name} finishes (or press Stop).`);
+    return false;
+  };
 
   const newConversation = async () => {
     try {
@@ -137,8 +213,147 @@ export default function AssistantPanel({ variant = 'advanced' }: { variant?: 'si
     }
   };
 
-  const addFiles = async (files: { name: string; path?: string; file?: File }[]) => {
-    for (const f of files) {
+  const compact = async () => {
+    if (!convId || !idleOrWarn()) return;
+    try {
+      await api.compactConversation(convId);
+      setMessages(await api.conversationMessages(convId));
+      toast('ok', 'Conversation compacted: older messages were summarized.');
+    } catch (e) {
+      toast('bad', `Could not compact: ${errorMessage(e)}`);
+    }
+  };
+
+  const undo = async () => {
+    if (!idleOrWarn()) return;
+    const last = [...messages].reverse().find((m) => m.role === 'user');
+    if (!last) return toast('info', 'Nothing to undo yet.');
+    if (!window.confirm(`Undo your last request (“${last.content.slice(0, 80)}”)?\n\n${name} forgets it and its answer, and the file changes it made are undone. They stay revertible in History.`)) return;
+    const r = await rewind(last.id);
+    if (!r) return;
+    rewound(r);
+    setText(last.content);
+  };
+
+  /** Client-side commands. Returns false for names the UI does not implement. */
+  const runAction = async (cmd: string, arg: string): Promise<boolean> => {
+    const a = arg.toLowerCase();
+    switch (cmd) {
+      case 'clear':
+        if (idleOrWarn()) await newConversation();
+        return true;
+      case 'plan': {
+        const next = mode === 'plan' ? 'build' : 'plan';
+        setMode(next);
+        toast('info', next === 'plan' ? `Plan only: ${name} will explain what it would do without changing files.` : `Build mode: ${name} can change files.`);
+        return true;
+      }
+      case 'build':
+        setMode('build');
+        toast('info', `Build mode: ${name} can change files.`);
+        return true;
+      case 'effort':
+        if (isEffort(a)) {
+          setEffort(a);
+          toast('ok', EFFORTS.find((e) => e.value === a)!.hint);
+        } else toast('info', `Effort is ${effort}. Use /effort fast, /effort balanced or /effort max.`);
+        return true;
+      case 'autopilot': {
+        const on = a === 'on' ? true : a === 'off' ? false : a ? null : !autopilot;
+        if (on == null) toast('info', 'Use /autopilot on or /autopilot off.');
+        else {
+          setAutopilot(on);
+          toast('ok', `Autopilot ${on ? 'on' : 'off'}.`);
+        }
+        return true;
+      }
+      case 'undo':
+        await undo();
+        return true;
+      case 'compact':
+        await compact();
+        return true;
+      case 'model':
+        navigate({ name: 'settings', tab: 'ai' });
+        return true;
+      case 'help':
+        setShowHelp(true);
+        return true;
+      default:
+        return false;
+    }
+  };
+
+  /** While Genius works, messages are handed to the running agent (or held until it is free). */
+  const queueMessage = (text: string) => {
+    if (!convId) return;
+    const id = queueId();
+    const taskId = agentTask?.id ?? null;
+    useWorkspace.getState().enqueue({ id, taskId, conversationId: convId, text, status: 'queued' });
+    setText('');
+    if (taskId) api.steerAgent(taskId, text).catch(() => useWorkspace.getState().updateQueued(id, { status: 'undelivered' }));
+  };
+
+  const send = async (text = request) => {
+    const trimmed = text.trim();
+    if (!trimmed || !convId) return;
+    const cmd = parseCommand(trimmed);
+    if (cmd && ACTION_NAMES.has(cmd.name)) {
+      setText('');
+      await runAction(cmd.name, cmd.arg);
+      return;
+    }
+    if (busyTask) return queueMessage(trimmed);
+    if (sending) return;
+    setSending(true);
+    try {
+      const message = picked ? `${trimmed}\n\n${describePicked(picked)}` : trimmed;
+      await api.startAgent(project.id, { conversationId: convId, message, mode, attachmentIds: attachments.filter((a) => a.status === 'ready').map((a) => a.id), pinned, effort, autopilot });
+      setWs({ picked: null });
+      setText('');
+      setAttachments([]);
+      setPinned([]);
+      setMessages(await api.conversationMessages(convId));
+    } catch (e) {
+      toast('bad', errorMessage(e));
+    } finally {
+      setSending(false);
+    }
+  };
+  sendRef.current = send;
+
+  const actions: MessageActions = {
+    onEdit: async (m, text) => {
+      if (!idleOrWarn()) return false;
+      if (!window.confirm(`Edit and resend this message?\n\n${name} forgets this message and everything after it, and the file changes made since then are undone. They stay revertible in History.`)) return false;
+      const r = await rewind(m.id);
+      if (!r) return false;
+      await send(text);
+      return true;
+    },
+    onRewind: (m) => {
+      if (!idleOrWarn()) return;
+      if (!window.confirm(`Rewind to before this message?\n\n${name} forgets it and everything after it, and the file changes made since then are undone. They stay revertible in History.`)) return;
+      void rewind(m.id).then((r) => {
+        if (!r) return;
+        rewound(r);
+        setText(m.content);
+      });
+    },
+    onRetry: (m) => {
+      if (!idleOrWarn()) return;
+      const i = messages.findIndex((x) => x.id === m.id);
+      const prev = messages.slice(0, i).reverse().find((x) => x.role === 'user');
+      if (!prev) return;
+      if (changedFiles(m) && !window.confirm(`Retry this request?\n\nThe changes from this answer are undone first. They stay revertible in History.`)) return;
+      void rewind(prev.id).then((r) => {
+        if (r) void send(prev.content);
+      });
+    },
+  };
+
+  const addFiles = async (picks: { name: string; path?: string; file?: File }[]) => {
+    for (const f of picks) {
       try {
         const a = f.path
           ? await api.importAttachment(project.id, f.path, 'message', convId ?? undefined)
@@ -158,29 +373,90 @@ export default function AssistantPanel({ variant = 'advanced' }: { variant?: 'si
     await addFiles(paths.map((p) => ({ name: p.split(/[\\/]/).pop() ?? p, path: p })));
   };
 
-  const send = async (text = request) => {
-    if (!text.trim() || busyTask || !convId) return;
-    setSending(true);
-    try {
-      const message = picked ? `${text}\n\n${describePicked(picked)}` : text;
-      await api.startAgent(project.id, { conversationId: convId, message, mode, attachmentIds: attachments.filter((a) => a.status === 'ready').map((a) => a.id), pinned });
-      setWs({ picked: null });
-      setRequest('');
-      setAttachments([]);
-      setPinned([]);
-      setMessages(await api.conversationMessages(convId));
-    } catch (e) {
-      toast('bad', errorMessage(e));
-    } finally {
-      setSending(false);
+  // ---- slash commands and @-mentions
+  const slash = slashQuery(request, caret);
+  const mention = slash == null ? mentionQuery(request, caret) : null;
+  const cmdMatches: SlashCommand[] = slash != null ? filterCommands(commands, slash) : [];
+  const fileMatches: FileEntry[] = mention ? filterFiles(files, mention.query) : [];
+  const popup = dismissed === request ? null : slash != null ? 'slash' : mention ? 'mention' : null;
+  const popupItems: SuggestItem[] =
+    popup === 'slash'
+      ? cmdMatches.map((c) => ({ key: c.name, icon: <Slash size={12} />, label: <span className="mono">/{c.name}{c.args ? <span className="faint"> {c.args}</span> : null}</span>, detail: c.description }))
+      : popup === 'mention'
+        ? fileMatches.map((f) => {
+            const at = f.path.lastIndexOf('/');
+            return { key: f.path, icon: <FileText size={12} />, label: <span className="mono">{f.path.slice(at + 1)}</span>, detail: at > 0 ? f.path.slice(0, at) : '' };
+          })
+        : [];
+  const sel = Math.min(popupIndex, Math.max(0, popupItems.length - 1));
+
+  const pickCommand = (c: SlashCommand) => {
+    if (c.args) return setText(`/${c.name} `);
+    if (c.kind === 'action' && ACTION_NAMES.has(c.name)) {
+      setText('');
+      void runAction(c.name, '');
+      return;
+    }
+    void send(`/${c.name}`);
+  };
+
+  const pickFile = (f: FileEntry) => {
+    if (!mention) return;
+    const before = request.slice(0, mention.start);
+    const after = request.slice(caret).replace(/^\s+/, '');
+    const insert = `@${f.path} `;
+    setText(before + insert + after, before.length + insert.length);
+    if (!pinned.includes(f.path)) setPinned([...pinned, f.path]);
+  };
+
+  const pick = (i: number) => {
+    if (popup === 'slash' && cmdMatches[i]) pickCommand(cmdMatches[i]);
+    else if (popup === 'mention' && fileMatches[i]) pickFile(fileMatches[i]);
+  };
+
+  const onKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
+    const composing = e.nativeEvent.isComposing;
+    if (popup) {
+      const n = popupItems.length;
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        e.stopPropagation();
+        setDismissed(request);
+        return;
+      }
+      if (n > 0 && (e.key === 'ArrowDown' || e.key === 'ArrowUp')) {
+        e.preventDefault();
+        setPopupIndex((sel + (e.key === 'ArrowDown' ? 1 : n - 1)) % n);
+        return;
+      }
+      if (n > 0 && !composing && (e.key === 'Tab' || (e.key === 'Enter' && !e.shiftKey))) {
+        e.preventDefault();
+        pick(sel);
+        return;
+      }
+    }
+    if (e.key === 'Escape' && showHelp) {
+      e.stopPropagation();
+      setShowHelp(false);
+      return;
+    }
+    if (e.key === 'Enter' && !e.shiftKey && !composing) {
+      e.preventDefault();
+      void send();
     }
   };
 
   const conv = conversations.find((c) => c.id === convId);
   const chatTasks = tasks.filter((t) => CHAT_TASKS.includes(t.kind));
+  const queued = queue.filter((q) => q.conversationId === convId);
   const anyTask = busyTask ?? tasks[0];
-  const status = anyTask ? anyTask.title.replace(/^Genius: /, 'Working on: ') : lastMsg?.kind === 'error' ? 'Something went wrong — tell me what to try next' : settings?.model ? 'Ready when you are' : 'Choose a model in Settings to start';
-  const canSend = !!request.trim() && !busyTask && !!settings?.model && !!convId;
+  const hasModel = !!settings?.model || settings?.modelMode === 'auto';
+  const status = anyTask ? anyTask.title.replace(/^Genius: /, 'Working on: ') : lastMsg?.kind === 'error' ? 'Something went wrong — tell me what to try next' : hasModel ? 'Ready when you are' : 'Choose a model in Settings to start';
+  const typedCmd = parseCommand(request);
+  const isAction = !!typedCmd && ACTION_NAMES.has(typedCmd.name);
+  const canSend = !!request.trim() && !!convId && (isAction || !!busyTask || hasModel);
+  const used = messages.reduce((n, m) => n + m.content.length, 0) + request.length;
+  const budget = settings?.contextBudgetChars || 60_000;
 
   return (
     <>
@@ -199,7 +475,7 @@ export default function AssistantPanel({ variant = 'advanced' }: { variant?: 'si
             </option>
           ))}
         </select>
-        <button className="icon-btn" aria-label="New conversation" title="New conversation (project history is kept)" onClick={() => void newConversation()} disabled={!!agentTask}>
+        <button className="icon-btn" aria-label="New conversation" title="New conversation (project history is kept) — /clear" onClick={() => void newConversation()} disabled={!!agentTask}>
           <MessageSquarePlus size={15} />
         </button>
         {variant === 'advanced' && (
@@ -220,19 +496,34 @@ export default function AssistantPanel({ variant = 'advanced' }: { variant?: 'si
               Tell me what to build or change — “add a pricing page”, “the menu is broken on mobile”, or just ask a question. I'll look at the real code, explain my plan, and show you every change before it lands.
             </p>
             <div className="suggestions">
-              {suggestions(hasCode).map((s) => (
-                <button key={s} onClick={() => (settings?.model ? void send(s) : setRequest(s))} disabled={!!busyTask}>
+              {suggestions(files.some((f) => f.path === 'src/App.tsx')).map((s) => (
+                <button key={s} onClick={() => (hasModel ? void send(s) : setText(s))} disabled={!!busyTask}>
                   {s}
                 </button>
               ))}
             </div>
+            <div className="faint tiny">
+              Tip: type <span className="mono">/</span> for commands or <span className="mono">@</span> to include a file.
+            </div>
           </div>
         )}
         {messages.map((m, i) => (
-          <Message key={m.id} m={m} name={name} isLast={i === messages.length - 1} busy={!!busyTask} onAnswer={(t) => void send(t)} />
+          <Message
+            key={m.id}
+            m={m}
+            name={name}
+            isLast={i === messages.length - 1}
+            busy={!!busyTask}
+            onAnswer={(t) => void send(t)}
+            actions={actions}
+            prevUser={m.role === 'assistant' ? messages.slice(0, i).reverse().find((x) => x.role === 'user') : undefined}
+          />
         ))}
         {chatTasks.map((t) => (
           <TaskCard key={t.id} task={t} expanded={variant === 'advanced'} name={name} />
+        ))}
+        {queued.map((q) => (
+          <QueuedBubble key={q.id} q={q} onRemove={() => useWorkspace.getState().removeQueued([q.id])} />
         ))}
         <div ref={bottom} />
       </div>
@@ -249,6 +540,16 @@ export default function AssistantPanel({ variant = 'advanced' }: { variant?: 'si
           void addFiles(Array.from(e.dataTransfer.files).map((file) => ({ name: file.name, file })));
         }}
       >
+        {showHelp && (
+          <HelpPanel
+            commands={commands}
+            onClose={() => setShowHelp(false)}
+            onPick={(c) => {
+              setShowHelp(false);
+              setText(`/${c.name}${c.args ? ' ' : ''}`);
+            }}
+          />
+        )}
         {picked && (
           <div className="callout info" style={{ alignItems: 'center' }}>
             <Crosshair size={14} color="var(--accent-2)" />
@@ -276,8 +577,8 @@ export default function AssistantPanel({ variant = 'advanced' }: { variant?: 'si
               </span>
             ))}
             {pinned.map((p) => (
-              <span key={p} className="chip" title="Pinned project file">
-                <Paperclip size={11} /> {p}
+              <span key={p} className="chip pinned" title={`${p} — its current content is sent with this message`}>
+                <AtSign size={11} /> {p}
                 <button className="x" aria-label={`Unpin ${p}`} onClick={() => setPinned(pinned.filter((x) => x !== p))}>
                   <X size={10} />
                 </button>
@@ -286,19 +587,41 @@ export default function AssistantPanel({ variant = 'advanced' }: { variant?: 'si
           </div>
         )}
         <div className="composer-box">
+          {popup && (
+            <SuggestPopup
+              id="composer-suggest"
+              title={popup === 'slash' ? 'Commands' : 'Include a project file'}
+              items={popupItems}
+              active={sel}
+              onPick={pick}
+              onHover={setPopupIndex}
+              empty={popup === 'slash' ? 'No matching command — Enter sends it as text' : 'No matching file'}
+            />
+          )}
           <textarea
             ref={input}
             rows={1}
-            placeholder={busyTask ? `${name} is working on “${busyTask.title.replace(/^Genius: /, '')}”…` : picked ? 'What should change about the selected element?' : `Message ${name}…`}
+            placeholder={
+              agentTask
+                ? `${name} is working — type to add instructions; it reads them after its current step`
+                : busyTask
+                  ? `${name} is busy with “${busyTask.title.replace(/^Genius: /, '')}” — messages are sent when it's free`
+                  : picked
+                    ? 'What should change about the selected element?'
+                    : `Message ${name}… (/ for commands, @ for files)`
+            }
             value={request}
-            onChange={(e) => setRequest(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
-                e.preventDefault();
-                void send();
-              }
+            onChange={(e) => {
+              setRequest(e.target.value);
+              setCaret(e.target.selectionStart ?? e.target.value.length);
+              setPopupIndex(0);
             }}
+            onSelect={(e) => setCaret(e.currentTarget.selectionStart ?? 0)}
+            onKeyDown={onKeyDown}
             aria-label="Change request"
+            aria-autocomplete="list"
+            aria-controls={popup ? 'composer-suggest' : undefined}
+            aria-activedescendant={popup && popupItems.length ? `composer-suggest-${sel}` : undefined}
           />
           <div className="row composer-tools">
             <button className="icon-btn" onClick={() => void pickFiles()} title="Attach files, images or docs (or drop them here)" aria-label="Attach files">
@@ -318,18 +641,22 @@ export default function AssistantPanel({ variant = 'advanced' }: { variant?: 'si
                 { value: 'plan', label: 'Plan only' },
               ]}
             />
+            <EffortSelect value={effort} onChange={setEffort} />
+            <AutopilotToggle on={autopilot} onChange={setAutopilot} />
             {settings?.internetAccess && (
               <span className="faint" title={`${name} can search the web and read pages (turn off in Settings → AI provider)`}>
                 <Globe size={13} />
               </span>
             )}
             <span className="spacer" />
-            {agentTask ? (
+            {messages.length > 0 && <ContextMeter used={used} budget={budget} onCompact={() => void compact()} disabled={!!busyTask} />}
+            {agentTask && (
               <Button size="sm" variant="danger" icon={<Square size={12} />} onClick={() => void api.cancelTask(agentTask.id).catch((e) => toast('bad', errorMessage(e)))}>
                 Stop
               </Button>
-            ) : (
-              <button className="send-btn" aria-label="Send" title="Send (Enter)" disabled={!canSend || sending} onClick={() => void send()}>
+            )}
+            {(!agentTask || request.trim()) && (
+              <button className="send-btn" aria-label={busyTask ? 'Queue message' : 'Send'} title={busyTask ? `Queue for ${name} (Enter)` : 'Send (Enter)'} disabled={!canSend || sending} onClick={() => void send()}>
                 {sending ? <span className="spinner" /> : <ArrowUp size={16} />}
               </button>
             )}
@@ -343,303 +670,5 @@ export default function AssistantPanel({ variant = 'advanced' }: { variant?: 'si
       </div>
       {showCaps && <CapabilitiesDialog onClose={() => setShowCaps(false)} />}
     </>
-  );
-}
-
-function Message({ m, name, isLast, busy, onAnswer }: { m: MessageRow; name: string; isLast: boolean; busy: boolean; onAnswer: (text: string) => void }) {
-  const meta = (m.meta ?? {}) as Record<string, unknown>;
-  const kind = KIND_LABEL[m.kind ?? ''];
-  const atts = (meta.attachments as { id: string; name: string; kind: string }[] | undefined) ?? [];
-  const report = meta.report as AgentReport | undefined;
-  const review = meta.review as { findings?: string; blockers?: number; error?: string } | undefined;
-  const ask = askOf(meta);
-  if (m.role === 'user') {
-    return (
-      <div className="msg user fade-in">
-        <div className="who">
-          You · {clockTime(m.createdAt)} {meta.mode === 'plan' && <Badge tone="accent">plan only</Badge>}
-        </div>
-        <Markdown text={m.content} />
-        {atts.length > 0 && (
-          <div className="chips" style={{ marginTop: 6 }}>
-            {atts.map((a) => (
-              <span key={a.id} className="chip">
-                {a.kind === 'image' ? <ImageIcon size={11} /> : <FileText size={11} />} {a.name}
-              </span>
-            ))}
-          </div>
-        )}
-      </div>
-    );
-  }
-  return (
-    <div className="msg-row fade-in">
-      <GeniusAvatar size={26} mood={m.kind === 'error' ? 'sad' : 'idle'} className="msg-avatar" />
-      <div className={`msg assistant ${m.kind === 'error' ? 'error' : ''}`}>
-        <div className="who row" style={{ gap: 6 }}>
-          <span>
-            {name} · {clockTime(m.createdAt)}
-          </span>
-          {kind && m.kind !== 'answer' && <Badge tone={kind.tone}>{kind.label}</Badge>}
-        </div>
-        <Markdown text={m.content} />
-        {ask && <AskCard ask={ask} active={isLast && !busy} onAnswer={onAnswer} />}
-        {typeof meta.changesetId === 'string' && <ProposalStatus changesetId={meta.changesetId} />}
-        {review && (review.findings || review.error) && (
-          <details className="report">
-            <summary>Reviewer subagent {review.error ? '— could not run' : review.blockers ? `— ${review.blockers} blocking issue(s)` : '— no blocking issues'}</summary>
-            <div className="small">
-              <Markdown text={review.error ?? review.findings ?? ''} />
-            </div>
-          </details>
-        )}
-        {report && (report.steps > 0 || report.warnings.length > 0 || !!report.error) && <Report report={report} />}
-      </div>
-    </div>
-  );
-}
-
-/** A question Genius asked, with one-click answers (the user can also just type). */
-function AskCard({ ask, active, onAnswer }: { ask: Ask; active: boolean; onAnswer: (text: string) => void }) {
-  const [chosen, setChosen] = useState<string[]>([]);
-  return (
-    <div className={`ask ${active ? '' : 'done'}`}>
-      <div className="ask-q">{ask.question}</div>
-      <div className="ask-options">
-        {ask.options.map((o) =>
-          ask.multi ? (
-            <label key={o} className={`ask-opt ${chosen.includes(o) ? 'on' : ''}`}>
-              <input type="checkbox" disabled={!active} checked={chosen.includes(o)} onChange={(e) => setChosen(e.target.checked ? [...chosen, o] : chosen.filter((x) => x !== o))} />
-              {o}
-            </label>
-          ) : (
-            <button key={o} className="ask-opt" disabled={!active} onClick={() => onAnswer(o)}>
-              {o}
-            </button>
-          ),
-        )}
-      </div>
-      {ask.multi && active && (
-        <Button size="sm" variant="primary" disabled={!chosen.length} onClick={() => onAnswer(chosen.join(', '))}>
-          Send answer
-        </Button>
-      )}
-      {active && <div className="faint tiny">…or type your own answer below.</div>}
-    </div>
-  );
-}
-
-/** Live status of a proposal from the changeset record (not from the message text). */
-function ProposalStatus({ changesetId }: { changesetId: string }) {
-  const openTab = useWorkspace((s) => s.openTab);
-  const setWs = useWorkspace((s) => s.set);
-  const historyVersion = useWorkspace((s) => s.historyVersion);
-  const project = useWorkspace((s) => s.project);
-  const toast = useApp((s) => s.toast);
-  const [cs, setCs] = useState<Changeset | null>(null);
-  const [busy, setBusy] = useState<'apply' | 'reject' | null>(null);
-  useEffect(() => {
-    api
-      .getChangeset(changesetId)
-      .then((d) => setCs(d.changeset))
-      .catch(() => setCs(null));
-  }, [changesetId, historyVersion]);
-  if (!cs) return null;
-  const build = project?.status.lastBuild;
-  const builtAfter = cs.appliedAt && build && Date.parse(build.at) >= Date.parse(cs.appliedAt);
-  const tone = cs.status === 'applied' ? 'ok' : cs.status === 'proposed' ? 'warn' : 'idle';
-  const act = async (what: 'apply' | 'reject') => {
-    setBusy(what);
-    try {
-      const next = what === 'apply' ? await api.applyChangeset(cs.id) : await api.rejectChangeset(cs.id);
-      setCs(next);
-      if (what === 'apply') toast('ok', `Applied ${cs.files.length} file change(s).`);
-      useWorkspace.setState((s) => ({ historyVersion: s.historyVersion + 1, gitVersion: s.gitVersion + 1 }));
-      void useWorkspace.getState().refreshFiles();
-    } catch (e) {
-      toast('bad', errorMessage(e));
-    } finally {
-      setBusy(null);
-    }
-  };
-  return (
-    <div className="task-card proposal">
-      <div className="row">
-        <FileDiff size={15} />
-        <span className="grow small ellipsis" title={cs.files.map((f) => f.path).join('\n')}>
-          {cs.files.length} file(s): {cs.files.map((f) => f.path.split('/').pop()).join(', ')}
-        </span>
-        <Badge tone={tone}>{cs.status === 'proposed' ? 'awaiting your review' : cs.status}</Badge>
-      </div>
-      {cs.status === 'applied' && (
-        <div className="small">
-          Verification:{' '}
-          {builtAfter ? (
-            <Badge tone={build!.status === 'succeeded' ? 'ok' : 'bad'}>
-              build {build!.status} {build!.exitCode != null ? `(exit ${build!.exitCode})` : ''}
-            </Badge>
-          ) : (
-            <span className="faint">no build has run since these changes were applied</span>
-          )}
-        </div>
-      )}
-      <div className="row wrap">
-        {cs.status === 'proposed' && (
-          <>
-            <Button size="sm" variant="primary" icon={<Check size={13} />} loading={busy === 'apply'} disabled={!!busy} onClick={() => void act('apply')}>
-              Apply
-            </Button>
-            <Button size="sm" variant="ghost" icon={<X size={13} />} loading={busy === 'reject'} disabled={!!busy} onClick={() => void act('reject')}>
-              Discard
-            </Button>
-          </>
-        )}
-        <Button
-          size="sm"
-          onClick={() => {
-            openTab(`review:${changesetId}`);
-            setWs({ stage: 'code' });
-          }}
-        >
-          {cs.status === 'proposed' ? 'Review diff' : 'View diff'}
-        </Button>
-      </div>
-    </div>
-  );
-}
-
-function Report({ report }: { report: AgentReport }) {
-  const s = reportSummary(report);
-  return (
-    <details className="report">
-      <summary>
-        What Genius did · {s}
-        {report.warnings.length > 0 && ' · ⚠'}
-      </summary>
-      <ul className="small">
-        <li>Files read: {report.filesRead.length ? report.filesRead.join(', ') : 'none'}</li>
-        <li>Searches: {report.searches}</li>
-        <li>
-          Checks run:{' '}
-          {report.checks.length ? report.checks.map((c) => `${c.check}: ${c.status ?? 'error'}${c.exitCode != null ? ` (exit ${c.exitCode})` : ''}`).join(', ') : 'none'}
-        </li>
-        {report.subagents.length > 0 && <li>Subagents: {report.subagents.map((x) => `${x.role}${x.ok ? '' : ' (failed)'}`).join(', ')}</li>}
-        {report.failedSteps.length > 0 && <li>Failed or refused steps: {report.failedSteps.join('; ')}</li>}
-        {report.notVerified.map((n) => (
-          <li key={n} className="warn-text">
-            Not verified: {n}
-          </li>
-        ))}
-        {report.warnings.map((w) => (
-          <li key={w} className="bad-text">
-            {w}
-          </li>
-        ))}
-        {report.error && <li className="bad-text">Error: {report.error}</li>}
-      </ul>
-    </details>
-  );
-}
-
-function AgentBadge({ agent }: { agent: string }) {
-  const a = AGENTS[agent] ?? { label: agent, hint: '' };
-  return (
-    <span className={`agent-badge agent-${agent}`} title={a.hint}>
-      {a.label}
-    </span>
-  );
-}
-
-/** Live view of a running task: what Genius says it's doing, its checklist, real tool calls and model output. */
-function TaskCard({ task, expanded, name }: { task: TaskInfo; expanded: boolean; name: string }) {
-  const steps = useWorkspace((s) => s.agentSteps[task.id]) as AgentStep[] | undefined;
-  const activity = useWorkspace((s) => s.activity);
-  const stream = useWorkspace((s) => s.aiStream[task.id]);
-  const drafts = useWorkspace((s) => s.drafts);
-  const openTab = useWorkspace((s) => s.openTab);
-  const setWs = useWorkspace((s) => s.set);
-  const toast = useApp((s) => s.toast);
-  const [showRaw, setShowRaw] = useState(false);
-  const [showSteps, setShowSteps] = useState(expanded);
-  const events = activity.filter((e) => e.taskId === task.id && (e.kind === 'ai' || e.kind === 'approval' || e.kind === 'build' || e.kind === 'test' || e.kind === 'install' || (e.kind === 'task' && e.title.includes('subagent'))));
-  const writing = Object.values(drafts).filter((d) => d.taskId === task.id);
-  const current = writing.find((d) => d.status === 'streaming');
-  const lastAi = events.filter((e) => e.kind === 'ai').slice(-1)[0];
-  const todo = latestTodo(steps);
-  const note = latestNote(steps);
-  const visibleSteps = (steps ?? []).filter((s) => s.tool !== 'todo');
-  const title = task.kind === 'plan' ? `${name} is planning your app` : task.kind === 'generate' ? `${name} is writing your app` : task.title.replace(/^Genius: /, '');
-  return (
-    <div className="msg-row fade-in">
-      <GeniusAvatar size={26} mood={current ? 'working' : 'thinking'} className="msg-avatar" />
-      <div className="task-card live" aria-label={`Running: ${task.title}`}>
-        <div className="row">
-          <strong className="grow ellipsis">{title}</strong>
-          <Button size="sm" variant="ghost" icon={<Square size={11} />} onClick={() => void api.cancelTask(task.id).catch((e) => toast('bad', errorMessage(e)))}>
-            Stop
-          </Button>
-        </div>
-        {note ? <div className="task-note">{note}</div> : lastAi && lastAi.status === 'running' && <div className="small faint thinking-dots">Thinking</div>}
-        {todo.length > 0 && (
-          <ul className="todo" aria-label="Genius's plan">
-            {todo.map((t, i) => (
-              <li key={i} className={t.status}>
-                {t.status === 'done' ? <Check size={13} /> : t.status === 'active' ? <CircleDot size={13} /> : <Circle size={13} />}
-                <span>{t.text}</span>
-              </li>
-            ))}
-          </ul>
-        )}
-        {visibleSteps.length > 0 && (
-          <>
-            <button className="btn ghost sm" style={{ alignSelf: 'flex-start' }} onClick={() => setShowSteps(!showSteps)} aria-expanded={showSteps}>
-              {showSteps ? <ChevronDown size={12} /> : <ChevronRight size={12} />} {visibleSteps.length} step{visibleSteps.length === 1 ? '' : 's'} · last: {visibleSteps[visibleSteps.length - 1].tool.replace(/_/g, ' ')}
-            </button>
-            <ol className="steps" hidden={!showSteps}>
-              {visibleSteps.map((s) => (
-                <li key={s.id} className={s.ok ? '' : 'bad-text'} title={JSON.stringify(s.args)}>
-                  <AgentBadge agent={s.agent} /> <span>{stepLabel(s)}</span>
-                </li>
-              ))}
-            </ol>
-          </>
-        )}
-        {events
-          .filter((e) => e.kind !== 'ai')
-          .slice(-3)
-          .map((e) => (
-            <div key={e.id} className="small row" style={{ gap: 6 }}>
-              <Badge tone={e.status === 'completed' ? 'ok' : e.status === 'failed' ? 'bad' : 'run'}>{e.status.replace('_', ' ')}</Badge>
-              <span className="ellipsis">{e.title}</span>
-            </div>
-          ))}
-        {writing.length > 0 && (
-          <div className="files-written">
-            {writing.map((d) => (
-              <button
-                key={d.path}
-                className={`file-pill ${d.status}`}
-                onClick={() => {
-                  openTab(`draft:${d.path}`);
-                  setWs({ stage: 'code' });
-                }}
-                title={d.status === 'streaming' ? 'Being written now (not saved yet)' : d.path}
-              >
-                {d.status === 'streaming' ? <span className="spinner" style={{ width: 9, height: 9, borderWidth: 1.5 }} /> : <Check size={11} />}
-                {d.path.split('/').pop()}
-              </button>
-            ))}
-          </div>
-        )}
-        {stream && expanded && (
-          <>
-            <button className="btn ghost sm" style={{ alignSelf: 'flex-start' }} onClick={() => setShowRaw(!showRaw)}>
-              {showRaw ? <ChevronDown size={12} /> : <ChevronRight size={12} />} Raw model output ({bytes(stream.length)})
-            </button>
-            {showRaw && <pre className="stream">{stream.slice(-20000)}</pre>}
-          </>
-        )}
-      </div>
-    </div>
   );
 }

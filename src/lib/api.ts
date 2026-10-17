@@ -137,6 +137,13 @@ export const api = {
   conversationMessages: (conversationId: string) => call<T.MessageRow[]>('conversation_messages', { conversationId }),
   startAgent: (projectId: string, request: T.AgentRequest) => call<T.TaskInfo>('start_agent', { projectId, request }),
   agentSteps: (taskId: string) => call<T.AgentStep[]>('agent_steps', { taskId }),
+  listCommands: () => call<T.SlashCommand[]>('list_commands'),
+  /** Queue a message for the running agent; it reads it after its current step (`genius://agent-steered`). */
+  steerAgent: (taskId: string, message: string) => call<void>('steer_agent', { taskId, message }),
+  /** Remove `messageId` and everything after it; optionally revert the file changes made since. */
+  rewindConversation: (conversationId: string, messageId: string, revertFiles: boolean) =>
+    call<T.RewindResult>('rewind_conversation', { conversationId, messageId, revertFiles }),
+  compactConversation: (conversationId: string) => call<void>('compact_conversation', { conversationId }),
   capabilityReport: (projectId?: string) => call<T.CapabilityReport>('capability_report', { projectId: projectId ?? null }),
 
   // memory

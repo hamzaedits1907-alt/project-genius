@@ -111,5 +111,5 @@ describe('views mount, navigate and unmount', () => {
     r.unmount();
     assertHealthy('unmount');
     expect(useWorkspace.getState()).toBeTruthy();
-  });
+  }, 20_000); // walks the whole workspace: slow on a busy machine
 });

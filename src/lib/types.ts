@@ -18,6 +18,50 @@ export interface Settings {
   autoCheckUpdates: boolean;
   internetAccess: boolean;
   assistantName: string;
+  /** 'auto' lets Genius pick the model per task; 'manual' always uses `model`. */
+  modelMode: 'auto' | 'manual';
+  effort: Effort;
+  /** Ask reasoning models to stream their thinking. */
+  thinking: boolean;
+}
+
+/** How hard Genius works on a request (speed vs depth). */
+export type Effort = 'fast' | 'balanced' | 'max';
+
+/** A chat slash command. `prompt` commands are expanded by the backend; `action` ones run in the UI. */
+export interface SlashCommand {
+  name: string;
+  description: string;
+  args?: string;
+  kind: 'prompt' | 'action';
+}
+
+export interface RewindResult {
+  removedMessages: number;
+  revertedChangesets: number;
+}
+
+/** Model reasoning streamed while the agent works (never persisted). */
+export interface AiThinking {
+  taskId: string;
+  projectId: string;
+  text: string;
+}
+
+/** The running agent picked up a message the user queued while it worked. */
+export interface AgentSteered {
+  taskId: string;
+  projectId: string;
+  message: string;
+}
+
+/** Token usage recorded on an assistant message's report. */
+export interface UsageReport {
+  promptTokens: number;
+  completionTokens: number;
+  totalTokens: number;
+  calls: number;
+  models: string[];
 }
 
 export interface UpdateAsset {
@@ -447,6 +491,9 @@ export interface AgentRequest {
   mode: AgentMode;
   attachmentIds: string[];
   pinned: string[];
+  effort?: Effort | null;
+  /** Apply, type-check/build and fix on its own before answering. */
+  autopilot?: boolean | null;
 }
 
 export interface AgentStep {
@@ -454,8 +501,10 @@ export interface AgentStep {
   projectId: string;
   taskId: string;
   conversationId: string | null;
-  agent: 'main' | 'architect' | 'reviewer' | 'ui' | 'designer' | 'tester';
+  agent: 'main' | 'architect' | 'reviewer' | 'ui' | 'designer' | 'tester' | 'explorer' | 'debugger';
   seq: number;
+  /** Model turn that issued this step (several tool calls can share a turn). */
+  turn?: number | null;
   tool: string;
   args: Record<string, unknown>;
   ok: boolean;
@@ -477,6 +526,12 @@ export interface AgentReport {
   notVerified: string[];
   warnings: string[];
   error: string | null;
+  usage?: UsageReport | null;
+  model?: string | null;
+  durationMs?: number | null;
+  autopilot?: { applied: string[]; checks: { check: string; ok: boolean }[] } | null;
+  /** Changeset ids recorded as the checkpoint for this turn. */
+  checkpoint?: string[] | null;
 }
 
 export interface Capability {
