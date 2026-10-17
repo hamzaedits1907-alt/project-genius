@@ -99,11 +99,7 @@ fn coerce_named_lists(v: &mut Value) {
                     for f in fields.iter_mut() {
                         if !f.is_string() {
                             let text = match &*f {
-                                Value::Object(o) => o
-                                    .iter()
-                                    .map(|(k, v)| format!("{k}: {}", v.as_str().map(String::from).unwrap_or_else(|| v.to_string())))
-                                    .collect::<Vec<_>>()
-                                    .join(", "),
+                                Value::Object(o) => o.iter().map(|(k, v)| format!("{k}: {}", v.as_str().map(String::from).unwrap_or_else(|| v.to_string()))).collect::<Vec<_>>().join(", "),
                                 other => other.to_string(),
                             };
                             *f = Value::String(text);
@@ -117,13 +113,7 @@ fn coerce_named_lists(v: &mut Value) {
         if let Some(arr) = v.get_mut(key).and_then(|a| a.as_array_mut()) {
             for item in arr.iter_mut() {
                 if !item.is_string() {
-                    let text = item
-                        .get("name")
-                        .or_else(|| item.get("title"))
-                        .or_else(|| item.get("description"))
-                        .and_then(|x| x.as_str())
-                        .map(String::from)
-                        .unwrap_or_else(|| item.to_string());
+                    let text = item.get("name").or_else(|| item.get("title")).or_else(|| item.get("description")).and_then(|x| x.as_str()).map(String::from).unwrap_or_else(|| item.to_string());
                     *item = Value::String(text);
                 }
             }

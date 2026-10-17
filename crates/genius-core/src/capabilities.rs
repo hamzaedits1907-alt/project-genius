@@ -89,8 +89,20 @@ impl Genius {
         });
         caps.push(match (&s.model, &probe) {
             (None, _) => cap("chat", "Chat with a model", "unavailable", "no model selected", "Settings → AI provider → Refresh models and pick one"),
-            (Some(m), Some(p)) if p.chat => cap("chat", "Chat with a model", if key.stored { "available" } else { "unavailable" }, format!("{m} answered a verification probe ({} ms)", p.latency_ms), if key.stored { "" } else { "save an API key" }),
-            (Some(m), _) => cap("chat", "Chat with a model", if key.stored { "unverified" } else { "unavailable" }, format!("{m} selected but not verified with a real request yet"), "Settings → AI provider → Verify"),
+            (Some(m), Some(p)) if p.chat => cap(
+                "chat",
+                "Chat with a model",
+                if key.stored { "available" } else { "unavailable" },
+                format!("{m} answered a verification probe ({} ms)", p.latency_ms),
+                if key.stored { "" } else { "save an API key" },
+            ),
+            (Some(m), _) => cap(
+                "chat",
+                "Chat with a model",
+                if key.stored { "unverified" } else { "unavailable" },
+                format!("{m} selected but not verified with a real request yet"),
+                "Settings → AI provider → Verify",
+            ),
         });
         caps.push(match &probe {
             Some(p) if p.streaming => cap("streaming", "Streaming responses", "available", "verification probe streamed tokens", ""),
@@ -99,7 +111,13 @@ impl Genius {
         });
         caps.push(match vision {
             Some(true) => cap("vision", "Image input (screenshots)", "available", "the model accepted an image in a verification request", ""),
-            Some(false) => cap("vision", "Image input (screenshots)", "unavailable", "the model rejected image input in a verification request", "choose a vision-capable model (e.g. one with 'vision' or 'vl' in its id) and verify it"),
+            Some(false) => cap(
+                "vision",
+                "Image input (screenshots)",
+                "unavailable",
+                "the model rejected image input in a verification request",
+                "choose a vision-capable model (e.g. one with 'vision' or 'vl' in its id) and verify it",
+            ),
             None => cap("vision", "Image input (screenshots)", "unverified", "image input has not been tested with this model", "Settings → AI provider → Test image input"),
         });
         caps.push(cap(
@@ -109,11 +127,23 @@ impl Genius {
             "not used: support differs per model and is unverified; Genius uses its own validated text tool protocol, which works with any chat model",
             "",
         ));
-        caps.push(cap("project_tools", "Read, search and inspect project files", if project_id.is_some() { "available" } else { "unavailable" }, if project_id.is_some() { "sandboxed to the project folder; secrets and .env contents are never read" } else { "no project is open" }, if project_id.is_some() { "" } else { "open a project" }));
-        caps.push(cap("edits", "Propose and apply code changes", if project_id.is_some() { "available" } else { "unavailable" }, match s.approvals.apply_ai_edits {
-            crate::settings::Policy::Ask => "changes are proposed as reviewable diffs; you apply or reject them",
-            crate::settings::Policy::Auto => "changes are applied automatically by your settings (still revertible in History)",
-        }, ""));
+        caps.push(cap(
+            "project_tools",
+            "Read, search and inspect project files",
+            if project_id.is_some() { "available" } else { "unavailable" },
+            if project_id.is_some() { "sandboxed to the project folder; secrets and .env contents are never read" } else { "no project is open" },
+            if project_id.is_some() { "" } else { "open a project" },
+        ));
+        caps.push(cap(
+            "edits",
+            "Propose and apply code changes",
+            if project_id.is_some() { "available" } else { "unavailable" },
+            match s.approvals.apply_ai_edits {
+                crate::settings::Policy::Ask => "changes are proposed as reviewable diffs; you apply or reject them",
+                crate::settings::Policy::Auto => "changes are applied automatically by your settings (still revertible in History)",
+            },
+            "",
+        ));
         if let Some(tools) = &tools {
             let node = tools.iter().any(|t| t.name == "npm" && t.found);
             caps.push(if node {
@@ -122,7 +152,13 @@ impl Genius {
                 cap("checks", "Run builds and tests", "unavailable", "npm was not found on PATH", "install Node.js 20+ and restart Genius")
             });
             let git = tools.iter().any(|t| t.name == "git" && t.found);
-            caps.push(cap("git", "Git source control", if git { "available" } else { "unavailable" }, if git { "git found" } else { "git was not found" }, if git { "" } else { "install Git from https://git-scm.com" }));
+            caps.push(cap(
+                "git",
+                "Git source control",
+                if git { "available" } else { "unavailable" },
+                if git { "git found" } else { "git was not found" },
+                if git { "" } else { "install Git from https://git-scm.com" },
+            ));
         } else {
             caps.push(cap("checks", "Run builds and tests", "unverified", "tool detection not run in this quick report", ""));
         }
@@ -133,13 +169,16 @@ impl Genius {
         if let Some(gh) = gh {
             let connected = gh.get("connected").and_then(|v| v.as_bool()).unwrap_or(false);
             integrations.retain(|i| i.get("id").and_then(|v| v.as_str()) != Some("github"));
-            integrations.insert(0, json!({
-                "id": "github",
-                "status": if connected { "connected" } else { "not_connected" },
-                "detail": gh.get("detail").cloned().unwrap_or(Value::Null),
-                "login": gh.get("login").cloned().unwrap_or(Value::Null),
-                "scopes": gh.get("scopes").cloned().unwrap_or(Value::Null),
-            }));
+            integrations.insert(
+                0,
+                json!({
+                    "id": "github",
+                    "status": if connected { "connected" } else { "not_connected" },
+                    "detail": gh.get("detail").cloned().unwrap_or(Value::Null),
+                    "login": gh.get("login").cloned().unwrap_or(Value::Null),
+                    "scopes": gh.get("scopes").cloned().unwrap_or(Value::Null),
+                }),
+            );
         }
 
         let project = match project_id {

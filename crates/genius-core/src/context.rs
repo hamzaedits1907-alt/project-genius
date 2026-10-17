@@ -42,11 +42,7 @@ pub struct ContextRequest<'a> {
 const ALWAYS: &[(&str, i32)] = &[("package.json", 40), ("src/App.tsx", 60), ("src/main.tsx", 25), ("src/index.css", 15), ("src/App.css", 15)];
 
 fn words(s: &str) -> HashSet<String> {
-    s.to_lowercase()
-        .split(|c: char| !c.is_alphanumeric())
-        .filter(|w| w.len() >= 3)
-        .map(String::from)
-        .collect()
+    s.to_lowercase().split(|c: char| !c.is_alphanumeric()).filter(|w| w.len() >= 3).map(String::from).collect()
 }
 
 fn is_excluded(path: &str, excluded: &[String]) -> bool {
@@ -179,14 +175,7 @@ mod tests {
     #[test]
     fn user_exclusions_and_pins() {
         let (_d, w) = ws();
-        let p = plan(&w, &ContextRequest {
-            query: "change footer",
-            pinned: &["src/big.ts".into()],
-            excluded: &["src/components".into()],
-            must: &[],
-            budget_chars: 20000,
-        })
-        .unwrap();
+        let p = plan(&w, &ContextRequest { query: "change footer", pinned: &["src/big.ts".into()], excluded: &["src/components".into()], must: &[], budget_chars: 20000 }).unwrap();
         assert!(p.files.iter().all(|f| !f.path.starts_with("src/components")));
         assert!(p.files.iter().any(|f| f.path == "src/big.ts" && f.included && f.reason.contains("selected")));
     }

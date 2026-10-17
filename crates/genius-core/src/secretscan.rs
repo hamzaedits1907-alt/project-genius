@@ -25,10 +25,7 @@ static RULES: LazyLock<Vec<(&'static str, Regex)>> = LazyLock::new(|| {
         ("Private key", r"-----BEGIN [A-Z ]*PRIVATE KEY-----"),
         ("Google API key", r"\bAIza[0-9A-Za-z_\-]{35}\b"),
         ("Stripe secret key", r"\b(sk|rk)_live_[0-9A-Za-z]{20,}"),
-        (
-            "Hard-coded credential",
-            r#"(?i)\b(api[_-]?key|secret|passw(or)?d|access[_-]?token|auth[_-]?token)\b\s*[:=]\s*["'][^"'\s]{12,}["']"#,
-        ),
+        ("Hard-coded credential", r#"(?i)\b(api[_-]?key|secret|passw(or)?d|access[_-]?token|auth[_-]?token)\b\s*[:=]\s*["'][^"'\s]{12,}["']"#),
     ]
     .into_iter()
     .map(|(k, p)| (k, Regex::new(p).expect("valid secret regex")))

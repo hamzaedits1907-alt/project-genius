@@ -122,16 +122,10 @@ async fn publish_is_guarded_resumable_and_verified() {
     assert_eq!(creates.lines().count(), 1, "retry must not create a duplicate repository");
 
     // The bare remote really has the commit, and local HEAD matches it.
-    let remote_head = std::process::Command::new("git")
-        .args(["--git-dir", state.join("tester/publish-me.git").to_str().unwrap(), "rev-parse", "refs/heads/main"])
-        .output()
-        .unwrap();
+    let remote_head = std::process::Command::new("git").args(["--git-dir", state.join("tester/publish-me.git").to_str().unwrap(), "rev-parse", "refs/heads/main"]).output().unwrap();
     let local_head = std::process::Command::new("git").args(["rev-parse", "HEAD"]).current_dir(ws.root()).output().unwrap();
     assert_eq!(String::from_utf8_lossy(&remote_head.stdout), String::from_utf8_lossy(&local_head.stdout));
-    let files = std::process::Command::new("git")
-        .args(["--git-dir", state.join("tester/publish-me.git").to_str().unwrap(), "ls-tree", "-r", "--name-only", "main"])
-        .output()
-        .unwrap();
+    let files = std::process::Command::new("git").args(["--git-dir", state.join("tester/publish-me.git").to_str().unwrap(), "ls-tree", "-r", "--name-only", "main"]).output().unwrap();
     let files = String::from_utf8_lossy(&files.stdout);
     assert!(files.contains("src/main.ts") && files.contains(".gitignore"));
     assert!(!files.contains(".env\n"), "secrets file not published");

@@ -278,14 +278,21 @@ async fn preview_edit_repair_lifecycle() {
     assert_eq!(problem.file.as_deref(), Some("src/App.tsx"));
     let mut pkg2: Value = serde_json::from_str(&ws.read_text("package.json").unwrap()).unwrap();
     pkg2["dependencies"]["dayjs"] = json!("^1.11.13");
-    model.doctor.lock().unwrap().push_back(format!("Root cause: src/App.tsx imports dayjs, which is not a dependency.\n{}", block("package.json", &(serde_json::to_string_pretty(&pkg2).unwrap() + "\n"))));
+    model
+        .doctor
+        .lock()
+        .unwrap()
+        .push_back(format!("Root cause: src/App.tsx imports dayjs, which is not a dependency.\n{}", block("package.json", &(serde_json::to_string_pretty(&pkg2).unwrap() + "\n"))));
     let t = g.start_auto_fix(&pid, None).unwrap();
     wait_tasks(&g, &pid, 400).await;
     let r = task_result(&g, &pid, &t.id);
     assert_eq!(r["status"], "completed", "{r}");
     assert_eq!(r["detail"]["result"]["fixed"], true, "{r}");
     assert_eq!(r["detail"]["result"]["attempts"].as_array().unwrap().len(), 1);
-    assert!(model.log.lock().unwrap().iter().any(|m| m.contains("Failed to resolve import") && m.contains("'dayjs' is imported but NOT listed")), "doctor got the real error and the deterministic hint");
+    assert!(
+        model.log.lock().unwrap().iter().any(|m| m.contains("Failed to resolve import") && m.contains("'dayjs' is imported but NOT listed")),
+        "doctor got the real error and the deterministic hint"
+    );
     let fixed = g.preview_state(&pid);
     assert_eq!(fixed.status, PreviewStatus::Ready);
     assert_renders(fixed.url.as_deref().unwrap(), "<p>2024</p>");

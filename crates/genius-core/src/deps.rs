@@ -181,11 +181,7 @@ pub fn read_install_state(root: &Path) -> Option<InstallState> {
 pub fn record_install(root: &Path) -> Result<InstallState> {
     let text = std::fs::read_to_string(root.join("package.json"))?;
     let pkg = parse_strict(&text).map_err(|e| GeniusError::Validation(format!("package.json: {e}")))?;
-    let st = InstallState {
-        fingerprint: fingerprint(&pkg, read_lock(root).as_deref()),
-        packages: declared(&pkg).into_keys().collect(),
-        installed_at: crate::db::now(),
-    };
+    let st = InstallState { fingerprint: fingerprint(&pkg, read_lock(root).as_deref()), packages: declared(&pkg).into_keys().collect(), installed_at: crate::db::now() };
     let file = root.join(STATE_FILE);
     if let Some(dir) = file.parent() {
         std::fs::create_dir_all(dir)?;

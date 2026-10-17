@@ -53,7 +53,8 @@ pub struct Attachment {
 }
 
 const CODE_EXT: &[&str] = &[
-    "ts", "tsx", "js", "jsx", "mjs", "cjs", "css", "scss", "html", "htm", "vue", "svelte", "py", "rs", "go", "java", "kt", "swift", "c", "h", "cpp", "cs", "rb", "php", "sql", "sh", "ps1", "yml", "yaml", "toml", "xml", "svg", "ini", "graphql",
+    "ts", "tsx", "js", "jsx", "mjs", "cjs", "css", "scss", "html", "htm", "vue", "svelte", "py", "rs", "go", "java", "kt", "swift", "c", "h", "cpp", "cs", "rb", "php", "sql", "sh", "ps1", "yml",
+    "yaml", "toml", "xml", "svg", "ini", "graphql",
 ];
 
 /// Classify by extension (content is validated by the parser).
@@ -443,7 +444,7 @@ impl Genius {
                 scored.push((score, a.id.clone(), a.name.clone(), snip));
             }
         }
-        scored.sort_by(|x, y| y.0.cmp(&x.0));
+        scored.sort_by_key(|s| std::cmp::Reverse(s.0));
         Ok(scored.into_iter().take(max).map(|(_, i, n, s)| (i, n, s)).collect())
     }
 
@@ -455,7 +456,13 @@ impl Genius {
             return Err(GeniusError::Validation("archive is larger than 100 MB".into()));
         }
         let bytes = std::fs::read(&p)?;
-        let stem: String = p.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_else(|| "imported".into()).chars().map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' { c } else { '-' }).collect();
+        let stem: String = p
+            .file_stem()
+            .map(|s| s.to_string_lossy().to_string())
+            .unwrap_or_else(|| "imported".into())
+            .chars()
+            .map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' { c } else { '-' })
+            .collect();
         let root = self.workspace_dir()?;
         std::fs::create_dir_all(&root)?;
         let mut dest = root.join(&stem);
@@ -472,7 +479,14 @@ impl Genius {
             }
         };
         let project = self.import_project(&dest.to_string_lossy(), Some(&stem))?;
-        self.bus.record(Some(&project.id), None, EventKind::FileWrite, EventStatus::Completed, format!("Extracted {n} files from {}", p.file_name().map(|s| s.to_string_lossy().to_string()).unwrap_or_default()), json!({ "files": n, "note": "No scripts were run. Review package.json scripts before installing." }));
+        self.bus.record(
+            Some(&project.id),
+            None,
+            EventKind::FileWrite,
+            EventStatus::Completed,
+            format!("Extracted {n} files from {}", p.file_name().map(|s| s.to_string_lossy().to_string()).unwrap_or_default()),
+            json!({ "files": n, "note": "No scripts were run. Review package.json scripts before installing." }),
+        );
         Ok(project)
     }
 
@@ -488,7 +502,11 @@ impl Genius {
         let (client, s) = self.client()?;
         // 8x8 solid red PNG.
         const RED_PNG: &str = "iVBORw0KGgoAAAANSUhEUgAAAAgAAAAICAIAAABLbSncAAAAEklEQVR4nGP4z8CAFWEXHbQSACj/P8Fu7N9hAAAAAElFTkSuQmCC";
-        let msg = crate::nvidia::ChatMessage { role: "user".into(), content: "What is the dominant colour of this image? Answer with one word.".into(), images: vec![format!("data:image/png;base64,{RED_PNG}")] };
+        let msg = crate::nvidia::ChatMessage {
+            role: "user".into(),
+            content: "What is the dominant colour of this image? Answer with one word.".into(),
+            images: vec![format!("data:image/png;base64,{RED_PNG}")],
+        };
         let opts = crate::nvidia::ChatOptions { temperature: 0.0, top_p: 1.0, max_tokens: 16, stream: false };
         let cancel = tokio_util::sync::CancellationToken::new();
         let res = client.chat(model, &[msg], &opts, &cancel, |_| {}).await;

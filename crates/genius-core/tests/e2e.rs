@@ -202,7 +202,10 @@ async fn full_mvp_workflow() {
     let server = MockServer::start().await;
     Mock::given(method("GET"))
         .and(path("/v1/models"))
-        .respond_with(ResponseTemplate::new(200).set_body_string(r#"{"object":"list","data":[{"id":"mock/coder-1","object":"model","owned_by":"mock"},{"id":"mock/embed-1","object":"model","owned_by":"mock"}]}"#))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_string(r#"{"object":"list","data":[{"id":"mock/coder-1","object":"model","owned_by":"mock"},{"id":"mock/embed-1","object":"model","owned_by":"mock"}]}"#),
+        )
         .mount(&server)
         .await;
     Mock::given(method("POST")).and(path("/v1/chat/completions")).respond_with(MockNvidia).mount(&server).await;
@@ -336,11 +339,7 @@ async fn full_mvp_workflow() {
 async fn invalid_key_is_reported_clearly() {
     let server = MockServer::start().await;
     Mock::given(method("POST")).and(path("/v1/chat/completions")).respond_with(MockNvidia).mount(&server).await;
-    Mock::given(method("GET"))
-        .and(path("/v1/models"))
-        .respond_with(ResponseTemplate::new(401).set_body_string(r#"{"detail":"Authentication failed"}"#))
-        .mount(&server)
-        .await;
+    Mock::given(method("GET")).and(path("/v1/models")).respond_with(ResponseTemplate::new(401).set_body_string(r#"{"detail":"Authentication failed"}"#)).mount(&server).await;
     let tmp = tempfile::tempdir().unwrap();
     let g = Genius::new(tmp.path(), Arc::new(NullEmitter), Arc::new(MemoryStore::default())).unwrap();
     let mut s = g.settings().unwrap();

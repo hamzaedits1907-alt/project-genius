@@ -52,10 +52,10 @@ fn parse_projects(v: &Value) -> Vec<SupabaseProject> {
 /// Pick the publishable key from the api-keys response; everything else is discarded.
 pub fn publishable_key(v: &Value) -> Option<String> {
     let keys = v.as_array()?;
-    let pick = |names: &[&str]| keys.iter().find(|k| k.get("name").and_then(|n| n.as_str()).is_some_and(|n| names.contains(&n))).and_then(|k| k.get("api_key").and_then(|x| x.as_str())).map(String::from);
-    pick(&["anon", "publishable"]).or_else(|| {
-        keys.iter().find(|k| k.get("type").and_then(|t| t.as_str()) == Some("publishable")).and_then(|k| k.get("api_key").and_then(|x| x.as_str())).map(String::from)
-    })
+    let pick =
+        |names: &[&str]| keys.iter().find(|k| k.get("name").and_then(|n| n.as_str()).is_some_and(|n| names.contains(&n))).and_then(|k| k.get("api_key").and_then(|x| x.as_str())).map(String::from);
+    pick(&["anon", "publishable"])
+        .or_else(|| keys.iter().find(|k| k.get("type").and_then(|t| t.as_str()) == Some("publishable")).and_then(|k| k.get("api_key").and_then(|x| x.as_str())).map(String::from))
 }
 
 fn valid_ref(r: &str) -> Result<()> {
@@ -69,7 +69,11 @@ fn valid_ref(r: &str) -> Result<()> {
 fn migration_name(name: &str) -> String {
     let s: String = name.to_lowercase().chars().map(|c| if c.is_ascii_alphanumeric() { c } else { '_' }).collect();
     let s = s.trim_matches('_').to_string();
-    if s.is_empty() { "migration".into() } else { s.chars().take(60).collect() }
+    if s.is_empty() {
+        "migration".into()
+    } else {
+        s.chars().take(60).collect()
+    }
 }
 
 impl Genius {
@@ -161,7 +165,12 @@ impl Genius {
 
     fn supabase_link_of(&self, project_id: &str) -> Result<String> {
         let p = self.db.get_project(project_id)?;
-        p.status.get("supabase").and_then(|s| s.get("ref")).and_then(|r| r.as_str()).map(String::from).ok_or_else(|| GeniusError::Validation("This project is not linked to a Supabase project yet.".into()))
+        p.status
+            .get("supabase")
+            .and_then(|s| s.get("ref"))
+            .and_then(|r| r.as_str())
+            .map(String::from)
+            .ok_or_else(|| GeniusError::Validation("This project is not linked to a Supabase project yet.".into()))
     }
 
     /// Health and configuration check: remote project status, env config presence, client
@@ -215,7 +224,14 @@ impl Genius {
         env = env.lines().filter(|l| !l.starts_with("VITE_SUPABASE_URL=") && !l.starts_with("VITE_SUPABASE_ANON_KEY=")).map(|l| format!("{l}\n")).collect();
         env.push_str(&format!("VITE_SUPABASE_URL=https://{reference}.supabase.co\nVITE_SUPABASE_ANON_KEY={anon}\n"));
         ws.write_text(".env.local", &env)?;
-        self.bus.record(Some(project_id), None, EventKind::FileWrite, EventStatus::Completed, "Wrote Supabase client configuration to .env.local (gitignored)", json!({ "variables": ["VITE_SUPABASE_URL", "VITE_SUPABASE_ANON_KEY"], "gitignoreAdded": added }));
+        self.bus.record(
+            Some(project_id),
+            None,
+            EventKind::FileWrite,
+            EventStatus::Completed,
+            "Wrote Supabase client configuration to .env.local (gitignored)",
+            json!({ "variables": ["VITE_SUPABASE_URL", "VITE_SUPABASE_ANON_KEY"], "gitignoreAdded": added }),
+        );
 
         // Client library + typed client module as a proposal.
         let mut writes = Vec::new();
@@ -239,7 +255,14 @@ impl Genius {
             None
         } else {
             let cs = ChangeStore::new(&self.db).create(project_id, None, "change", "Add Supabase client", "Adds @supabase/supabase-js and a typed client in src/lib/supabase.ts that reads the public URL and anon key from Vite env variables. The service-role key is never used in browser code.", &changes)?;
-            self.bus.record(Some(project_id), None, EventKind::Changeset, EventStatus::AwaitingApproval, "Review proposed changes: Add Supabase client", json!({ "changesetId": cs.id, "files": cs.files }));
+            self.bus.record(
+                Some(project_id),
+                None,
+                EventKind::Changeset,
+                EventStatus::AwaitingApproval,
+                "Review proposed changes: Add Supabase client",
+                json!({ "changesetId": cs.id, "files": cs.files }),
+            );
             Some(cs.id)
         };
         Ok(json!({ "envWritten": ".env.local", "variables": ["VITE_SUPABASE_URL", "VITE_SUPABASE_ANON_KEY"], "changesetId": cs, "gitignoreAdded": added }))
@@ -253,7 +276,14 @@ impl Genius {
         let ws = self.workspace(project_id)?;
         let path = format!("supabase/migrations/{}_{}.sql", chrono::Utc::now().format("%Y%m%d%H%M%S"), migration_name(name));
         let changes = crate::changes::compute_changes(&ws, &[(path.clone(), format!("{}\n", sql.trim_end()))], &[])?;
-        let cs = ChangeStore::new(&self.db).create(project_id, None, "change", &format!("Migration: {name}"), "New SQL migration file. Review it, apply it to the project, then apply it to the remote database separately.", &changes)?;
+        let cs = ChangeStore::new(&self.db).create(
+            project_id,
+            None,
+            "change",
+            &format!("Migration: {name}"),
+            "New SQL migration file. Review it, apply it to the project, then apply it to the remote database separately.",
+            &changes,
+        )?;
         self.bus.record(Some(project_id), None, EventKind::Changeset, EventStatus::AwaitingApproval, format!("Review proposed migration: {name}"), json!({ "changesetId": cs.id, "files": cs.files }));
         Ok(json!({ "changesetId": cs.id, "path": path }))
     }
@@ -280,7 +310,16 @@ impl Genius {
         let ws = self.workspace(project_id)?;
         let sql = ws.read_text(path)?;
         self.approvals
-            .request(&self.bus, Some(project_id), None, "remote_database", crate::settings::Policy::Ask, &format!("Run migration on Supabase project {reference}"), json!({ "project": reference, "file": path, "sql": sql, "warning": "This changes the REMOTE database. It cannot be undone automatically." }), cancel)
+            .request(
+                &self.bus,
+                Some(project_id),
+                None,
+                "remote_database",
+                crate::settings::Policy::Ask,
+                &format!("Run migration on Supabase project {reference}"),
+                json!({ "project": reference, "file": path, "sql": sql, "warning": "This changes the REMOTE database. It cannot be undone automatically." }),
+                cancel,
+            )
             .await?;
         let mut ev = self.bus.start(Some(project_id), None, EventKind::Command, EventStatus::Running, format!("Applying {path} to Supabase {reference}"), json!({ "file": path }));
         match self.supabase_request(reqwest::Method::POST, &format!("/v1/projects/{reference}/database/query"), &token, Some(json!({ "query": sql }))).await {
@@ -307,8 +346,16 @@ impl Genius {
         if changes.is_empty() {
             return Ok(json!({ "changesetId": null, "note": "types are already up to date" }));
         }
-        let cs = ChangeStore::new(&self.db).create(project_id, None, "change", "Update Supabase database types", "Generated from the linked database schema by the Supabase Management API.", &changes)?;
-        self.bus.record(Some(project_id), None, EventKind::Changeset, EventStatus::AwaitingApproval, "Review proposed changes: Update Supabase database types", json!({ "changesetId": cs.id, "files": cs.files }));
+        let cs =
+            ChangeStore::new(&self.db).create(project_id, None, "change", "Update Supabase database types", "Generated from the linked database schema by the Supabase Management API.", &changes)?;
+        self.bus.record(
+            Some(project_id),
+            None,
+            EventKind::Changeset,
+            EventStatus::AwaitingApproval,
+            "Review proposed changes: Update Supabase database types",
+            json!({ "changesetId": cs.id, "files": cs.files }),
+        );
         Ok(json!({ "changesetId": cs.id }))
     }
 }

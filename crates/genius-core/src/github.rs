@@ -149,11 +149,7 @@ impl GitHub {
         }
         crate::redact::register_secret(token);
         let mut cmd = tokio::process::Command::new(&self.gh);
-        cmd.args(["auth", "login", "--hostname", HOST, "--git-protocol", "https", "--with-token"])
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .kill_on_drop(true);
+        cmd.args(["auth", "login", "--hostname", HOST, "--git-protocol", "https", "--with-token"]).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).kill_on_drop(true);
         #[cfg(windows)]
         cmd.creation_flags(0x0800_0000);
         let mut child = cmd.spawn().map_err(|e| GeniusError::GitHub(format!("could not start gh: {e}")))?;
@@ -161,9 +157,7 @@ impl GitHub {
             s.write_all(token.as_bytes()).await?;
             s.write_all(b"\n").await?;
         }
-        let out = tokio::time::timeout(Duration::from_secs(60), child.wait_with_output())
-            .await
-            .map_err(|_| GeniusError::GitHub("gh did not respond".into()))??;
+        let out = tokio::time::timeout(Duration::from_secs(60), child.wait_with_output()).await.map_err(|_| GeniusError::GitHub("gh did not respond".into()))??;
         if out.status.success() {
             Ok(())
         } else {
@@ -196,9 +190,7 @@ impl GitHub {
 
     pub async fn view(&self, name_with_owner: &str) -> Result<Option<RepoInfo>> {
         validate_full_name(name_with_owner)?;
-        let (c, o, e) = self
-            .gh(&["repo", "view", name_with_owner, "--json", "nameWithOwner,name,owner,visibility,url,description,updatedAt,defaultBranchRef,isEmpty"], 30)
-            .await?;
+        let (c, o, e) = self.gh(&["repo", "view", name_with_owner, "--json", "nameWithOwner,name,owner,visibility,url,description,updatedAt,defaultBranchRef,isEmpty"], 30).await?;
         if c != 0 {
             let l = e.to_lowercase();
             if l.contains("could not resolve") || l.contains("not found") {

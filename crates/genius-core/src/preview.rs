@@ -91,7 +91,8 @@ pub enum CheckFailure {
     Compile { file: Option<String>, message: String, details: String },
 }
 
-static SCRIPT_SRC: LazyLock<Regex> = LazyLock::new(|| Regex::new(r#"<script\b[^>]*\btype\s*=\s*["']module["'][^>]*\bsrc\s*=\s*["']([^"']+)["']|<script\b[^>]*\bsrc\s*=\s*["']([^"']+)["'][^>]*\btype\s*=\s*["']module["']"#).unwrap());
+static SCRIPT_SRC: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r#"<script\b[^>]*\btype\s*=\s*["']module["'][^>]*\bsrc\s*=\s*["']([^"']+)["']|<script\b[^>]*\bsrc\s*=\s*["']([^"']+)["'][^>]*\btype\s*=\s*["']module["']"#).unwrap());
 static JS_IMPORT: LazyLock<Regex> = LazyLock::new(|| Regex::new(r#"(?:\bfrom\s*|\bimport\s*\(?\s*)["'](/[^"'\s]+)["']"#).unwrap());
 static VITE_ERROR: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?s)const error = (\{.*?\})\s*\n").unwrap());
 
@@ -120,7 +121,8 @@ pub fn parse_vite_error(body: &str, project_root: Option<&str>) -> (Option<Strin
             let file = v.pointer("/loc/file").or_else(|| v.get("id")).and_then(|f| f.as_str()).map(|f| strip(f).replace('\\', "/"));
             let frame = v.get("frame").and_then(|f| f.as_str()).unwrap_or("");
             let plugin = v.get("plugin").and_then(|f| f.as_str()).unwrap_or("");
-            let details = format!("{}{}{}", strip(&message), if plugin.is_empty() { String::new() } else { format!("\nPlugin: {plugin}") }, if frame.is_empty() { String::new() } else { format!("\n{frame}") });
+            let details =
+                format!("{}{}{}", strip(&message), if plugin.is_empty() { String::new() } else { format!("\nPlugin: {plugin}") }, if frame.is_empty() { String::new() } else { format!("\n{frame}") });
             return (file, strip(&message), details);
         }
     }

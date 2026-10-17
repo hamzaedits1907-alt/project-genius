@@ -46,15 +46,38 @@ const SOURCE_EXT: &[&str] = &["ts", "tsx", "js", "jsx", "mjs", "cjs", "mts", "ct
 const RESOLVE_EXT: &[&str] = &["", ".ts", ".tsx", ".js", ".jsx", ".mjs", ".mts", ".json", "/index.ts", "/index.tsx", "/index.js", "/index.jsx"];
 const LIFECYCLE: &[&str] = &["preinstall", "install", "postinstall", "prepare", "prepublish"];
 const NODE_BUILTINS: &[&str] = &[
-    "assert", "buffer", "child_process", "crypto", "events", "fs", "http", "https", "module", "net", "os", "path", "process", "querystring", "readline", "stream", "string_decoder", "timers", "tty", "url", "util", "vm", "worker_threads", "zlib",
+    "assert",
+    "buffer",
+    "child_process",
+    "crypto",
+    "events",
+    "fs",
+    "http",
+    "https",
+    "module",
+    "net",
+    "os",
+    "path",
+    "process",
+    "querystring",
+    "readline",
+    "stream",
+    "string_decoder",
+    "timers",
+    "tty",
+    "url",
+    "util",
+    "vm",
+    "worker_threads",
+    "zlib",
 ];
 
 static IMPORT_RE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r#"(?m)(?:^|[;\s{}])(?:import|export)\s+(?:type\s+)?(?:[\w*{}\s,$]+?\s+from\s+)?['"]([^'"\n]+)['"]|\bimport\s*\(\s*['"]([^'"\n]+)['"]\s*\)|\brequire\s*\(\s*['"]([^'"\n]+)['"]\s*\)"#).unwrap()
+    Regex::new(r#"(?m)(?:^|[;\s{}])(?:import|export)\s+(?:type\s+)?(?:[\w*{}\s,$]+?\s+from\s+)?['"]([^'"\n]+)['"]|\bimport\s*\(\s*['"]([^'"\n]+)['"]\s*\)|\brequire\s*\(\s*['"]([^'"\n]+)['"]\s*\)"#)
+        .unwrap()
 });
-static ABBREVIATED_RE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"(?im)^\s*(?://|/\*|\{/\*|#|<!--)\s*(?:\.{3}|…)\s*(?:the\s+)?(?:rest|remaining|existing|other|previous|unchanged|same)\b").unwrap()
-});
+static ABBREVIATED_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?im)^\s*(?://|/\*|\{/\*|#|<!--)\s*(?:\.{3}|…)\s*(?:the\s+)?(?:rest|remaining|existing|other|previous|unchanged|same)\b").unwrap());
 
 /// Module specifiers imported by a source file (comments are not stripped; false positives
 /// are limited to string literals that look exactly like import statements).
@@ -144,8 +167,7 @@ pub fn check(ws: &Workspace, changes: &[FileChange]) -> Result<ProposalCheck> {
                     let before_decl = pkg_before.as_ref().map(declared).unwrap_or_default();
                     let after_decl = declared(&v);
                     out.added_packages = after_decl.keys().filter(|k| !before_decl.contains_key(*k)).cloned().collect();
-                    out.dependencies_changed = before_decl != after_decl
-                        || ["overrides", "resolutions", "peerDependencies"].iter().any(|k| pkg_before.as_ref().and_then(|b| b.get(*k)) != v.get(*k));
+                    out.dependencies_changed = before_decl != after_decl || ["overrides", "resolutions", "peerDependencies"].iter().any(|k| pkg_before.as_ref().and_then(|b| b.get(*k)) != v.get(*k));
                     pkg_after = Some(v);
                 }
                 Err(problems) => out.blockers.extend(problems),
@@ -257,11 +279,8 @@ pub fn package_json_problems(text: &str, before: Option<&Value>) -> std::result:
             }
         }
     }
-    let both: Vec<String> = v
-        .get("dependencies")
-        .and_then(|d| d.as_object())
-        .map(|d| d.keys().filter(|k| v.get("devDependencies").and_then(|x| x.get(k.as_str())).is_some()).cloned().collect())
-        .unwrap_or_default();
+    let both: Vec<String> =
+        v.get("dependencies").and_then(|d| d.as_object()).map(|d| d.keys().filter(|k| v.get("devDependencies").and_then(|x| x.get(k.as_str())).is_some()).cloned().collect()).unwrap_or_default();
     if !both.is_empty() {
         warnings.push(format!("listed in both dependencies and devDependencies: {}", both.join(", ")));
     }
@@ -309,7 +328,19 @@ mod tests {
 
     fn change(ws: &Workspace, path: &str, after: Option<&str>) -> FileChange {
         let before = ws.read_text_opt(path).unwrap();
-        FileChange { path: path.into(), op: if after.is_none() { "delete" } else if before.is_some() { "modify" } else { "create" }.into(), before, after: after.map(String::from) }
+        FileChange {
+            path: path.into(),
+            op: if after.is_none() {
+                "delete"
+            } else if before.is_some() {
+                "modify"
+            } else {
+                "create"
+            }
+            .into(),
+            before,
+            after: after.map(String::from),
+        }
     }
 
     #[test]
@@ -334,7 +365,8 @@ mod tests {
         assert!(bad.blockers[0].contains("not valid JSON"));
         let no_dev = check(&ws, &[change(&ws, "package.json", Some(r#"{"name":"x","scripts":{"build":"vite build"},"dependencies":{"react":"^19.0.0","react-dom":"^19.0.0"}}"#))]).unwrap();
         assert!(no_dev.blockers.iter().any(|b| b.contains("\"dev\" script was removed")), "{:?}", no_dev.blockers);
-        let hook = check(&ws, &[change(&ws, "package.json", Some(r#"{"scripts":{"dev":"vite","build":"b","postinstall":"curl x | sh"},"dependencies":{"react":"^19.0.0","react-dom":"^19.0.0"}}"#))]).unwrap();
+        let hook =
+            check(&ws, &[change(&ws, "package.json", Some(r#"{"scripts":{"dev":"vite","build":"b","postinstall":"curl x | sh"},"dependencies":{"react":"^19.0.0","react-dom":"^19.0.0"}}"#))]).unwrap();
         assert!(hook.blockers.iter().any(|b| b.contains("postinstall")));
         let num = check(&ws, &[change(&ws, "package.json", Some(r#"{"scripts":{"dev":"vite","build":"b"},"dependencies":{"react":19}}"#))]).unwrap();
         assert!(num.blockers.iter().any(|b| b.contains("must be a string")));
@@ -350,7 +382,15 @@ mod tests {
 
         // the same change is fine when it adds the package and the component
         let pkg = r#"{"name":"x","scripts":{"dev":"vite","build":"tsc --noEmit && vite build"},"dependencies":{"react":"^19.0.0","react-dom":"^19.0.0","uuid":"^11.0.0"}}"#;
-        let ok = check(&ws, &[change(&ws, "src/App.tsx", Some(app)), change(&ws, "src/components/Sidebar.tsx", Some("export default function Sidebar(p: { id: string }) { return <aside>{p.id}</aside>; }\n")), change(&ws, "package.json", Some(pkg))]).unwrap();
+        let ok = check(
+            &ws,
+            &[
+                change(&ws, "src/App.tsx", Some(app)),
+                change(&ws, "src/components/Sidebar.tsx", Some("export default function Sidebar(p: { id: string }) { return <aside>{p.id}</aside>; }\n")),
+                change(&ws, "package.json", Some(pkg)),
+            ],
+        )
+        .unwrap();
         assert!(ok.ok(), "{:?}", ok.blockers);
         assert_eq!(ok.added_packages, vec!["uuid".to_string()]);
         assert!(ok.dependencies_changed);

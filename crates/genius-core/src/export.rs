@@ -20,9 +20,11 @@ pub struct ExportResult {
 fn collect(root: &Path) -> (Vec<(String, std::path::PathBuf)>, Vec<String>) {
     let mut files = Vec::new();
     let mut skipped = Vec::new();
-    let walker = walkdir::WalkDir::new(root).follow_links(false).sort_by_file_name().into_iter().filter_entry(|e| {
-        !(e.file_type().is_dir() && e.depth() > 0 && IGNORED_DIRS.contains(&e.file_name().to_string_lossy().as_ref()))
-    });
+    let walker = walkdir::WalkDir::new(root)
+        .follow_links(false)
+        .sort_by_file_name()
+        .into_iter()
+        .filter_entry(|e| !(e.file_type().is_dir() && e.depth() > 0 && IGNORED_DIRS.contains(&e.file_name().to_string_lossy().as_ref())));
     for e in walker.flatten() {
         if !e.file_type().is_file() {
             continue;

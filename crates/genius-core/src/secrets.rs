@@ -40,16 +40,12 @@ impl SecretStore for KeyringStore {
                 Ok(Some(v))
             }
             Err(keyring::Error::NoEntry) => Ok(None),
-            Err(e) => Err(GeniusError::Secret(format!(
-                "could not read from the system credential store: {e}"
-            ))),
+            Err(e) => Err(GeniusError::Secret(format!("could not read from the system credential store: {e}"))),
         }
     }
 
     fn set(&self, name: &str, value: &str) -> Result<()> {
-        Self::entry(name)?
-            .set_password(value)
-            .map_err(|e| GeniusError::Secret(format!("could not save to the system credential store: {e}")))?;
+        Self::entry(name)?.set_password(value).map_err(|e| GeniusError::Secret(format!("could not save to the system credential store: {e}")))?;
         register_secret(value);
         Ok(())
     }

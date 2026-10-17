@@ -13,13 +13,7 @@ pub const KIND_VITE_REACT: &str = "vite-react-ts";
 /// If a script is changed (e.g. by the AI), running it requires explicit approval and the
 /// exact script text is shown to the user.
 pub fn trusted_scripts() -> Vec<(&'static str, &'static str)> {
-    vec![
-        ("dev", "vite"),
-        ("build", "tsc --noEmit && vite build"),
-        ("typecheck", "tsc --noEmit"),
-        ("test", "vitest run --passWithNoTests"),
-        ("preview", "vite preview"),
-    ]
+    vec![("dev", "vite"), ("build", "tsc --noEmit && vite build"), ("typecheck", "tsc --noEmit"), ("test", "vitest run --passWithNoTests"), ("preview", "vite preview")]
 }
 
 /// Packages the template itself declares (trusted: installing them needs no extra approval).
@@ -30,11 +24,7 @@ pub fn template_packages() -> Vec<String> {
 }
 
 pub fn slugify(name: &str) -> String {
-    let mut s: String = name
-        .to_lowercase()
-        .chars()
-        .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
-        .collect();
+    let mut s: String = name.to_lowercase().chars().map(|c| if c.is_ascii_alphanumeric() { c } else { '-' }).collect();
     while s.contains("--") {
         s = s.replace("--", "-");
     }
@@ -49,8 +39,7 @@ pub fn slugify(name: &str) -> String {
 
 pub fn files(name: &str, description: &str) -> Vec<(String, String)> {
     let slug = slugify(name);
-    let scripts: serde_json::Map<String, serde_json::Value> =
-        trusted_scripts().into_iter().map(|(k, v)| (k.to_string(), json!(v))).collect();
+    let scripts: serde_json::Map<String, serde_json::Value> = trusted_scripts().into_iter().map(|(k, v)| (k.to_string(), json!(v))).collect();
     let pkg = json!({
         "name": slug,
         "private": true,
@@ -168,10 +157,7 @@ export default function App() {{
             "src/index.css".into(),
             ":root {\n  font-family: system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;\n  line-height: 1.5;\n}\n\n* {\n  box-sizing: border-box;\n}\n\nbody {\n  margin: 0;\n}\n".into(),
         ),
-        (
-            ".gitignore".into(),
-            "node_modules\ndist\ncoverage\n*.log\n.DS_Store\n.env\n.env.*\n!.env.example\n.vite\n".into(),
-        ),
+        (".gitignore".into(), "node_modules\ndist\ncoverage\n*.log\n.DS_Store\n.env\n.env.*\n!.env.example\n.vite\n".into()),
     ]
 }
 

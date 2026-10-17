@@ -75,12 +75,7 @@ mod tests {
     fn records_redacted_and_bounded() {
         let dir = tempfile::tempdir().unwrap();
         crate::redact::register_secret("nvapi-supersecretvalue123456");
-        let r = UiErrorReport {
-            view: "project".into(),
-            message: "destroy is not a function".into(),
-            stack: "at X (key nvapi-supersecretvalue123456)".into(),
-            component_stack: "x".repeat(20_000),
-        };
+        let r = UiErrorReport { view: "project".into(), message: "destroy is not a function".into(), stack: "at X (key nvapi-supersecretvalue123456)".into(), component_stack: "x".repeat(20_000) };
         let p = record(dir.path(), &r, "2026-01-01T00:00:00Z").unwrap();
         let text = std::fs::read_to_string(&p).unwrap();
         assert!(!text.contains("supersecretvalue"));

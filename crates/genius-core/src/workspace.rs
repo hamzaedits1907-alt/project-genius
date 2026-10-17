@@ -65,9 +65,7 @@ impl Workspace {
         let mut probe = abs.clone();
         loop {
             if probe.exists() || probe.symlink_metadata().is_ok() {
-                let real = probe.canonicalize().map_err(|_| {
-                    GeniusError::PathRejected(format!("'{rel}' points through a broken or unreadable link"))
-                })?;
+                let real = probe.canonicalize().map_err(|_| GeniusError::PathRejected(format!("'{rel}' points through a broken or unreadable link")))?;
                 if !real.starts_with(&self.canonical) {
                     return Err(GeniusError::PathRejected(format!("'{rel}' resolves outside the project workspace")));
                 }
@@ -89,9 +87,7 @@ impl Workspace {
         }
         let name = norm.file_name().and_then(|n| n.to_str()).unwrap_or("");
         if is_secret_name(name) {
-            return Err(GeniusError::PathRejected(format!(
-                "'{rel}' looks like a secrets file; Genius will not write it automatically"
-            )));
+            return Err(GeniusError::PathRejected(format!("'{rel}' looks like a secrets file; Genius will not write it automatically")));
         }
         self.resolve(rel)
     }
@@ -160,9 +156,11 @@ impl Workspace {
 
     pub fn list_files(&self) -> Result<Vec<FileEntry>> {
         let mut out = Vec::new();
-        let walker = walkdir::WalkDir::new(&self.root).follow_links(false).sort_by_file_name().into_iter().filter_entry(|e| {
-            !(e.file_type().is_dir() && e.depth() > 0 && IGNORED_DIRS.contains(&e.file_name().to_string_lossy().as_ref()))
-        });
+        let walker = walkdir::WalkDir::new(&self.root)
+            .follow_links(false)
+            .sort_by_file_name()
+            .into_iter()
+            .filter_entry(|e| !(e.file_type().is_dir() && e.depth() > 0 && IGNORED_DIRS.contains(&e.file_name().to_string_lossy().as_ref())));
         for entry in walker {
             let entry = match entry {
                 Ok(e) => e,
@@ -252,10 +250,7 @@ pub fn normalize_rel(rel: &str) -> Result<PathBuf> {
         }
         // Windows reserved device names and trailing dots/spaces
         let stem = part.split('.').next().unwrap_or("").to_ascii_uppercase();
-        if ["CON", "PRN", "AUX", "NUL", "COM1", "COM2", "COM3", "COM4", "LPT1", "LPT2", "LPT3"].contains(&stem.as_str())
-            || part.ends_with('.')
-            || part.ends_with(' ')
-        {
+        if ["CON", "PRN", "AUX", "NUL", "COM1", "COM2", "COM3", "COM4", "LPT1", "LPT2", "LPT3"].contains(&stem.as_str()) || part.ends_with('.') || part.ends_with(' ') {
             return Err(GeniusError::PathRejected(format!("'{rel}' contains a reserved or invalid name")));
         }
         out.push(part);
@@ -290,7 +285,10 @@ pub fn is_sensitive(rel: &str, size: u64, is_text: bool) -> bool {
 
 fn is_text_path(rel: &str, abs: &Path) -> bool {
     let ext = rel.rsplit_once('.').map(|(_, e)| e.to_lowercase()).unwrap_or_default();
-    const BIN: &[&str] = &["png", "jpg", "jpeg", "gif", "webp", "ico", "bmp", "woff", "woff2", "ttf", "otf", "eot", "zip", "gz", "tar", "pdf", "mp4", "mp3", "wav", "exe", "dll", "so", "dylib", "wasm", "lockb", "db", "sqlite"];
+    const BIN: &[&str] = &[
+        "png", "jpg", "jpeg", "gif", "webp", "ico", "bmp", "woff", "woff2", "ttf", "otf", "eot", "zip", "gz", "tar", "pdf", "mp4", "mp3", "wav", "exe", "dll", "so", "dylib", "wasm", "lockb", "db",
+        "sqlite",
+    ];
     if BIN.contains(&ext.as_str()) {
         return false;
     }

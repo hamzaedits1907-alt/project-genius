@@ -106,13 +106,7 @@ impl Emitter for RecordingEmitter {
 
 impl RecordingEmitter {
     pub fn on(&self, channel: &str) -> Vec<Value> {
-        self.events
-            .lock()
-            .unwrap()
-            .iter()
-            .filter(|(c, _)| c == channel)
-            .map(|(_, v)| v.clone())
-            .collect()
+        self.events.lock().unwrap().iter().filter(|(c, _)| c == channel).map(|(_, v)| v.clone()).collect()
     }
 }
 
@@ -143,15 +137,7 @@ impl EventBus {
         self.emitter.emit(channel, payload);
     }
 
-    pub fn start(
-        &self,
-        project_id: Option<&str>,
-        task_id: Option<&str>,
-        kind: EventKind,
-        status: EventStatus,
-        title: impl Into<String>,
-        detail: Value,
-    ) -> EventHandle {
+    pub fn start(&self, project_id: Option<&str>, task_id: Option<&str>, kind: EventKind, status: EventStatus, title: impl Into<String>, detail: Value) -> EventHandle {
         let ts = now();
         let ev = ActivityEvent {
             id: uuid::Uuid::new_v4().to_string(),
@@ -169,15 +155,7 @@ impl EventBus {
     }
 
     /// Convenience: record an operation that already finished.
-    pub fn record(
-        &self,
-        project_id: Option<&str>,
-        task_id: Option<&str>,
-        kind: EventKind,
-        status: EventStatus,
-        title: impl Into<String>,
-        detail: Value,
-    ) -> ActivityEvent {
+    pub fn record(&self, project_id: Option<&str>, task_id: Option<&str>, kind: EventKind, status: EventStatus, title: impl Into<String>, detail: Value) -> ActivityEvent {
         self.start(project_id, task_id, kind, status, title, detail).ev
     }
 
@@ -187,17 +165,7 @@ impl EventBus {
              VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9)
              ON CONFLICT(id) DO UPDATE SET status=excluded.status, title=excluded.title,
                detail_json=excluded.detail_json, updated_ts=excluded.updated_ts",
-            rusqlite::params![
-                ev.id,
-                ev.project_id,
-                ev.task_id,
-                ev.kind.as_str(),
-                ev.status.as_str(),
-                ev.title,
-                ev.detail.to_string(),
-                ev.ts,
-                ev.updated_ts
-            ],
+            rusqlite::params![ev.id, ev.project_id, ev.task_id, ev.kind.as_str(), ev.status.as_str(), ev.title, ev.detail.to_string(), ev.ts, ev.updated_ts],
         );
         if let Err(e) = res {
             log::error!("failed to persist activity event: {e}");
@@ -256,11 +224,9 @@ impl EventBus {
             rows.flatten().collect()
         };
         for id in ids {
-            let found = self.db.conn().query_row(
-                "SELECT project_id, task_id, title, detail_json, ts FROM activity WHERE id = ?1",
-                [&id],
-                |r| Ok((r.get::<_, Option<String>>(0)?, r.get::<_, Option<String>>(1)?, r.get::<_, String>(2)?, r.get::<_, String>(3)?, r.get::<_, String>(4)?)),
-            );
+            let found = self.db.conn().query_row("SELECT project_id, task_id, title, detail_json, ts FROM activity WHERE id = ?1", [&id], |r| {
+                Ok((r.get::<_, Option<String>>(0)?, r.get::<_, Option<String>>(1)?, r.get::<_, String>(2)?, r.get::<_, String>(3)?, r.get::<_, String>(4)?))
+            });
             if let Ok((project_id, task_id, title, detail, ts)) = found {
                 let mut detail: Value = serde_json::from_str(&detail).unwrap_or(json!({}));
                 detail["resolution"] = json!(outcome);
@@ -311,11 +277,7 @@ impl EventHandle {
     }
 
     pub fn fail(mut self, error: &crate::error::GeniusError) -> ActivityEvent {
-        let status = if matches!(error, crate::error::GeniusError::Cancelled) {
-            EventStatus::Cancelled
-        } else {
-            EventStatus::Failed
-        };
+        let status = if matches!(error, crate::error::GeniusError::Cancelled) { EventStatus::Cancelled } else { EventStatus::Failed };
         self.update(status, json!({ "error": { "kind": error.kind(), "message": error.to_string() } }));
         self.ev
     }

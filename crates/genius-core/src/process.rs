@@ -30,8 +30,18 @@ const MAX_LINE: usize = 4000;
 
 /// Environment variables never passed to project processes.
 const SCRUBBED_ENV: &[&str] = &[
-    "NVIDIA_API_KEY", "NGC_API_KEY", "GITHUB_TOKEN", "GH_TOKEN", "GH_ENTERPRISE_TOKEN", "GITHUB_ENTERPRISE_TOKEN",
-    "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "NPM_TOKEN", "NODE_AUTH_TOKEN", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN",
+    "NVIDIA_API_KEY",
+    "NGC_API_KEY",
+    "GITHUB_TOKEN",
+    "GH_TOKEN",
+    "GH_ENTERPRISE_TOKEN",
+    "GITHUB_ENTERPRISE_TOKEN",
+    "OPENAI_API_KEY",
+    "ANTHROPIC_API_KEY",
+    "NPM_TOKEN",
+    "NODE_AUTH_TOKEN",
+    "AWS_SECRET_ACCESS_KEY",
+    "AWS_SESSION_TOKEN",
 ];
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
@@ -266,24 +276,14 @@ impl ProcessManager {
             return Ok(p);
         }
         let dirs: Vec<PathBuf> = std::env::var_os("PATH").map(|p| std::env::split_paths(&p).collect()).unwrap_or_default();
-        let p = resolve_npm(&dirs, cfg!(windows)).ok_or_else(|| {
-            GeniusError::MissingTool(
-                "npm was not found on PATH. Install Node.js 20 or newer from https://nodejs.org and restart Genius.".into(),
-            )
-        })?;
+        let p =
+            resolve_npm(&dirs, cfg!(windows)).ok_or_else(|| GeniusError::MissingTool("npm was not found on PATH. Install Node.js 20 or newer from https://nodejs.org and restart Genius.".into()))?;
         *self.npm.lock().unwrap() = Some(p.clone());
         Ok(p)
     }
 
     pub fn active(&self, project_id: Option<&str>) -> Vec<RunInfo> {
-        self.runs
-            .lock()
-            .unwrap()
-            .values()
-            .filter(|r| r.done.borrow().is_none())
-            .filter(|r| project_id.is_none_or(|p| r.info.project_id == p))
-            .map(|r| r.info.clone())
-            .collect()
+        self.runs.lock().unwrap().values().filter(|r| r.done.borrow().is_none()).filter(|r| project_id.is_none_or(|p| r.info.project_id == p)).map(|r| r.info.clone()).collect()
     }
 
     pub fn dev_server(&self, project_id: &str) -> Option<RunInfo> {
@@ -332,17 +332,7 @@ impl ProcessManager {
 
     #[cfg(test)]
     #[allow(clippy::too_many_arguments)]
-    async fn spawn(
-        &self,
-        project_id: &str,
-        task_id: Option<&str>,
-        cwd: &Path,
-        op: Operation,
-        reason: &str,
-        program: &Path,
-        args: &[String],
-        port: Option<u16>,
-    ) -> Result<RunInfo> {
+    async fn spawn(&self, project_id: &str, task_id: Option<&str>, cwd: &Path, op: Operation, reason: &str, program: &Path, args: &[String], port: Option<u16>) -> Result<RunInfo> {
         let prog_name = program.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_else(|| "npm".into());
         let shown = format!("{} {}", prog_name, args.join(" "));
         self.spawn_cmd(project_id, task_id, cwd, op, reason, program, args, port, &shown, &[]).await
@@ -365,16 +355,7 @@ impl ProcessManager {
         let id = uuid::Uuid::new_v4().to_string();
         let command = shown.to_string();
         let cwd = &crate::workspace::display_path(cwd);
-        let info = RunInfo {
-            id: id.clone(),
-            project_id: project_id.into(),
-            op,
-            command: command.clone(),
-            cwd: cwd.to_string_lossy().into(),
-            reason: reason.into(),
-            started_at: now(),
-            port,
-        };
+        let info = RunInfo { id: id.clone(), project_id: project_id.into(), op, command: command.clone(), cwd: cwd.to_string_lossy().into(), reason: reason.into(), started_at: now(), port };
         self.db.insert_run(&RunRow {
             id: id.clone(),
             project_id: project_id.into(),
@@ -492,14 +473,7 @@ impl ProcessManager {
                 "failed"
             };
             let output_tail = tail.lock().unwrap().iter().cloned().collect::<Vec<_>>().join("\n");
-            let outcome = RunOutcome {
-                id: info2.id.clone(),
-                op: info2.op,
-                status: st.into(),
-                exit_code,
-                duration_ms: started.elapsed().as_millis() as u64,
-                output_tail: output_tail.clone(),
-            };
+            let outcome = RunOutcome { id: info2.id.clone(), op: info2.op, status: st.into(), exit_code, duration_ms: started.elapsed().as_millis() as u64, output_tail: output_tail.clone() };
             let _ = db.finish_run(&info2.id, st, exit_code, &output_tail);
             let ev_status = match st {
                 "succeeded" => EventStatus::Completed,
@@ -530,15 +504,7 @@ impl ProcessManager {
     }
 
     /// Start and wait. Honours `cancel` by stopping the process.
-    pub async fn run_to_end(
-        &self,
-        project_id: &str,
-        task_id: Option<&str>,
-        cwd: &Path,
-        op: Operation,
-        reason: &str,
-        cancel: &CancellationToken,
-    ) -> Result<RunOutcome> {
+    pub async fn run_to_end(&self, project_id: &str, task_id: Option<&str>, cwd: &Path, op: Operation, reason: &str, cancel: &CancellationToken) -> Result<RunOutcome> {
         let info = self.start(project_id, task_id, cwd, op, reason).await?;
         tokio::select! {
             o = self.wait(&info.id) => o,
@@ -648,26 +614,13 @@ async fn kill_tree(pid: u32) {
 #[cfg(windows)]
 fn kill_tree_sync(pid: u32) {
     use std::os::windows::process::CommandExt;
-    let _ = std::process::Command::new("taskkill")
-        .args(["/PID", &pid.to_string(), "/T", "/F"])
-        .creation_flags(0x0800_0000)
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status();
+    let _ = std::process::Command::new("taskkill").args(["/PID", &pid.to_string(), "/T", "/F"]).creation_flags(0x0800_0000).stdout(Stdio::null()).stderr(Stdio::null()).status();
 }
 
 /// Locate an executable on PATH (honouring PATHEXT on Windows). No shell involved.
 pub fn find_executable(name: &str) -> Option<PathBuf> {
     let path = std::env::var_os("PATH")?;
-    let exts: Vec<String> = if cfg!(windows) {
-        std::env::var("PATHEXT")
-            .unwrap_or_else(|_| ".COM;.EXE;.BAT;.CMD".into())
-            .split(';')
-            .map(|e| e.to_lowercase())
-            .collect()
-    } else {
-        vec![String::new()]
-    };
+    let exts: Vec<String> = if cfg!(windows) { std::env::var("PATHEXT").unwrap_or_else(|_| ".COM;.EXE;.BAT;.CMD".into()).split(';').map(|e| e.to_lowercase()).collect() } else { vec![String::new()] };
     for dir in std::env::split_paths(&path) {
         for ext in &exts {
             let cand = dir.join(format!("{name}{ext}"));
@@ -717,11 +670,7 @@ pub async fn capture(program: &Path, args: &[&str], cwd: Option<&Path>, timeout:
         .await
         .map_err(|_| GeniusError::Process(format!("{} timed out after {}s", program.display(), timeout.as_secs())))?
         .map_err(|e| GeniusError::Process(format!("could not run {}: {e}", program.display())))?;
-    Ok((
-        out.status.code().unwrap_or(-1),
-        String::from_utf8_lossy(&out.stdout).to_string(),
-        String::from_utf8_lossy(&out.stderr).to_string(),
-    ))
+    Ok((out.status.code().unwrap_or(-1), String::from_utf8_lossy(&out.stdout).to_string(), String::from_utf8_lossy(&out.stderr).to_string()))
 }
 
 pub async fn detect_tools() -> Vec<ToolStatus> {
@@ -735,20 +684,10 @@ pub async fn detect_tools() -> Vec<ToolStatus> {
     for (name, args, hint) in specs {
         let path = find_executable(name);
         let version = match &path {
-            Some(p) => capture(p, args, None, Duration::from_secs(10))
-                .await
-                .ok()
-                .filter(|(c, _, _)| *c == 0)
-                .map(|(_, o, _)| o.lines().next().unwrap_or("").trim().to_string()),
+            Some(p) => capture(p, args, None, Duration::from_secs(10)).await.ok().filter(|(c, _, _)| *c == 0).map(|(_, o, _)| o.lines().next().unwrap_or("").trim().to_string()),
             None => None,
         };
-        out.push(ToolStatus {
-            name: name.into(),
-            found: version.is_some(),
-            path: path.map(|p| p.to_string_lossy().into()),
-            version,
-            hint: hint.into(),
-        });
+        out.push(ToolStatus { name: name.into(), found: version.is_some(), path: path.map(|p| p.to_string_lossy().into()), version, hint: hint.into() });
     }
     out
 }
@@ -776,9 +715,19 @@ mod tests {
     fn manager() -> (ProcessManager, Arc<RecordingEmitter>, Arc<Db>) {
         let db = Arc::new(Db::open_in_memory().unwrap());
         db.insert_project(&crate::db::ProjectRow {
-            id: "p".into(), name: "p".into(), description: String::new(), path: "/x".into(), kind: "k".into(), spec: None,
-            notes: String::new(), status: json!({}), created_at: now(), updated_at: now(), last_opened_at: None,
-        }).unwrap();
+            id: "p".into(),
+            name: "p".into(),
+            description: String::new(),
+            path: "/x".into(),
+            kind: "k".into(),
+            spec: None,
+            notes: String::new(),
+            status: json!({}),
+            created_at: now(),
+            updated_at: now(),
+            last_opened_at: None,
+        })
+        .unwrap();
         let rec = Arc::new(RecordingEmitter::default());
         let bus = EventBus::new(db.clone(), rec.clone());
         (ProcessManager::new(db.clone(), bus), rec, db)

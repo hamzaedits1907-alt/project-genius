@@ -34,13 +34,7 @@ pub struct Approvals {
 
 impl Approvals {
     pub fn pending(&self, project_id: Option<&str>) -> Vec<ApprovalRequest> {
-        self.pending
-            .lock()
-            .unwrap()
-            .values()
-            .map(|(r, _)| r.clone())
-            .filter(|r| project_id.is_none() || r.project_id.as_deref() == project_id)
-            .collect()
+        self.pending.lock().unwrap().values().map(|(r, _)| r.clone()).filter(|r| project_id.is_none() || r.project_id.as_deref() == project_id).collect()
     }
 
     pub fn respond(&self, id: &str, approved: bool) -> Result<()> {
@@ -56,19 +50,16 @@ impl Approvals {
 
     /// Ask for approval (unless policy is Auto). Returns Ok(()) when approved.
     #[allow(clippy::too_many_arguments)]
-    pub async fn request(
-        &self,
-        bus: &EventBus,
-        project_id: Option<&str>,
-        task_id: Option<&str>,
-        category: &str,
-        policy: Policy,
-        title: &str,
-        detail: Value,
-        cancel: &CancellationToken,
-    ) -> Result<()> {
+    pub async fn request(&self, bus: &EventBus, project_id: Option<&str>, task_id: Option<&str>, category: &str, policy: Policy, title: &str, detail: Value, cancel: &CancellationToken) -> Result<()> {
         if policy == Policy::Auto {
-            bus.record(project_id, task_id, EventKind::Approval, EventStatus::Completed, format!("Auto-approved by your settings: {title}"), json!({ "category": category, "policy": "auto", "detail": detail }));
+            bus.record(
+                project_id,
+                task_id,
+                EventKind::Approval,
+                EventStatus::Completed,
+                format!("Auto-approved by your settings: {title}"),
+                json!({ "category": category, "policy": "auto", "detail": detail }),
+            );
             return Ok(());
         }
         let id = uuid::Uuid::new_v4().to_string();
@@ -121,9 +112,7 @@ mod tests {
         let a = Approvals::default();
         let b = bus();
         let a2 = a.clone();
-        let h = tokio::spawn(async move {
-            a2.request(&b, None, None, "dependency_install", Policy::Ask, "npm install", json!({}), &CancellationToken::new()).await
-        });
+        let h = tokio::spawn(async move { a2.request(&b, None, None, "dependency_install", Policy::Ask, "npm install", json!({}), &CancellationToken::new()).await });
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
         let p = a.pending(None);
         assert_eq!(p.len(), 1);

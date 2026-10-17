@@ -298,10 +298,7 @@ impl Db {
     // ---------- settings ----------
 
     pub fn get_setting(&self, key: &str) -> Result<Option<Value>> {
-        let v: Option<String> = self
-            .conn()
-            .query_row("SELECT value FROM settings WHERE key = ?1", [key], |r| r.get(0))
-            .optional()?;
+        let v: Option<String> = self.conn().query_row("SELECT value FROM settings WHERE key = ?1", [key], |r| r.get(0)).optional()?;
         Ok(match v {
             Some(s) => Some(serde_json::from_str(&s)?),
             None => None,
@@ -335,19 +332,7 @@ impl Db {
         self.conn().execute(
             "INSERT INTO projects(id,name,description,path,kind,spec_json,notes,status_json,created_at,updated_at,last_opened_at)
              VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11)",
-            params![
-                p.id,
-                p.name,
-                p.description,
-                p.path,
-                p.kind,
-                p.spec.as_ref().map(|s| s.to_string()),
-                p.notes,
-                p.status.to_string(),
-                p.created_at,
-                p.updated_at,
-                p.last_opened_at
-            ],
+            params![p.id, p.name, p.description, p.path, p.kind, p.spec.as_ref().map(|s| s.to_string()), p.notes, p.status.to_string(), p.created_at, p.updated_at, p.last_opened_at],
         )?;
         Ok(())
     }
@@ -371,41 +356,27 @@ impl Db {
     }
 
     pub fn get_project(&self, id: &str) -> Result<ProjectRow> {
-        self.conn()
-            .query_row("SELECT * FROM projects WHERE id = ?1", [id], Self::row_to_project)
-            .optional()?
-            .ok_or_else(|| GeniusError::NotFound(format!("project {id}")))
+        self.conn().query_row("SELECT * FROM projects WHERE id = ?1", [id], Self::row_to_project).optional()?.ok_or_else(|| GeniusError::NotFound(format!("project {id}")))
     }
 
     pub fn find_project_by_path(&self, path: &str) -> Result<Option<ProjectRow>> {
-        Ok(self
-            .conn()
-            .query_row("SELECT * FROM projects WHERE path = ?1", [path], Self::row_to_project)
-            .optional()?)
+        Ok(self.conn().query_row("SELECT * FROM projects WHERE path = ?1", [path], Self::row_to_project).optional()?)
     }
 
     pub fn list_projects(&self) -> Result<Vec<ProjectRow>> {
         let conn = self.conn();
-        let mut stmt = conn.prepare(
-            "SELECT * FROM projects ORDER BY COALESCE(last_opened_at, updated_at) DESC",
-        )?;
+        let mut stmt = conn.prepare("SELECT * FROM projects ORDER BY COALESCE(last_opened_at, updated_at) DESC")?;
         let rows = stmt.query_map([], Self::row_to_project)?;
         Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
     }
 
     pub fn update_project_spec(&self, id: &str, spec: &Value) -> Result<()> {
-        self.conn().execute(
-            "UPDATE projects SET spec_json = ?2, updated_at = ?3 WHERE id = ?1",
-            params![id, spec.to_string(), now()],
-        )?;
+        self.conn().execute("UPDATE projects SET spec_json = ?2, updated_at = ?3 WHERE id = ?1", params![id, spec.to_string(), now()])?;
         Ok(())
     }
 
     pub fn update_project_notes(&self, id: &str, notes: &str) -> Result<()> {
-        self.conn().execute(
-            "UPDATE projects SET notes = ?2, updated_at = ?3 WHERE id = ?1",
-            params![id, notes, now()],
-        )?;
+        self.conn().execute("UPDATE projects SET notes = ?2, updated_at = ?3 WHERE id = ?1", params![id, notes, now()])?;
         Ok(())
     }
 
@@ -416,36 +387,26 @@ impl Db {
     }
 
     pub fn rename_project(&self, id: &str, name: &str, description: &str) -> Result<()> {
-        self.conn().execute(
-            "UPDATE projects SET name = ?2, description = ?3, updated_at = ?4 WHERE id = ?1",
-            params![id, name, description, now()],
-        )?;
+        self.conn().execute("UPDATE projects SET name = ?2, description = ?3, updated_at = ?4 WHERE id = ?1", params![id, name, description, now()])?;
         Ok(())
     }
 
     /// Merge `patch` into the project's status object (e.g. `{ "build": {...} }`).
     pub fn patch_project_status(&self, id: &str, patch: &Value) -> Result<Value> {
         let conn = self.conn();
-        let current: String = conn
-            .query_row("SELECT status_json FROM projects WHERE id = ?1", [id], |r| r.get(0))
-            .optional()?
-            .ok_or_else(|| GeniusError::NotFound(format!("project {id}")))?;
+        let current: String = conn.query_row("SELECT status_json FROM projects WHERE id = ?1", [id], |r| r.get(0)).optional()?.ok_or_else(|| GeniusError::NotFound(format!("project {id}")))?;
         let mut status: Value = serde_json::from_str(&current).unwrap_or_else(|_| Value::Object(Default::default()));
         if let (Some(obj), Some(p)) = (status.as_object_mut(), patch.as_object()) {
             for (k, v) in p {
                 obj.insert(k.clone(), v.clone());
             }
         }
-        conn.execute(
-            "UPDATE projects SET status_json = ?2, updated_at = ?3 WHERE id = ?1",
-            params![id, status.to_string(), now()],
-        )?;
+        conn.execute("UPDATE projects SET status_json = ?2, updated_at = ?3 WHERE id = ?1", params![id, status.to_string(), now()])?;
         Ok(status)
     }
 
     pub fn touch_project_opened(&self, id: &str) -> Result<()> {
-        self.conn()
-            .execute("UPDATE projects SET last_opened_at = ?2 WHERE id = ?1", params![id, now()])?;
+        self.conn().execute("UPDATE projects SET last_opened_at = ?2 WHERE id = ?1", params![id, now()])?;
         Ok(())
     }
 
@@ -521,10 +482,7 @@ impl Db {
     pub fn create_conversation(&self, project_id: &str, title: &str) -> Result<ConversationRow> {
         let t = now();
         let c = ConversationRow { id: uuid::Uuid::new_v4().to_string(), project_id: project_id.into(), title: title.into(), created_at: t.clone(), updated_at: t, message_count: 0 };
-        self.conn().execute(
-            "INSERT INTO conversations(id,project_id,title,created_at,updated_at) VALUES(?1,?2,?3,?4,?5)",
-            params![c.id, c.project_id, c.title, c.created_at, c.updated_at],
-        )?;
+        self.conn().execute("INSERT INTO conversations(id,project_id,title,created_at,updated_at) VALUES(?1,?2,?3,?4,?5)", params![c.id, c.project_id, c.title, c.created_at, c.updated_at])?;
         Ok(c)
     }
 
@@ -553,9 +511,7 @@ impl Db {
 
     fn list_conversations_where(&self, cond: &str, arg: &str) -> Result<Vec<ConversationRow>> {
         let conn = self.conn();
-        let mut stmt = conn.prepare(&format!(
-            "SELECT c.*, (SELECT COUNT(*) FROM messages m WHERE m.conversation_id = c.id) AS n FROM conversations c WHERE {cond}"
-        ))?;
+        let mut stmt = conn.prepare(&format!("SELECT c.*, (SELECT COUNT(*) FROM messages m WHERE m.conversation_id = c.id) AS n FROM conversations c WHERE {cond}"))?;
         let rows = stmt.query_map(params![arg], |r| {
             Ok(ConversationRow {
                 id: r.get("id")?,
@@ -629,7 +585,16 @@ impl Db {
 
     pub fn add_memory(&self, project_id: &str, kind: &str, content: &str, source: &str, evidence: &str) -> Result<MemoryRow> {
         let t = now();
-        let m = MemoryRow { id: uuid::Uuid::new_v4().to_string(), project_id: project_id.into(), kind: kind.into(), content: content.into(), source: source.into(), evidence: evidence.into(), created_at: t.clone(), updated_at: t };
+        let m = MemoryRow {
+            id: uuid::Uuid::new_v4().to_string(),
+            project_id: project_id.into(),
+            kind: kind.into(),
+            content: content.into(),
+            source: source.into(),
+            evidence: evidence.into(),
+            created_at: t.clone(),
+            updated_at: t,
+        };
         self.conn().execute(
             "INSERT INTO memories(id,project_id,kind,content,source,evidence,created_at,updated_at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8)",
             params![m.id, m.project_id, m.kind, m.content, m.source, m.evidence, m.created_at, m.updated_at],
@@ -656,10 +621,7 @@ impl Db {
     }
 
     pub fn update_memory(&self, id: &str, content: &str, source: &str, evidence: &str) -> Result<()> {
-        self.conn().execute(
-            "UPDATE memories SET content = ?2, source = ?3, evidence = ?4, updated_at = ?5 WHERE id = ?1",
-            params![id, content, source, evidence, now()],
-        )?;
+        self.conn().execute("UPDATE memories SET content = ?2, source = ?3, evidence = ?4, updated_at = ?5 WHERE id = ?1", params![id, content, source, evidence, now()])?;
         Ok(())
     }
 
@@ -712,10 +674,7 @@ impl Db {
     }
 
     pub fn finish_run(&self, id: &str, status: &str, exit_code: Option<i32>, output_tail: &str) -> Result<()> {
-        self.conn().execute(
-            "UPDATE runs SET status = ?2, exit_code = ?3, output_tail = ?4, ended_at = ?5 WHERE id = ?1",
-            params![id, status, exit_code, output_tail, now()],
-        )?;
+        self.conn().execute("UPDATE runs SET status = ?2, exit_code = ?3, output_tail = ?4, ended_at = ?5 WHERE id = ?1", params![id, status, exit_code, output_tail, now()])?;
         Ok(())
     }
 
@@ -743,10 +702,7 @@ impl Db {
     /// Runs left in `running` state by a crash or forced exit are marked as interrupted on startup,
     /// so the UI never shows a stale "running" status.
     pub fn mark_orphaned_runs(&self) -> Result<usize> {
-        Ok(self.conn().execute(
-            "UPDATE runs SET status = 'interrupted', ended_at = ?1 WHERE status = 'running'",
-            [now()],
-        )?)
+        Ok(self.conn().execute("UPDATE runs SET status = 'interrupted', ended_at = ?1 WHERE status = 'running'", [now()])?)
     }
 
     // ---------- model cache ----------
@@ -762,14 +718,7 @@ impl Db {
     }
 
     pub fn get_model_cache(&self, base_url: &str) -> Result<Option<(String, Value)>> {
-        let row: Option<(String, String)> = self
-            .conn()
-            .query_row(
-                "SELECT fetched_at, json FROM model_cache WHERE base_url = ?1",
-                [base_url],
-                |r| Ok((r.get(0)?, r.get(1)?)),
-            )
-            .optional()?;
+        let row: Option<(String, String)> = self.conn().query_row("SELECT fetched_at, json FROM model_cache WHERE base_url = ?1", [base_url], |r| Ok((r.get(0)?, r.get(1)?))).optional()?;
         Ok(match row {
             Some((ts, j)) => Some((ts, serde_json::from_str(&j)?)),
             None => None,
@@ -780,10 +729,7 @@ impl Db {
 fn migrate(conn: &mut Connection) -> Result<()> {
     let version: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
     if version as usize > MIGRATIONS.len() {
-        return Err(GeniusError::Internal(format!(
-            "database schema v{version} is newer than this version of Genius supports (v{}). Refusing to modify it.",
-            MIGRATIONS.len()
-        )));
+        return Err(GeniusError::Internal(format!("database schema v{version} is newer than this version of Genius supports (v{}). Refusing to modify it.", MIGRATIONS.len())));
     }
     for (idx, sql) in MIGRATIONS.iter().enumerate().skip(version as usize) {
         let tx = conn.transaction()?;

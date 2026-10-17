@@ -67,10 +67,7 @@ impl ProviderError {
     }
 
     fn retryable(&self) -> bool {
-        matches!(
-            self,
-            ProviderError::RateLimited { .. } | ProviderError::Server { status: 502..=504, .. } | ProviderError::Network(_)
-        )
+        matches!(self, ProviderError::RateLimited { .. } | ProviderError::Server { status: 502..=504, .. } | ProviderError::Network(_))
     }
 }
 
@@ -208,25 +205,12 @@ impl NvidiaClient {
         // Moderate sampling: some hosted models reject temperature 0.
         let opts = ChatOptions { temperature: 0.2, top_p: 0.7, max_tokens: 16, stream: true };
         let res = self.chat(model, &msgs, &opts, cancel, |_| {}).await?;
-        Ok(ProbeResult {
-            model: model.into(),
-            chat: true,
-            streaming: res.streamed,
-            latency_ms: started.elapsed().as_millis() as u64,
-            sample: res.content.chars().take(40).collect(),
-        })
+        Ok(ProbeResult { model: model.into(), chat: true, streaming: res.streamed, latency_ms: started.elapsed().as_millis() as u64, sample: res.content.chars().take(40).collect() })
     }
 
     /// Chat completion with streaming (falls back to non-streaming when the model rejects it).
     /// `on_delta` receives content text as it arrives.
-    pub async fn chat(
-        &self,
-        model: &str,
-        messages: &[ChatMessage],
-        opts: &ChatOptions,
-        cancel: &CancellationToken,
-        mut on_delta: impl FnMut(&str),
-    ) -> PResult<ChatResult> {
+    pub async fn chat(&self, model: &str, messages: &[ChatMessage], opts: &ChatOptions, cancel: &CancellationToken, mut on_delta: impl FnMut(&str)) -> PResult<ChatResult> {
         if model.trim().is_empty() {
             return Err(ProviderError::NoModel);
         }
@@ -238,15 +222,11 @@ impl NvidiaClient {
             let res = self.chat_once(model, messages, &opts, stream, cancel, &mut on_delta).await;
             match res {
                 Ok(r) => return Ok(r),
-                Err(ProviderError::BadRequest { ref message, .. })
-                    if opts.max_tokens > 1024 && is_token_limit_error(message) =>
-                {
+                Err(ProviderError::BadRequest { ref message, .. }) if opts.max_tokens > 1024 && is_token_limit_error(message) => {
                     // The model has a smaller output limit than requested: retry with less.
                     opts.max_tokens = (opts.max_tokens / 2).max(1024);
                 }
-                Err(ProviderError::BadRequest { ref message, .. })
-                    if stream && message.to_lowercase().contains("stream") =>
-                {
+                Err(ProviderError::BadRequest { ref message, .. }) if stream && message.to_lowercase().contains("stream") => {
                     // Model does not support streaming: retry once without it.
                     stream = false;
                 }
@@ -265,23 +245,10 @@ impl NvidiaClient {
         }
     }
 
-    async fn chat_once(
-        &self,
-        model: &str,
-        messages: &[ChatMessage],
-        opts: &ChatOptions,
-        stream: bool,
-        cancel: &CancellationToken,
-        on_delta: &mut impl FnMut(&str),
-    ) -> PResult<ChatResult> {
+    async fn chat_once(&self, model: &str, messages: &[ChatMessage], opts: &ChatOptions, stream: bool, cancel: &CancellationToken, on_delta: &mut impl FnMut(&str)) -> PResult<ChatResult> {
         let key = self.key()?;
         let body = build_chat_body(model, messages, opts, stream);
-        let mut req = self
-            .http
-            .post(format!("{}/chat/completions", self.base_url))
-            .bearer_auth(key)
-            .header("Accept", if stream { "text/event-stream" } else { "application/json" })
-            .json(&body);
+        let mut req = self.http.post(format!("{}/chat/completions", self.base_url)).bearer_auth(key).header("Accept", if stream { "text/event-stream" } else { "application/json" }).json(&body);
         if !stream {
             req = req.timeout(Duration::from_secs(600));
         }
@@ -291,21 +258,12 @@ impl NvidiaClient {
             r = send => r.map_err(net_err)?,
         };
         let status = resp.status().as_u16();
-        let retry_after = resp
-            .headers()
-            .get("retry-after")
-            .and_then(|v| v.to_str().ok())
-            .and_then(|v| v.trim().parse::<u64>().ok());
+        let retry_after = resp.headers().get("retry-after").and_then(|v| v.to_str().ok()).and_then(|v| v.trim().parse::<u64>().ok());
         if !(200..300).contains(&status) {
             let text = resp.text().await.unwrap_or_default();
             return Err(classify(status, &text, Some(model), retry_after));
         }
-        let is_sse = resp
-            .headers()
-            .get("content-type")
-            .and_then(|v| v.to_str().ok())
-            .map(|v| v.contains("text/event-stream"))
-            .unwrap_or(false);
+        let is_sse = resp.headers().get("content-type").and_then(|v| v.to_str().ok()).map(|v| v.contains("text/event-stream")).unwrap_or(false);
 
         if !is_sse {
             let text = tokio::select! {
@@ -348,8 +306,7 @@ impl NvidiaClient {
                     }
                     return Ok(result);
                 }
-                let v: Value = serde_json::from_str(&data)
-                    .map_err(|e| ProviderError::Malformed(format!("invalid stream chunk: {e}")))?;
+                let v: Value = serde_json::from_str(&data).map_err(|e| ProviderError::Malformed(format!("invalid stream chunk: {e}")))?;
                 if let Some(err) = v.get("error") {
                     return Err(ProviderError::Server { status: 200, message: redact(&err.to_string()) });
                 }
@@ -431,8 +388,7 @@ pub struct ProbeResult {
 
 fn is_token_limit_error(message: &str) -> bool {
     let m = message.to_lowercase();
-    (m.contains("max_tokens") || m.contains("max tokens") || m.contains("maximum context") || m.contains("context length"))
-        && !m.contains("stream")
+    (m.contains("max_tokens") || m.contains("max tokens") || m.contains("maximum context") || m.contains("context length")) && !m.contains("stream")
 }
 
 pub fn build_chat_body(model: &str, messages: &[ChatMessage], opts: &ChatOptions, stream: bool) -> Value {
@@ -498,11 +454,7 @@ pub fn classify(status: u16, body: &str, model: Option<&str>, retry_after: Optio
 
 pub fn parse_models(body: &str) -> PResult<Vec<ModelInfo>> {
     let v: Value = serde_json::from_str(body).map_err(|e| ProviderError::Malformed(format!("model list is not JSON: {e}")))?;
-    let arr = v
-        .get("data")
-        .and_then(|d| d.as_array())
-        .or_else(|| v.as_array())
-        .ok_or_else(|| ProviderError::Malformed("model list has no 'data' array".into()))?;
+    let arr = v.get("data").and_then(|d| d.as_array()).or_else(|| v.as_array()).ok_or_else(|| ProviderError::Malformed("model list has no 'data' array".into()))?;
     let mut out: Vec<ModelInfo> = arr
         .iter()
         .filter_map(|m| {
@@ -512,8 +464,7 @@ pub fn parse_models(body: &str) -> PResult<Vec<ModelInfo>> {
             }
             Some(ModelInfo {
                 inferred_category: infer_category(&id).into(),
-                owner: m.get("owned_by").and_then(|o| o.as_str()).map(String::from)
-                    .or_else(|| id.split_once('/').map(|(o, _)| o.to_string())),
+                owner: m.get("owned_by").and_then(|o| o.as_str()).map(String::from).or_else(|| id.split_once('/').map(|(o, _)| o.to_string())),
                 created: m.get("created").and_then(|c| c.as_i64()),
                 id,
             })
@@ -546,15 +497,8 @@ pub fn infer_category(id: &str) -> &'static str {
 
 pub fn parse_completion(body: &str) -> PResult<ChatResult> {
     let v: Value = serde_json::from_str(body).map_err(|e| ProviderError::Malformed(format!("response is not JSON: {e}")))?;
-    let choice = v
-        .get("choices")
-        .and_then(|c| c.get(0))
-        .ok_or_else(|| ProviderError::Malformed("response has no choices".into()))?;
-    let content = choice
-        .pointer("/message/content")
-        .and_then(|c| c.as_str())
-        .ok_or_else(|| ProviderError::Malformed("response has no message content".into()))?
-        .to_string();
+    let choice = v.get("choices").and_then(|c| c.get(0)).ok_or_else(|| ProviderError::Malformed("response has no choices".into()))?;
+    let content = choice.pointer("/message/content").and_then(|c| c.as_str()).ok_or_else(|| ProviderError::Malformed("response has no message content".into()))?.to_string();
     Ok(ChatResult {
         content,
         finish_reason: choice.get("finish_reason").and_then(|f| f.as_str()).map(String::from),
@@ -576,11 +520,7 @@ impl SseParser {
         let mut out = Vec::new();
         while let Some(pos) = self.buf.find("\n\n") {
             let event: String = self.buf.drain(..pos + 2).collect();
-            let data: Vec<&str> = event
-                .lines()
-                .filter_map(|l| l.strip_prefix("data:"))
-                .map(|d| d.strip_prefix(' ').unwrap_or(d))
-                .collect();
+            let data: Vec<&str> = event.lines().filter_map(|l| l.strip_prefix("data:")).map(|d| d.strip_prefix(' ').unwrap_or(d)).collect();
             if !data.is_empty() {
                 out.push(data.join("\n"));
             }
@@ -765,20 +705,14 @@ mod tests {
             .respond_with(ResponseTemplate::new(401).set_body_string(r#"{"status":401,"title":"Unauthorized","detail":"Authentication failed"}"#))
             .mount(&server)
             .await;
-        let err = client(&server, Some("nvapi-wrong-key-00000"))
-            .chat("a/b", &[ChatMessage::user("x")], &ChatOptions::default(), &CancellationToken::new(), |_| {})
-            .await
-            .unwrap_err();
+        let err = client(&server, Some("nvapi-wrong-key-00000")).chat("a/b", &[ChatMessage::user("x")], &ChatOptions::default(), &CancellationToken::new(), |_| {}).await.unwrap_err();
         assert_eq!(err.kind(), "provider_auth");
     }
 
     #[tokio::test]
     async fn missing_key_fails_without_network() {
         let server = MockServer::start().await;
-        let err = client(&server, None)
-            .chat("a/b", &[ChatMessage::user("x")], &ChatOptions::default(), &CancellationToken::new(), |_| {})
-            .await
-            .unwrap_err();
+        let err = client(&server, None).chat("a/b", &[ChatMessage::user("x")], &ChatOptions::default(), &CancellationToken::new(), |_| {}).await.unwrap_err();
         assert_eq!(err.kind(), "provider_missing_key");
         assert!(server.received_requests().await.unwrap().is_empty());
     }
@@ -791,10 +725,7 @@ mod tests {
             .respond_with(ResponseTemplate::new(429).insert_header("retry-after", "0").set_body_string(r#"{"detail":"Too many requests"}"#))
             .mount(&server)
             .await;
-        let err = client(&server, Some("nvapi-k-0000000000000"))
-            .chat("a/b", &[ChatMessage::user("x")], &ChatOptions::default(), &CancellationToken::new(), |_| {})
-            .await
-            .unwrap_err();
+        let err = client(&server, Some("nvapi-k-0000000000000")).chat("a/b", &[ChatMessage::user("x")], &ChatOptions::default(), &CancellationToken::new(), |_| {}).await.unwrap_err();
         assert_eq!(err.kind(), "provider_rate_limited");
         assert_eq!(server.received_requests().await.unwrap().len(), 2, "one retry");
     }
@@ -802,16 +733,10 @@ mod tests {
     #[tokio::test]
     async fn streams_deltas_in_order() {
         let server = MockServer::start().await;
-        Mock::given(method("POST"))
-            .and(path("/v1/chat/completions"))
-            .respond_with(ResponseTemplate::new(200).set_body_raw(sse(&["Hel", "lo", " world"]), "text/event-stream"))
-            .mount(&server)
-            .await;
+        Mock::given(method("POST")).and(path("/v1/chat/completions")).respond_with(ResponseTemplate::new(200).set_body_raw(sse(&["Hel", "lo", " world"]), "text/event-stream")).mount(&server).await;
         let mut deltas = Vec::new();
-        let r = client(&server, Some("nvapi-k-0000000000000"))
-            .chat("a/b", &[ChatMessage::user("x")], &ChatOptions::default(), &CancellationToken::new(), |d| deltas.push(d.to_string()))
-            .await
-            .unwrap();
+        let r =
+            client(&server, Some("nvapi-k-0000000000000")).chat("a/b", &[ChatMessage::user("x")], &ChatOptions::default(), &CancellationToken::new(), |d| deltas.push(d.to_string())).await.unwrap();
         assert_eq!(r.content, "Hello world");
         assert_eq!(deltas.concat(), "Hello world");
         assert!(r.streamed);
@@ -833,25 +758,15 @@ mod tests {
             .respond_with(ResponseTemplate::new(200).set_body_raw(sse(&["ok"]), "text/event-stream"))
             .mount(&server)
             .await;
-        let r = client(&server, Some("nvapi-k-0000000000000"))
-            .chat("a/b", &[ChatMessage::user("x")], &ChatOptions::default(), &CancellationToken::new(), |_| {})
-            .await
-            .unwrap();
+        let r = client(&server, Some("nvapi-k-0000000000000")).chat("a/b", &[ChatMessage::user("x")], &ChatOptions::default(), &CancellationToken::new(), |_| {}).await.unwrap();
         assert_eq!(r.content, "ok");
     }
 
     #[tokio::test]
     async fn sse_with_wrong_content_type_is_parsed() {
         let server = MockServer::start().await;
-        Mock::given(method("POST"))
-            .and(path("/v1/chat/completions"))
-            .respond_with(ResponseTemplate::new(200).set_body_string(sse(&["a", "b"])))
-            .mount(&server)
-            .await;
-        let r = client(&server, Some("nvapi-k-0000000000000"))
-            .chat("a/b", &[ChatMessage::user("x")], &ChatOptions::default(), &CancellationToken::new(), |_| {})
-            .await
-            .unwrap();
+        Mock::given(method("POST")).and(path("/v1/chat/completions")).respond_with(ResponseTemplate::new(200).set_body_string(sse(&["a", "b"]))).mount(&server).await;
+        let r = client(&server, Some("nvapi-k-0000000000000")).chat("a/b", &[ChatMessage::user("x")], &ChatOptions::default(), &CancellationToken::new(), |_| {}).await.unwrap();
         assert_eq!(r.content, "ab");
     }
 
@@ -860,15 +775,10 @@ mod tests {
         let server = MockServer::start().await;
         Mock::given(method("POST"))
             .and(path("/v1/chat/completions"))
-            .respond_with(ResponseTemplate::new(200).set_body_string(
-                r#"{"choices":[{"message":{"role":"assistant","content":"<think>x</think>ok"},"finish_reason":"stop"}]}"#,
-            ))
+            .respond_with(ResponseTemplate::new(200).set_body_string(r#"{"choices":[{"message":{"role":"assistant","content":"<think>x</think>ok"},"finish_reason":"stop"}]}"#))
             .mount(&server)
             .await;
-        let r = client(&server, Some("nvapi-k-0000000000000"))
-            .chat("a/b", &[ChatMessage::user("x")], &ChatOptions::default(), &CancellationToken::new(), |_| {})
-            .await
-            .unwrap();
+        let r = client(&server, Some("nvapi-k-0000000000000")).chat("a/b", &[ChatMessage::user("x")], &ChatOptions::default(), &CancellationToken::new(), |_| {}).await.unwrap();
         assert_eq!(r.content, "ok");
         assert!(!r.streamed);
     }
@@ -876,26 +786,15 @@ mod tests {
     #[tokio::test]
     async fn malformed_stream_chunk_is_reported() {
         let server = MockServer::start().await;
-        Mock::given(method("POST"))
-            .and(path("/v1/chat/completions"))
-            .respond_with(ResponseTemplate::new(200).set_body_raw("data: {not json\n\n", "text/event-stream"))
-            .mount(&server)
-            .await;
-        let err = client(&server, Some("nvapi-k-0000000000000"))
-            .chat("a/b", &[ChatMessage::user("x")], &ChatOptions::default(), &CancellationToken::new(), |_| {})
-            .await
-            .unwrap_err();
+        Mock::given(method("POST")).and(path("/v1/chat/completions")).respond_with(ResponseTemplate::new(200).set_body_raw("data: {not json\n\n", "text/event-stream")).mount(&server).await;
+        let err = client(&server, Some("nvapi-k-0000000000000")).chat("a/b", &[ChatMessage::user("x")], &ChatOptions::default(), &CancellationToken::new(), |_| {}).await.unwrap_err();
         assert_eq!(err.kind(), "provider_malformed");
     }
 
     #[tokio::test]
     async fn cancellation_stops_request() {
         let server = MockServer::start().await;
-        Mock::given(method("POST"))
-            .and(path("/v1/chat/completions"))
-            .respond_with(ResponseTemplate::new(200).set_delay(Duration::from_secs(10)).set_body_string("{}"))
-            .mount(&server)
-            .await;
+        Mock::given(method("POST")).and(path("/v1/chat/completions")).respond_with(ResponseTemplate::new(200).set_delay(Duration::from_secs(10)).set_body_string("{}")).mount(&server).await;
         let cancel = CancellationToken::new();
         let c2 = cancel.clone();
         tokio::spawn(async move {
@@ -903,10 +802,7 @@ mod tests {
             c2.cancel();
         });
         let started = std::time::Instant::now();
-        let err = client(&server, Some("nvapi-k-0000000000000"))
-            .chat("a/b", &[ChatMessage::user("x")], &ChatOptions::default(), &cancel, |_| {})
-            .await
-            .unwrap_err();
+        let err = client(&server, Some("nvapi-k-0000000000000")).chat("a/b", &[ChatMessage::user("x")], &ChatOptions::default(), &cancel, |_| {}).await.unwrap_err();
         assert_eq!(err.kind(), "cancelled");
         assert!(started.elapsed() < Duration::from_secs(5));
     }

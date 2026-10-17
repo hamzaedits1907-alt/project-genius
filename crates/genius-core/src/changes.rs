@@ -67,10 +67,7 @@ pub fn unified_diff(path: &str, before: Option<&str>, after: Option<&str>) -> St
     TextDiff::from_lines(before.unwrap_or(""), after.unwrap_or(""))
         .unified_diff()
         .context_radius(3)
-        .header(
-            &if before.is_some() { format!("a/{path}") } else { "/dev/null".into() },
-            &if after.is_some() { format!("b/{path}") } else { "/dev/null".into() },
-        )
+        .header(&if before.is_some() { format!("a/{path}") } else { "/dev/null".into() }, &if after.is_some() { format!("b/{path}") } else { "/dev/null".into() })
         .to_string()
 }
 
@@ -107,15 +104,7 @@ impl<'a> ChangeStore<'a> {
         Self { db }
     }
 
-    pub fn create(
-        &self,
-        project_id: &str,
-        task_id: Option<&str>,
-        kind: &str,
-        title: &str,
-        summary: &str,
-        files: &[FileChange],
-    ) -> Result<Changeset> {
+    pub fn create(&self, project_id: &str, task_id: Option<&str>, kind: &str, title: &str, summary: &str, files: &[FileChange]) -> Result<Changeset> {
         let id = uuid::Uuid::new_v4().to_string();
         let mut conn = self.db.conn();
         let tx = conn.transaction()?;
@@ -124,10 +113,7 @@ impl<'a> ChangeStore<'a> {
             params![id, project_id, task_id, kind, title, summary, now()],
         )?;
         for f in files {
-            tx.execute(
-                "INSERT INTO changeset_files(changeset_id,path,op,before_text,after_text) VALUES(?1,?2,?3,?4,?5)",
-                params![id, f.path, f.op, f.before, f.after],
-            )?;
+            tx.execute("INSERT INTO changeset_files(changeset_id,path,op,before_text,after_text) VALUES(?1,?2,?3,?4,?5)", params![id, f.path, f.op, f.before, f.after])?;
         }
         tx.commit()?;
         drop(conn);
@@ -168,9 +154,7 @@ impl<'a> ChangeStore<'a> {
     pub fn files(&self, id: &str) -> Result<Vec<FileChange>> {
         let conn = self.db.conn();
         let mut stmt = conn.prepare("SELECT path, op, before_text, after_text FROM changeset_files WHERE changeset_id = ?1 ORDER BY path")?;
-        let rows = stmt.query_map([id], |r| {
-            Ok(FileChange { path: r.get(0)?, op: r.get(1)?, before: r.get(2)?, after: r.get(3)? })
-        })?;
+        let rows = stmt.query_map([id], |r| Ok(FileChange { path: r.get(0)?, op: r.get(1)?, before: r.get(2)?, after: r.get(3)? }))?;
         Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
     }
 
@@ -186,10 +170,7 @@ impl<'a> ChangeStore<'a> {
 
     fn set_status(&self, id: &str, status: &str) -> Result<()> {
         let applied = if status == "applied" { Some(now()) } else { None };
-        self.db.conn().execute(
-            "UPDATE changesets SET status = ?2, applied_at = COALESCE(?3, applied_at) WHERE id = ?1",
-            params![id, status, applied],
-        )?;
+        self.db.conn().execute("UPDATE changesets SET status = ?2, applied_at = COALESCE(?3, applied_at) WHERE id = ?1", params![id, status, applied])?;
         Ok(())
     }
 
@@ -256,11 +237,7 @@ impl<'a> ChangeStore<'a> {
             });
         }
         if !conflicts.is_empty() && !force {
-            return Err(GeniusError::Conflict(format!(
-                "these files changed after '{}' was applied: {}. Review and confirm to revert anyway.",
-                cs.title,
-                conflicts.join(", ")
-            )));
+            return Err(GeniusError::Conflict(format!("these files changed after '{}' was applied: {}. Review and confirm to revert anyway.", cs.title, conflicts.join(", "))));
         }
         if changes.is_empty() {
             return Err(GeniusError::Validation("nothing to revert: files already match the earlier state".into()));
@@ -328,10 +305,7 @@ pub fn apply_files(ws: &Workspace, files: &[FileChange]) -> Result<()> {
         }
     }
     if !stale.is_empty() {
-        return Err(GeniusError::Conflict(format!(
-            "these files changed since the proposal was created: {}. Regenerate or review the proposal again.",
-            stale.join(", ")
-        )));
+        return Err(GeniusError::Conflict(format!("these files changed since the proposal was created: {}. Regenerate or review the proposal again.", stale.join(", "))));
     }
     let mut done: Vec<&FileChange> = Vec::new();
     for f in files {

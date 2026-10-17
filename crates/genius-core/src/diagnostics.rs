@@ -21,7 +21,9 @@ static TSC: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^(?P<f>[^\s(:][^(:]*
 static TSC_PRETTY: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^(?P<f>[^\s:][^:]*?):(?P<l>\d+):(?P<c>\d+)\s+-\s+error\s+(?P<code>TS\d+):\s*(?P<m>.+)$").unwrap());
 static ESBUILD: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^\s*(?:✘\s*)?\[ERROR\]\s*(?P<m>.+)$").unwrap());
 static LOC: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?P<f>(?:\./)?(?:src|tests?|public)/[\w./\-\[\]@]+\.(?:tsx?|jsx?|css|json|html|mjs|cjs))(?::(?P<l>\d+)(?::(?P<c>\d+))?)?").unwrap());
-static GENERIC: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)^(error|.*\berror\b:|.*failed to resolve|.*could not resolve|.*is not exported|.*unexpected token|.*cannot find module|.*syntaxerror|.*referenceerror|.*typeerror|\s*FAIL\s|.*AssertionError|.*expected .* to)").unwrap());
+static GENERIC: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?i)^(error|.*\berror\b:|.*failed to resolve|.*could not resolve|.*is not exported|.*unexpected token|.*cannot find module|.*syntaxerror|.*referenceerror|.*typeerror|\s*FAIL\s|.*AssertionError|.*expected .* to)").unwrap()
+});
 
 pub fn parse(output: &str) -> Vec<Diagnostic> {
     let mut out: Vec<Diagnostic> = Vec::new();
@@ -116,7 +118,8 @@ mod tests {
 
     #[test]
     fn parses_tsc_errors() {
-        let log = "> tsc --noEmit && vite build\n\nsrc/App.tsx(12,7): error TS2304: Cannot find name 'useStat'.\nsrc/components/List.tsx:4:10 - error TS2305: Module '\"./x\"' has no exported member 'Y'.\n";
+        let log =
+            "> tsc --noEmit && vite build\n\nsrc/App.tsx(12,7): error TS2304: Cannot find name 'useStat'.\nsrc/components/List.tsx:4:10 - error TS2305: Module '\"./x\"' has no exported member 'Y'.\n";
         let d = parse(log);
         assert_eq!(d.len(), 2);
         assert_eq!(d[0].file.as_deref(), Some("src/App.tsx"));

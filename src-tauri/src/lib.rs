@@ -45,10 +45,7 @@ fn secret_store() -> Arc<dyn SecretStore> {
         Ok(_) => Arc::new(CheckedSecretStore { name: keyring.backend_name(), inner: Box::new(keyring) }),
         Err(e) => {
             log::error!("system credential store unavailable: {e}");
-            Arc::new(CheckedSecretStore {
-                inner: Box::new(MemoryStore::default()),
-                name: "memory only — system credential store unavailable; the key will not be kept after closing Genius",
-            })
+            Arc::new(CheckedSecretStore { inner: Box::new(MemoryStore::default()), name: "memory only — system credential store unavailable; the key will not be kept after closing Genius" })
         }
     }
 }
@@ -62,8 +59,7 @@ pub fn run() {
             let data_dir = app.path().app_data_dir()?;
             let emitter = Arc::new(TauriEmitter(app.handle().clone()));
             // Construct inside Tauri's Tokio runtime so Genius captures its handle.
-            let genius = tauri::async_runtime::block_on(async { Genius::new(&data_dir, emitter, secret_store()) })
-                .map_err(|e| Box::<dyn std::error::Error>::from(e.to_string()))?;
+            let genius = tauri::async_runtime::block_on(async { Genius::new(&data_dir, emitter, secret_store()) }).map_err(|e| Box::<dyn std::error::Error>::from(e.to_string()))?;
             app.manage(genius);
             Ok(())
         })
@@ -212,11 +208,7 @@ mod tests {
         let lib = include_str!("lib.rs");
         let build = include_str!("../build.rs");
         let cap = include_str!("../capabilities/main.json");
-        let handler: Vec<&str> = lib
-            .lines()
-            .filter_map(|l| l.trim().strip_prefix("commands::"))
-            .map(|l| l.trim_end_matches(','))
-            .collect();
+        let handler: Vec<&str> = lib.lines().filter_map(|l| l.trim().strip_prefix("commands::")).map(|l| l.trim_end_matches(',')).collect();
         assert!(handler.len() > 50);
         for c in handler {
             assert!(build.contains(&format!("\"{c}\"")), "{c} missing from build.rs manifest");

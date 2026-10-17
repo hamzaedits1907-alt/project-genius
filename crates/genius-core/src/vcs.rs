@@ -68,7 +68,14 @@ impl Genius {
     fn git_event(&self, project_id: &str, title: &str, res: &Result<GitOutput>) {
         match res {
             Ok(o) => {
-                self.bus.record(Some(project_id), None, EventKind::Git, EventStatus::Completed, title, json!({ "command": o.command, "exitCode": o.exit_code, "output": format!("{}{}", o.stdout, o.stderr).chars().take(4000).collect::<String>() }));
+                self.bus.record(
+                    Some(project_id),
+                    None,
+                    EventKind::Git,
+                    EventStatus::Completed,
+                    title,
+                    json!({ "command": o.command, "exitCode": o.exit_code, "output": format!("{}{}", o.stdout, o.stderr).chars().take(4000).collect::<String>() }),
+                );
             }
             Err(e) => {
                 self.bus.record(Some(project_id), None, EventKind::Git, EventStatus::Failed, title, json!({ "error": { "kind": e.kind(), "message": e.to_string() } }));
@@ -266,7 +273,9 @@ impl Genius {
         if let Err(e) = res {
             let msg = e.to_string();
             if !allow_merge && (msg.contains("Not possible to fast-forward") || msg.contains("diverg")) {
-                return Err(GeniusError::Conflict("Local and remote histories have diverged. Choose 'Pull with merge' to combine them (you may need to resolve conflicts). Nothing was changed.".into()));
+                return Err(GeniusError::Conflict(
+                    "Local and remote histories have diverged. Choose 'Pull with merge' to combine them (you may need to resolve conflicts). Nothing was changed.".into(),
+                ));
             }
             return Err(e);
         }
@@ -319,7 +328,16 @@ impl Genius {
         let remote = st.remotes.iter().find(|r| r.name == "origin").ok_or_else(|| GeniusError::Git("No 'origin' remote is configured.".into()))?;
         let policy = self.settings()?.approvals.git_push;
         self.approvals
-            .request(&self.bus, Some(project_id), None, "git_push", policy, &format!("Push branch {branch} to {}", remote.url), json!({ "branch": branch, "remote": remote.url, "ahead": st.ahead, "command": format!("git push -u origin {branch}") }), cancel)
+            .request(
+                &self.bus,
+                Some(project_id),
+                None,
+                "git_push",
+                policy,
+                &format!("Push branch {branch} to {}", remote.url),
+                json!({ "branch": branch, "remote": remote.url, "ahead": st.ahead, "command": format!("git push -u origin {branch}") }),
+                cancel,
+            )
             .await?;
         self.push_and_verify(project_id, ws.root(), &git, &branch).await
     }
@@ -402,10 +420,17 @@ impl Genius {
     pub async fn github_login_token(&self, token: &str) -> Result<AuthStatus> {
         let gh = self.gh()?;
         let res = gh.login_with_token(token).await;
-        self.bus.record(None, None, EventKind::Github, if res.is_ok() { EventStatus::Completed } else { EventStatus::Failed }, "Connect GitHub with token (stored by GitHub CLI)", match &res {
-            Ok(_) => json!({}),
-            Err(e) => json!({ "error": { "kind": e.kind(), "message": e.to_string() } }),
-        });
+        self.bus.record(
+            None,
+            None,
+            EventKind::Github,
+            if res.is_ok() { EventStatus::Completed } else { EventStatus::Failed },
+            "Connect GitHub with token (stored by GitHub CLI)",
+            match &res {
+                Ok(_) => json!({}),
+                Err(e) => json!({ "error": { "kind": e.kind(), "message": e.to_string() } }),
+            },
+        );
         res?;
         Ok(gh.status().await)
     }
@@ -513,7 +538,14 @@ impl Genius {
             self.db.patch_project_status(project_id, &json!({ "publish": v }))?;
             Ok(())
         };
-        let mut task_ev = self.bus.start(Some(project_id), None, EventKind::Github, EventStatus::Running, format!("Publishing to GitHub: {full} ({})", req.visibility), json!({ "repo": full, "visibility": req.visibility }));
+        let mut task_ev = self.bus.start(
+            Some(project_id),
+            None,
+            EventKind::Github,
+            EventStatus::Running,
+            format!("Publishing to GitHub: {full} ({})", req.visibility),
+            json!({ "repo": full, "visibility": req.visibility }),
+        );
 
         let result: Result<Value> = async {
             // 1. Local repository
@@ -535,7 +567,10 @@ impl Genius {
             let files = git.ls_files_for_publish(ws.root()).await?;
             let findings = scan_files(&ws, &files);
             if !findings.is_empty() && !req.acknowledge_findings {
-                return Err(GeniusError::Conflict(format!("Possible secrets in files to publish: {}. Review them before publishing.", findings.iter().map(|f| f.path.clone()).collect::<Vec<_>>().join(", "))));
+                return Err(GeniusError::Conflict(format!(
+                    "Possible secrets in files to publish: {}. Review them before publishing.",
+                    findings.iter().map(|f| f.path.clone()).collect::<Vec<_>>().join(", ")
+                )));
             }
 
             // 3. Commit reviewed files (only if there is something to commit)
@@ -581,7 +616,16 @@ impl Genius {
             let branch = git.current_branch(ws.root()).await?.unwrap_or_else(|| "main".into());
             let policy = self.settings()?.approvals.git_push;
             self.approvals
-                .request(&self.bus, Some(project_id), None, "git_push", policy, &format!("Push {branch} to {full}"), json!({ "remote": remote_url, "branch": branch, "visibility": repo.visibility }), cancel)
+                .request(
+                    &self.bus,
+                    Some(project_id),
+                    None,
+                    "git_push",
+                    policy,
+                    &format!("Push {branch} to {full}"),
+                    json!({ "remote": remote_url, "branch": branch, "visibility": repo.visibility }),
+                    cancel,
+                )
                 .await?;
             let pushed = self.push_and_verify(project_id, ws.root(), &git, &branch).await?;
             step("pushed", json!({ "url": repo.url, "verified": true, "head": pushed["head"] }))?;
@@ -593,7 +637,10 @@ impl Genius {
             Ok(v) => task_ev.update(EventStatus::Completed, v.clone()),
             Err(e) => {
                 let prev = self.db.get_project(project_id)?.status.get("publish").cloned();
-                task_ev.update(if matches!(e, GeniusError::Cancelled | GeniusError::ApprovalDenied(_)) { EventStatus::Cancelled } else { EventStatus::Failed }, json!({ "error": { "kind": e.kind(), "message": e.to_string() }, "progress": prev }));
+                task_ev.update(
+                    if matches!(e, GeniusError::Cancelled | GeniusError::ApprovalDenied(_)) { EventStatus::Cancelled } else { EventStatus::Failed },
+                    json!({ "error": { "kind": e.kind(), "message": e.to_string() }, "progress": prev }),
+                );
             }
         }
         result

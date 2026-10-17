@@ -90,13 +90,14 @@ pub fn gather(ws: &Workspace) -> Result<ProjectFacts> {
             f.env_files.push(p.into());
             continue;
         }
-        if matches!(p, "src/main.tsx" | "src/main.ts" | "src/main.jsx" | "src/index.tsx" | "src/index.js" | "src/App.tsx" | "src/App.jsx" | "index.html" | "app/page.tsx" | "pages/index.tsx")
-        {
+        if matches!(p, "src/main.tsx" | "src/main.ts" | "src/main.jsx" | "src/index.tsx" | "src/index.js" | "src/App.tsx" | "src/App.jsx" | "index.html" | "app/page.tsx" | "pages/index.tsx") {
             f.entry_points.push(p.into());
         }
         if name.contains(".test.") || name.contains(".spec.") || p.starts_with("tests/") {
             f.tests.push(p.into());
-        } else if (p.starts_with("src/components/") || p.starts_with("src/pages/") || p.starts_with("src/views/")) && (p.ends_with(".tsx") || p.ends_with(".jsx") || p.ends_with(".vue") || p.ends_with(".svelte")) {
+        } else if (p.starts_with("src/components/") || p.starts_with("src/pages/") || p.starts_with("src/views/"))
+            && (p.ends_with(".tsx") || p.ends_with(".jsx") || p.ends_with(".vue") || p.ends_with(".svelte"))
+        {
             f.components.push(p.into());
         }
         if e.is_text && !e.sensitive && (p.ends_with(".tsx") || p.ends_with(".jsx")) && e.size < 200_000 {

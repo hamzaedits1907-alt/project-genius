@@ -58,9 +58,7 @@ Respond with ONLY one JSON object (no markdown fences, no commentary) with exact
 }
 
 pub fn plan_repair_message(error: &str) -> ChatMessage {
-    ChatMessage::user(format!(
-        "Your previous answer could not be used: {error}\nReply again with ONLY the JSON object described in the instructions."
-    ))
+    ChatMessage::user(format!("Your previous answer could not be used: {error}\nReply again with ONLY the JSON object described in the instructions."))
 }
 
 pub fn generate_messages(spec: &ProjectSpec, template_context: &str, memory: &str) -> Vec<ChatMessage> {
@@ -108,10 +106,7 @@ pub fn repair_messages(command: &str, exit_code: Option<i32>, diagnostics: &str,
         exit_code.map(|c| c.to_string()).unwrap_or_else(|| "none".into())
     );
     if !previous_attempts.is_empty() {
-        user.push_str(&format!(
-            "\n\nPREVIOUS REPAIR ATTEMPTS THAT DID NOT RESOLVE THE FAILURE (try a different approach):\n- {}",
-            previous_attempts.join("\n- ")
-        ));
+        user.push_str(&format!("\n\nPREVIOUS REPAIR ATTEMPTS THAT DID NOT RESOLVE THE FAILURE (try a different approach):\n- {}", previous_attempts.join("\n- ")));
     }
     if !memory.trim().is_empty() {
         user.push_str(&format!("\n\nPROJECT MEMORY:\n{memory}"));

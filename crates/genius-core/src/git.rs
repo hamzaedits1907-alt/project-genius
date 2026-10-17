@@ -86,9 +86,7 @@ pub struct Git {
 
 impl Git {
     pub fn detect() -> Result<Self> {
-        let program = find_executable("git").ok_or_else(|| {
-            GeniusError::MissingTool("Git is not installed or not on PATH. Install it from https://git-scm.com and restart Genius.".into())
-        })?;
+        let program = find_executable("git").ok_or_else(|| GeniusError::MissingTool("Git is not installed or not on PATH. Install it from https://git-scm.com and restart Genius.".into()))?;
         Ok(Self { program, credential_helper: None })
     }
 
@@ -240,9 +238,7 @@ impl Git {
             return Err(GeniusError::Validation("Commit message is empty.".into()));
         }
         if self.identity(dir).await?.is_none() {
-            return Err(GeniusError::Git(
-                "Git does not know who you are. Set your name and email for this repository in the Source Control panel.".into(),
-            ));
+            return Err(GeniusError::Git("Git does not know who you are. Set your name and email for this repository in the Source Control panel.".into()));
         }
         if self.staged_paths(dir).await?.is_empty() {
             return Err(GeniusError::Validation("Nothing is staged. Stage the files you want to commit first.".into()));
@@ -264,14 +260,7 @@ impl Git {
             .split('\x1e')
             .filter_map(|rec| {
                 let f: Vec<&str> = rec.trim_matches(['\n', '\r']).split('\x1f').collect();
-                (f.len() == 6).then(|| Commit {
-                    sha: f[0].into(),
-                    short: f[1].into(),
-                    author: f[2].into(),
-                    email: f[3].into(),
-                    date: f[4].into(),
-                    subject: f[5].into(),
-                })
+                (f.len() == 6).then(|| Commit { sha: f[0].into(), short: f[1].into(), author: f[2].into(), email: f[3].into(), date: f[4].into(), subject: f[5].into() })
             })
             .collect())
     }
@@ -308,11 +297,7 @@ impl Git {
             .lines()
             .filter_map(|l| {
                 let f: Vec<&str> = l.split('\x1f').collect();
-                (f.len() == 3).then(|| Branch {
-                    name: f[0].into(),
-                    current: f[1] == "*",
-                    upstream: (!f[2].is_empty()).then(|| f[2].to_string()),
-                })
+                (f.len() == 3).then(|| Branch { name: f[0].into(), current: f[1] == "*", upstream: (!f[2].is_empty()).then(|| f[2].to_string()) })
             })
             .collect())
     }
@@ -361,9 +346,7 @@ impl Git {
         self.ensure_repo(dir).await?;
         let out = self.raw(dir, &["pull", "--no-rebase", "--no-edit"], true).await?;
         if out.exit_code != 0 && self.status(dir).await?.files.iter().any(|f| f.conflicted) {
-            return Err(GeniusError::Conflict(
-                "The pull produced merge conflicts. Resolve the conflicted files, then commit the merge.".into(),
-            ));
+            return Err(GeniusError::Conflict("The pull produced merge conflicts. Resolve the conflicted files, then commit the merge.".into()));
         }
         check(out)
     }
@@ -470,10 +453,7 @@ fn validate_sha(sha: &str) -> Result<()> {
 
 pub fn validate_remote_url(url: &str) -> Result<()> {
     let u = url.trim();
-    let ok = (u.starts_with("https://") || u.starts_with("git@") || u.starts_with("ssh://"))
-        && !u.starts_with('-')
-        && !u.chars().any(|c| c.is_whitespace() || c.is_control())
-        && !u.contains("::");
+    let ok = (u.starts_with("https://") || u.starts_with("git@") || u.starts_with("ssh://")) && !u.starts_with('-') && !u.chars().any(|c| c.is_whitespace() || c.is_control()) && !u.contains("::");
     if !ok {
         return Err(GeniusError::Validation("Remote URL must be an https://, ssh:// or git@ URL.".into()));
     }
@@ -536,14 +516,7 @@ pub fn parse_status(raw: &str) -> RepoStatus {
                     conflicted: kind == 'u',
                 });
             }
-            '?' => st.files.push(FileStatus {
-                path: entry[2..].to_string(),
-                index: "?".into(),
-                worktree: "?".into(),
-                unstaged: true,
-                untracked: true,
-                ..Default::default()
-            }),
+            '?' => st.files.push(FileStatus { path: entry[2..].to_string(), index: "?".into(), worktree: "?".into(), unstaged: true, untracked: true, ..Default::default() }),
             _ => {}
         }
     }

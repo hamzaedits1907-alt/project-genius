@@ -215,7 +215,13 @@ mod tests {
         }
         ev.extend(p.finish());
         assert_eq!(collect(&ev).files, collect(&parse_all(SAMPLE)).files);
-        let deltas: String = ev.iter().filter_map(|e| match e { BlockEvent::FileDelta { text, .. } => Some(text.as_str()), _ => None }).collect();
+        let deltas: String = ev
+            .iter()
+            .filter_map(|e| match e {
+                BlockEvent::FileDelta { text, .. } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect();
         assert_eq!(deltas, "export function Header() {\n  return <h1>Hi</h1>;\n}\n");
     }
 

@@ -3,10 +3,10 @@
 
 pub mod agent;
 pub mod app;
-pub mod attachments;
-pub mod capabilities;
 pub mod approvals;
+pub mod attachments;
 pub mod blocks;
+pub mod capabilities;
 pub mod changes;
 pub mod context;
 pub mod db;
@@ -18,12 +18,14 @@ pub mod export;
 pub mod git;
 pub mod github;
 pub mod inspector;
-pub mod lifecycle;
 pub mod integrations;
+pub mod lifecycle;
 pub mod nvidia;
 pub mod preview;
-pub mod proposal;
 pub mod process;
+pub mod project_context;
+pub mod prompts;
+pub mod proposal;
 pub mod redact;
 pub mod scaffold;
 pub mod secrets;
@@ -32,8 +34,6 @@ pub mod settings;
 pub mod spec;
 pub mod supabase;
 pub mod uilog;
-pub mod project_context;
-pub mod prompts;
 pub mod vcs;
 pub mod workspace;
 

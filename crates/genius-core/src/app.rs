@@ -169,7 +169,14 @@ impl Genius {
         if stored.as_deref() != Some(key.as_str()) {
             return Err(GeniusError::Secret("the credential store did not return the saved key".into()));
         }
-        self.bus.record(None, None, EventKind::Task, EventStatus::Completed, "NVIDIA API key saved to system credential store", json!({ "backend": self.secrets.backend_name(), "hint": secrets::mask(&key) }));
+        self.bus.record(
+            None,
+            None,
+            EventKind::Task,
+            EventStatus::Completed,
+            "NVIDIA API key saved to system credential store",
+            json!({ "backend": self.secrets.backend_name(), "hint": secrets::mask(&key) }),
+        );
         Ok(self.key_status())
     }
 
@@ -460,7 +467,14 @@ impl Genius {
                 "delete" => "Deleted",
                 _ => "Updated",
             };
-            self.bus.record(Some(project_id), task_id, EventKind::FileWrite, EventStatus::Completed, format!("{verb} {}", f.path), json!({ "changesetId": cs.id, "path": f.path, "op": f.op, "added": f.added, "removed": f.removed }));
+            self.bus.record(
+                Some(project_id),
+                task_id,
+                EventKind::FileWrite,
+                EventStatus::Completed,
+                format!("{verb} {}", f.path),
+                json!({ "changesetId": cs.id, "path": f.path, "op": f.op, "added": f.added, "removed": f.removed }),
+            );
         }
         self.bus.push(channels::FS_CHANGED, json!({ "projectId": project_id, "paths": cs.files.iter().map(|f| f.path.clone()).collect::<Vec<_>>() }));
         // Re-verify a running preview against the new files (Vite only logs changes when a
@@ -497,9 +511,7 @@ impl Genius {
         if settings.verify_after_apply && matches!(applied.kind.as_str(), "generate" | "change" | "repair") {
             let me = self.clone();
             let pid = applied.project_id.clone();
-            self.spawn_task(&applied.project_id, "verify", "Verify changes with a production build", move |task_id, cancel| async move {
-                me.verify_pipeline(&pid, &task_id, &cancel, false).await
-            })?;
+            self.spawn_task(&applied.project_id, "verify", "Verify changes with a production build", move |task_id, cancel| async move { me.verify_pipeline(&pid, &task_id, &cancel, false).await })?;
         }
         Ok(applied)
     }
@@ -591,12 +603,27 @@ impl Genius {
 
     /// One model call with live streaming to the UI. When `stream_files` is set, file
     /// blocks are parsed as they arrive and pushed as draft file events (nothing is written).
-    pub(crate) async fn ai_call(&self, project_id: &str, task_id: &str, purpose: &str, messages: &[ChatMessage], stream_files: bool, cancel: &CancellationToken) -> Result<(ChatResult, Vec<BlockEvent>)> {
+    pub(crate) async fn ai_call(
+        &self,
+        project_id: &str,
+        task_id: &str,
+        purpose: &str,
+        messages: &[ChatMessage],
+        stream_files: bool,
+        cancel: &CancellationToken,
+    ) -> Result<(ChatResult, Vec<BlockEvent>)> {
         let (client, s) = self.client()?;
         let model = s.model.clone().ok_or(crate::nvidia::ProviderError::NoModel)?;
         let opts = ChatOptions { temperature: s.temperature, top_p: 0.95, max_tokens: s.max_tokens, stream: true };
         let prompt_chars: usize = messages.iter().map(|m| m.content.len()).sum();
-        let mut ev = self.bus.start(Some(project_id), Some(task_id), EventKind::Ai, EventStatus::Running, format!("{purpose} ({model})"), json!({ "model": model, "purpose": purpose, "promptChars": prompt_chars, "maxTokens": s.max_tokens }));
+        let mut ev = self.bus.start(
+            Some(project_id),
+            Some(task_id),
+            EventKind::Ai,
+            EventStatus::Running,
+            format!("{purpose} ({model})"),
+            json!({ "model": model, "purpose": purpose, "promptChars": prompt_chars, "maxTokens": s.max_tokens }),
+        );
         let mut parser = BlockParser::default();
         let mut events: Vec<BlockEvent> = Vec::new();
         let mut buf = String::new();
@@ -637,7 +664,10 @@ impl Genius {
                 } else {
                     events = crate::blocks::parse_all(&r.content);
                 }
-                ev.update(EventStatus::Completed, json!({ "finishReason": r.finish_reason, "outputChars": r.content.len(), "streamed": r.streamed, "usage": r.usage, "reasoningHidden": r.had_reasoning }));
+                ev.update(
+                    EventStatus::Completed,
+                    json!({ "finishReason": r.finish_reason, "outputChars": r.content.len(), "streamed": r.streamed, "usage": r.usage, "reasoningHidden": r.had_reasoning }),
+                );
                 Ok((r, events))
             }
             Err(e) => {
@@ -773,14 +803,21 @@ impl Genius {
         let parsed = collect(&all_events);
         let incomplete: Vec<String> = parsed.incomplete.iter().filter(|p| !parsed.files.iter().any(|(f, _)| f == *p)).cloned().collect();
         if parsed.files.is_empty() {
-            return Err(GeniusError::Validation(
-                "The model did not return any files in the required format. Try again or choose a stronger code model in Settings.".into(),
-            ));
+            return Err(GeniusError::Validation("The model did not return any files in the required format. Try again or choose a stronger code model in Settings.".into()));
         }
         let mut safe = self.safe_changes(&ws, &parsed.files, &parsed.deletes)?;
         if !safe.check.ok() {
             // One correction round: the model sees exactly what was blocked and why.
-            let (r, events) = self.ai_call(project_id, task_id, "Correcting generated files", &[messages.clone(), vec![ChatMessage::assistant(crate::blocks::render_files(&parsed.files)), prompts::validation_feedback(&safe.check.blockers)]].concat(), true, cancel).await?;
+            let (r, events) = self
+                .ai_call(
+                    project_id,
+                    task_id,
+                    "Correcting generated files",
+                    &[messages.clone(), vec![ChatMessage::assistant(crate::blocks::render_files(&parsed.files)), prompts::validation_feedback(&safe.check.blockers)]].concat(),
+                    true,
+                    cancel,
+                )
+                .await?;
             let _ = r;
             let fixes = collect(&events);
             let mut merged: Vec<(String, String)> = parsed.files.iter().filter(|(p, _)| !fixes.files.iter().any(|(q, _)| q == p)).cloned().collect();
@@ -788,7 +825,10 @@ impl Genius {
             safe = self.safe_changes(&ws, &merged, &parsed.deletes)?;
         }
         if !safe.check.ok() {
-            let msg = format!("The generated code was not applied because it would not work:\n- {}\n\nThe project still contains the working template. Try again, or choose a stronger code model in Settings.", safe.check.blockers.join("\n- "));
+            let msg = format!(
+                "The generated code was not applied because it would not work:\n- {}\n\nThe project still contains the working template. Try again, or choose a stronger code model in Settings.",
+                safe.check.blockers.join("\n- ")
+            );
             self.db.add_message(project_id, Some(task_id), "assistant", &msg)?;
             return Err(GeniusError::Validation(msg));
         }
@@ -802,7 +842,14 @@ impl Genius {
         //    existing project follows the review policy.
         let auto = fresh || self.settings()?.approvals.apply_ai_edits == Policy::Auto;
         if !auto {
-            self.bus.record(Some(project_id), Some(task_id), EventKind::Changeset, EventStatus::AwaitingApproval, format!("Review proposed changes: {}", cs.title), json!({ "changesetId": cs.id, "warnings": check.warnings }));
+            self.bus.record(
+                Some(project_id),
+                Some(task_id),
+                EventKind::Changeset,
+                EventStatus::AwaitingApproval,
+                format!("Review proposed changes: {}", cs.title),
+                json!({ "changesetId": cs.id, "warnings": check.warnings }),
+            );
             return Ok(json!({ "changesetId": cs.id, "applied": false, "rejectedPaths": rejected, "incomplete": incomplete }));
         }
         self.apply_changeset_inner(project_id, Some(task_id), &cs.id)?;
@@ -870,7 +917,14 @@ impl Genius {
         let s = self.settings()?;
         let plan = context::plan(&ws, &ContextRequest { query: request, pinned, excluded, must: &[], budget_chars: s.context_budget_chars })?;
         let included: Vec<String> = plan.files.iter().filter(|f| f.included).map(|f| f.path.clone()).collect();
-        self.bus.record(Some(project_id), Some(task_id), EventKind::FileRead, EventStatus::Completed, format!("Read {} relevant files for context", included.len()), json!({ "files": included, "chars": plan.used_chars, "excludedSensitive": plan.excluded_sensitive }));
+        self.bus.record(
+            Some(project_id),
+            Some(task_id),
+            EventKind::FileRead,
+            EventStatus::Completed,
+            format!("Read {} relevant files for context", included.len()),
+            json!({ "files": included, "chars": plan.used_chars, "excludedSensitive": plan.excluded_sensitive }),
+        );
         let spec_summary = p.spec.as_ref().and_then(|v| serde_json::from_value::<ProjectSpec>(v.clone()).ok()).map(|s| format!("{}: {}", s.name, s.purpose)).unwrap_or_default();
         let messages = prompts::change_messages(request, &context::render(&ws, &plan), &p.notes, &spec_summary);
         let (_, events) = self.ai_call(project_id, task_id, "Implementing change", &messages, true, cancel).await?;
@@ -907,7 +961,14 @@ impl Genius {
                 out["verify"] = self.verify_pipeline(project_id, task_id, cancel, false).await.unwrap_or_else(|e| json!({ "ok": false, "error": e.to_string() }));
             }
         } else {
-            self.bus.record(Some(project_id), Some(task_id), EventKind::Changeset, EventStatus::AwaitingApproval, format!("Review proposed changes: {}", cs.title), json!({ "changesetId": cs.id, "files": cs.files }));
+            self.bus.record(
+                Some(project_id),
+                Some(task_id),
+                EventKind::Changeset,
+                EventStatus::AwaitingApproval,
+                format!("Review proposed changes: {}", cs.title),
+                json!({ "changesetId": cs.id, "files": cs.files }),
+            );
             out["applied"] = json!(false);
         }
         Ok(out)
@@ -963,7 +1024,11 @@ impl Genius {
             if out.ok() {
                 Ok(json!({ "outcome": out }))
             } else {
-                Err(GeniusError::Process(format!("{} failed (exit code {}). Open the terminal output or ask the Build Doctor to diagnose it.", op.label(), out.exit_code.map(|c| c.to_string()).unwrap_or_else(|| "none".into()))))
+                Err(GeniusError::Process(format!(
+                    "{} failed (exit code {}). Open the terminal output or ask the Build Doctor to diagnose it.",
+                    op.label(),
+                    out.exit_code.map(|c| c.to_string()).unwrap_or_else(|| "none".into())
+                )))
             }
         })
     }
@@ -1013,7 +1078,18 @@ impl Genius {
         let last_change = self.list_changesets(project_id)?.into_iter().filter(|c| c.status == "applied" || c.status == "reverted").filter_map(|c| c.applied_at).max();
         let dep = self.dep_status(project_id)?;
         let installed = !dep.needs_install() && dep.state != crate::deps::DepState::InvalidPackageJson;
-        checks.push(check("deps", "Dependencies installed", if installed { "pass" } else if dep.state == crate::deps::DepState::InvalidPackageJson { "fail" } else { "warn" }, if installed { "node_modules matches package.json".into() } else { format!("{} Genius installs them automatically when you start the preview.", dep.reason) }));
+        checks.push(check(
+            "deps",
+            "Dependencies installed",
+            if installed {
+                "pass"
+            } else if dep.state == crate::deps::DepState::InvalidPackageJson {
+                "fail"
+            } else {
+                "warn"
+            },
+            if installed { "node_modules matches package.json".into() } else { format!("{} Genius installs them automatically when you start the preview.", dep.reason) },
+        ));
         for (key, id, label) in [("lastBuild", "build", "Production build"), ("lastTest", "test", "Tests")] {
             let st = p.status.get(key);
             let c = match st {
@@ -1022,14 +1098,15 @@ impl Genius {
                     let at = s.get("at").and_then(|a| a.as_str()).unwrap_or("");
                     let ok = s.get("status").and_then(|x| x.as_str()) == Some("succeeded");
                     let stale = last_change.as_deref().is_some_and(|lc| lc > at);
-                    let status = if !ok { "fail" } else if stale { "warn" } else { "pass" };
+                    let status = if !ok {
+                        "fail"
+                    } else if stale {
+                        "warn"
+                    } else {
+                        "pass"
+                    };
                     let when = chrono::DateTime::parse_from_rfc3339(at).map(|t| t.with_timezone(&chrono::Local).format("%Y-%m-%d %H:%M").to_string()).unwrap_or_else(|_| at.to_string());
-                    let detail = format!(
-                        "{} {}{}",
-                        if ok { "Succeeded" } else { "Failed" },
-                        when,
-                        if stale { " — files changed since; run again" } else { "" }
-                    );
+                    let detail = format!("{} {}{}", if ok { "Succeeded" } else { "Failed" }, when, if stale { " — files changed since; run again" } else { "" });
                     check(id, label, status, detail)
                 }
             };
@@ -1037,7 +1114,16 @@ impl Genius {
         }
         let files: Vec<String> = ws.list_files()?.into_iter().map(|f| f.path).collect();
         let findings = crate::secretscan::scan_files(&ws, &files.iter().filter(|f| !f.starts_with(".env")).cloned().collect::<Vec<_>>());
-        checks.push(check("secrets", "No hard-coded secrets in source", if findings.is_empty() { "pass" } else { "fail" }, if findings.is_empty() { format!("Scanned {} files", files.len()) } else { findings.iter().map(|f| format!("{}:{} {}", f.path, f.line.unwrap_or(0), f.kind)).collect::<Vec<_>>().join("; ") }));
+        checks.push(check(
+            "secrets",
+            "No hard-coded secrets in source",
+            if findings.is_empty() { "pass" } else { "fail" },
+            if findings.is_empty() {
+                format!("Scanned {} files", files.len())
+            } else {
+                findings.iter().map(|f| format!("{}:{} {}", f.path, f.line.unwrap_or(0), f.kind)).collect::<Vec<_>>().join("; ")
+            },
+        ));
         let readme = files.iter().any(|f| f.eq_ignore_ascii_case("readme.md"));
         checks.push(check("readme", "README present", if readme { "pass" } else { "warn" }, if readme { "README.md found".into() } else { "Add a README describing the project".into() }));
         match crate::git::Git::detect() {
@@ -1047,12 +1133,22 @@ impl Genius {
                     checks.push(check("git", "Version control", "warn", "Not a Git repository".into()));
                 } else {
                     let clean = st.files.is_empty();
-                    checks.push(check("git", "Changes committed", if clean { "pass" } else { "warn" }, if clean { "Working tree clean".into() } else { format!("{} uncommitted file(s)", st.files.len()) }));
+                    checks.push(check(
+                        "git",
+                        "Changes committed",
+                        if clean { "pass" } else { "warn" },
+                        if clean { "Working tree clean".into() } else { format!("{} uncommitted file(s)", st.files.len()) },
+                    ));
                     let pushed = st.upstream.is_some() && st.ahead == 0;
-                    checks.push(check("remote", "Pushed to remote", if pushed { "pass" } else { "warn" }, match &st.upstream {
-                        Some(u) => format!("{} commit(s) ahead of {u}", st.ahead),
-                        None => "No upstream branch configured".into(),
-                    }));
+                    checks.push(check(
+                        "remote",
+                        "Pushed to remote",
+                        if pushed { "pass" } else { "warn" },
+                        match &st.upstream {
+                            Some(u) => format!("{} commit(s) ahead of {u}", st.ahead),
+                            None => "No upstream branch configured".into(),
+                        },
+                    ));
                 }
             }
             Err(e) => checks.push(check("git", "Version control", "unknown", e.to_string())),
@@ -1079,15 +1175,11 @@ mod tests {
     fn tasks_can_be_spawned_from_non_runtime_threads() {
         let rt = tokio::runtime::Runtime::new().unwrap();
         let dir = tempfile::tempdir().unwrap();
-        let g = rt.block_on(async {
-            Genius::new(dir.path(), Arc::new(crate::events::NullEmitter), Arc::new(crate::secrets::MemoryStore::default())).unwrap()
-        });
+        let g = rt.block_on(async { Genius::new(dir.path(), Arc::new(crate::events::NullEmitter), Arc::new(crate::secrets::MemoryStore::default())).unwrap() });
         let p = g.create_project("Thread test", "").unwrap();
         let g2 = g.clone();
         let pid = p.id.clone();
-        let task = std::thread::spawn(move || g2.spawn_task(&pid, "test", "noop", |_, _| async { Ok(json!({ "ran": true })) }).unwrap())
-            .join()
-            .expect("spawning from a plain thread must not panic");
+        let task = std::thread::spawn(move || g2.spawn_task(&pid, "test", "noop", |_, _| async { Ok(json!({ "ran": true })) }).unwrap()).join().expect("spawning from a plain thread must not panic");
         rt.block_on(async {
             for _ in 0..100 {
                 if g.active_tasks(None).is_empty() {

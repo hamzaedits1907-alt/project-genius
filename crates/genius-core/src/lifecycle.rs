@@ -85,11 +85,7 @@ impl PreviewHub {
     fn update(&self, pid: &str, generation: Option<u64>, f: impl FnOnce(&mut PreviewState)) -> Option<PreviewState> {
         let st = {
             let mut map = self.sessions.lock().unwrap();
-            let s = map.entry(pid.to_string()).or_insert_with(|| Session {
-                state: PreviewState { project_id: pid.into(), ..Default::default() },
-                cancel: CancellationToken::new(),
-                token: None,
-            });
+            let s = map.entry(pid.to_string()).or_insert_with(|| Session { state: PreviewState { project_id: pid.into(), ..Default::default() }, cancel: CancellationToken::new(), token: None });
             if generation.is_some_and(|g| g != s.state.generation) {
                 return None;
             }
@@ -219,7 +215,15 @@ pub fn classify_install(output: &str) -> (String, bool) {
     if o.contains("e404") || o.contains("is not in this registry") || o.contains("404 not found") {
         return ("A package listed in package.json does not exist on npm.".into(), true);
     }
-    if o.contains("enotfound") || o.contains("etimedout") || o.contains("eai_again") || o.contains("econnreset") || o.contains("econnrefused") || o.contains("network request") || o.contains("self signed certificate") || o.contains("unable to get local issuer") {
+    if o.contains("enotfound")
+        || o.contains("etimedout")
+        || o.contains("eai_again")
+        || o.contains("econnreset")
+        || o.contains("econnrefused")
+        || o.contains("network request")
+        || o.contains("self signed certificate")
+        || o.contains("unable to get local issuer")
+    {
         return ("npm could not reach the package registry. Check your internet connection (or company proxy) and try again.".into(), false);
     }
     if o.contains("eperm") || o.contains("ebusy") || o.contains("eacces") {
@@ -333,7 +337,14 @@ impl Genius {
         }
         let mut out = self.run_npm(project_id, task_id, Operation::Install, &st.reason, cancel).await?;
         if !out.ok() && out.output_tail.contains("ERESOLVE") {
-            self.bus.record(Some(project_id), task_id, EventKind::Install, EventStatus::Running, "Peer-dependency conflict: retrying the install in compatibility mode (--legacy-peer-deps)", json!({ "runId": out.id }));
+            self.bus.record(
+                Some(project_id),
+                task_id,
+                EventKind::Install,
+                EventStatus::Running,
+                "Peer-dependency conflict: retrying the install in compatibility mode (--legacy-peer-deps)",
+                json!({ "runId": out.id }),
+            );
             out = self.run_npm(project_id, task_id, Operation::InstallLegacyPeers, "Retry after a peer-dependency conflict", cancel).await?;
         }
         if out.ok() {
@@ -468,7 +479,14 @@ impl Genius {
         }
         let has_dev = ws.read_text_opt("package.json")?.and_then(|t| deps::parse_strict(&t).ok()).is_some_and(|v| v.pointer("/scripts/dev").and_then(|d| d.as_str()).is_some());
         if !has_dev {
-            return Ok(fail("config", "package.json has no \"dev\" script.", "The project cannot be started because package.json has no \"dev\" script.".into(), "scripts.dev is missing".into(), None, true));
+            return Ok(fail(
+                "config",
+                "package.json has no \"dev\" script.",
+                "The project cannot be started because package.json has no \"dev\" script.".into(),
+                "scripts.dev is missing".into(),
+                None,
+                true,
+            ));
         }
 
         // 2. Dependencies, installed automatically when the files say so.
@@ -484,7 +502,9 @@ impl Genius {
                 }
                 Ok(_) => {}
                 Err(GeniusError::Cancelled) if cancel.is_cancelled() => return Ok(self.hub.state(project_id)),
-                Err(GeniusError::Cancelled) => return Ok(fail("install", "Installation was not approved.", "The dependency installation was declined, so the preview cannot start.".into(), String::new(), None, false)),
+                Err(GeniusError::Cancelled) => {
+                    return Ok(fail("install", "Installation was not approved.", "The dependency installation was declined, so the preview cannot start.".into(), String::new(), None, false))
+                }
                 Err(e) => return Ok(fail("install", "Installing the dependencies failed.", e.to_string(), e.to_string(), None, !matches!(e, GeniusError::MissingTool(_)))),
             }
         }
@@ -564,7 +584,14 @@ impl Genius {
                 Err(None) => {
                     let _ = self.procs.stop(&run.id).await;
                     let out = self.db.list_runs(project_id, 5)?.into_iter().find(|r| r.id == run.id).map(|r| r.output_tail).unwrap_or_default();
-                    return Ok(fail("start", "The development server did not become ready.", format!("The development server did not answer within {} seconds.", START_TIMEOUT.as_secs()), tail(&out, 6000), Some(run.id), true));
+                    return Ok(fail(
+                        "start",
+                        "The development server did not become ready.",
+                        format!("The development server did not answer within {} seconds.", START_TIMEOUT.as_secs()),
+                        tail(&out, 6000),
+                        Some(run.id),
+                        true,
+                    ));
                 }
                 Ok(Err(CheckFailure::WrongServer(m))) => {
                     let _ = self.procs.stop(&run.id).await;
@@ -580,7 +607,14 @@ impl Genius {
                         apply_check(s, result, Some(run.id.clone()));
                     });
                     if ok {
-                        self.bus.record(Some(project_id), task_id, EventKind::Preview, EventStatus::Completed, format!("Preview is live at {url}"), json!({ "url": url, "runId": run.id, "verified": "HTTP answer with this run's identity and a compiled module graph" }));
+                        self.bus.record(
+                            Some(project_id),
+                            task_id,
+                            EventKind::Preview,
+                            EventStatus::Completed,
+                            format!("Preview is live at {url}"),
+                            json!({ "url": url, "runId": run.id, "verified": "HTTP answer with this run's identity and a compiled module graph" }),
+                        );
                     } else if let Some(p) = st.as_ref().and_then(|s| s.problem.clone()) {
                         self.bus.record(Some(project_id), task_id, EventKind::Preview, EventStatus::Failed, p.summary.clone(), json!({ "url": url, "runId": run.id, "details": p.details }));
                     }
@@ -751,11 +785,7 @@ impl Genius {
         report["build"] = json!({ "status": build.status, "exitCode": build.exit_code, "runId": build.id, "summary": if build.ok() { "The production build succeeded.".to_string() } else { build_summary(&build.output_tail) } });
 
         // The development preview is judged independently of the production build.
-        let preview_state = if start_preview {
-            Some(self.ensure_preview(project_id, Some(task_id)).await?)
-        } else {
-            self.refresh_preview_after_change(project_id, Some(task_id), installed).await
-        };
+        let preview_state = if start_preview { Some(self.ensure_preview(project_id, Some(task_id)).await?) } else { self.refresh_preview_after_change(project_id, Some(task_id), installed).await };
         if let Some(p) = &preview_state {
             report["preview"] = json!({ "status": p.status, "url": p.url, "problem": p.problem });
             if p.status == PreviewStatus::Ready {
@@ -776,7 +806,14 @@ impl Genius {
                 }
             } else {
                 report["doctor"] = json!({ "stopped": format!("Stopped after {max} automatic repair attempts. Review the diagnostics, edit the code, or ask for a specific change.") });
-                self.bus.record(Some(project_id), Some(task_id), EventKind::Diagnosis, EventStatus::Failed, format!("Build Doctor stopped after {max} attempts"), json!({ "attempts": self.repair_attempts(project_id) }));
+                self.bus.record(
+                    Some(project_id),
+                    Some(task_id),
+                    EventKind::Diagnosis,
+                    EventStatus::Failed,
+                    format!("Build Doctor stopped after {max} attempts"),
+                    json!({ "attempts": self.repair_attempts(project_id) }),
+                );
             }
             return Ok(report);
         }
@@ -797,21 +834,57 @@ impl Genius {
         let dep = self.dep_status(project_id)?;
         match dep.state {
             DepState::NoPackageJson => {
-                return Ok(Some(Failure { kind: "config".into(), summary: "This project has no package.json.".into(), command: "read package.json".into(), exit_code: None, output: dep.reason, run_id: None, file: Some("package.json".into()), fixable: false }));
+                return Ok(Some(Failure {
+                    kind: "config".into(),
+                    summary: "This project has no package.json.".into(),
+                    command: "read package.json".into(),
+                    exit_code: None,
+                    output: dep.reason,
+                    run_id: None,
+                    file: Some("package.json".into()),
+                    fixable: false,
+                }));
             }
             DepState::InvalidPackageJson => {
-                return Ok(Some(Failure { kind: "config".into(), summary: dep.reason.clone(), command: "read package.json".into(), exit_code: None, output: dep.reason, run_id: None, file: Some("package.json".into()), fixable: true }));
+                return Ok(Some(Failure {
+                    kind: "config".into(),
+                    summary: dep.reason.clone(),
+                    command: "read package.json".into(),
+                    exit_code: None,
+                    output: dep.reason,
+                    run_id: None,
+                    file: Some("package.json".into()),
+                    fixable: true,
+                }));
             }
             _ => {}
         }
         match self.ensure_installed(project_id, Some(task_id), cancel).await {
             Ok(Some(out)) if !out.ok() => {
                 let (summary, fixable) = classify_install(&out.output_tail);
-                return Ok(Some(Failure { kind: "install".into(), summary, command: "npm install".into(), exit_code: out.exit_code, output: tail(&out.output_tail, 12_000), run_id: Some(out.id), file: Some("package.json".into()), fixable }));
+                return Ok(Some(Failure {
+                    kind: "install".into(),
+                    summary,
+                    command: "npm install".into(),
+                    exit_code: out.exit_code,
+                    output: tail(&out.output_tail, 12_000),
+                    run_id: Some(out.id),
+                    file: Some("package.json".into()),
+                    fixable,
+                }));
             }
             Ok(_) => {}
             Err(GeniusError::Cancelled) if !cancel.is_cancelled() => {
-                return Ok(Some(Failure { kind: "install".into(), summary: "Installing the new packages was not approved.".into(), command: "npm install".into(), exit_code: None, output: String::new(), run_id: None, file: None, fixable: false }));
+                return Ok(Some(Failure {
+                    kind: "install".into(),
+                    summary: "Installing the new packages was not approved.".into(),
+                    command: "npm install".into(),
+                    exit_code: None,
+                    output: String::new(),
+                    run_id: None,
+                    file: None,
+                    fixable: false,
+                }));
             }
             Err(e) => return Err(e),
         }
@@ -819,12 +892,30 @@ impl Genius {
             let st = self.ensure_preview(project_id, Some(task_id)).await?;
             if st.status != PreviewStatus::Ready {
                 let p = st.problem.clone().unwrap_or_default();
-                return Ok(Some(Failure { kind: "preview".into(), summary: if p.summary.is_empty() { st.message.clone() } else { p.summary }, command: "npm run dev (Genius compile check)".into(), exit_code: None, output: p.details, run_id: p.run_id, file: p.file, fixable: p.fixable }));
+                return Ok(Some(Failure {
+                    kind: "preview".into(),
+                    summary: if p.summary.is_empty() { st.message.clone() } else { p.summary },
+                    command: "npm run dev (Genius compile check)".into(),
+                    exit_code: None,
+                    output: p.details,
+                    run_id: p.run_id,
+                    file: p.file,
+                    fixable: p.fixable,
+                }));
             }
         }
         let build = self.run_operation(project_id, Some(task_id), Operation::Build, "Check that the project builds", false, cancel).await?;
         if !build.ok() {
-            return Ok(Some(Failure { kind: "build".into(), summary: build_summary(&build.output_tail), command: "npm run build".into(), exit_code: build.exit_code, output: build.output_tail.clone(), run_id: Some(build.id), file: None, fixable: true }));
+            return Ok(Some(Failure {
+                kind: "build".into(),
+                summary: build_summary(&build.output_tail),
+                command: "npm run build".into(),
+                exit_code: build.exit_code,
+                output: build.output_tail.clone(),
+                run_id: Some(build.id),
+                file: None,
+                fixable: true,
+            }));
         }
         Ok(None)
     }
@@ -855,19 +946,49 @@ impl Genius {
             }
             let failure = match self.find_failure(project_id, task_id, with_preview, cancel).await? {
                 Some(f) => Some(f),
-                None => runtime.take().map(|r| Failure { kind: "runtime".into(), summary: "The page reported an error while running.".into(), command: "browser (preview page)".into(), exit_code: None, output: r, run_id: None, file: None, fixable: true }),
+                None => runtime.take().map(|r| Failure {
+                    kind: "runtime".into(),
+                    summary: "The page reported an error while running.".into(),
+                    command: "browser (preview page)".into(),
+                    exit_code: None,
+                    output: r,
+                    run_id: None,
+                    file: None,
+                    fixable: true,
+                }),
             };
             let Some(failure) = failure else {
                 let st = self.preview_state(project_id);
-                let mut text = if applied.is_empty() { "I checked the project and found nothing to fix: dependencies are installed, the app compiles in the preview and the production build succeeds.".to_string() } else { format!("Fixed. I applied {} change(s) and verified the result: dependencies are installed, the app compiles in the preview and the production build succeeds.", applied.len()) };
+                let mut text = if applied.is_empty() {
+                    "I checked the project and found nothing to fix: dependencies are installed, the app compiles in the preview and the production build succeeds.".to_string()
+                } else {
+                    format!("Fixed. I applied {} change(s) and verified the result: dependencies are installed, the app compiles in the preview and the production build succeeds.", applied.len())
+                };
                 if runtime_error.is_some() && !applied.is_empty() {
                     text.push_str(" The original error happened while the page was running; Genius cannot re-run your page's interactions, so reload the preview to confirm it is gone.");
                 }
-                self.db.add_message_in(&conv.id, project_id, Some(task_id), "assistant", "answer", &text, &json!({ "autoFix": { "fixed": true, "attempts": attempts, "changesets": applied, "previewUrl": st.url } }))?;
+                self.db.add_message_in(
+                    &conv.id,
+                    project_id,
+                    Some(task_id),
+                    "assistant",
+                    "answer",
+                    &text,
+                    &json!({ "autoFix": { "fixed": true, "attempts": attempts, "changesets": applied, "previewUrl": st.url } }),
+                )?;
                 return Ok(json!({ "fixed": true, "attempts": attempts, "changesets": applied, "preview": st }));
             };
             let give_up = |reason: String, attempts: &Vec<Value>| -> Result<Value> {
-                let text = format!("I could not fix this automatically.\n\nProblem: {}\n{}\n\nWhat you can do: {}", failure.summary, reason, if failure.fixable { "describe what the app should do in the chat and I will make a targeted change, or open Advanced → Build output for the full log." } else { "this needs a change on your computer, not in the code (see above). Then press Fix automatically again." });
+                let text = format!(
+                    "I could not fix this automatically.\n\nProblem: {}\n{}\n\nWhat you can do: {}",
+                    failure.summary,
+                    reason,
+                    if failure.fixable {
+                        "describe what the app should do in the chat and I will make a targeted change, or open Advanced → Build output for the full log."
+                    } else {
+                        "this needs a change on your computer, not in the code (see above). Then press Fix automatically again."
+                    }
+                );
                 self.db.add_message_in(&conv.id, project_id, Some(task_id), "assistant", "error", &text, &json!({ "autoFix": { "fixed": false, "failure": failure, "attempts": attempts } }))?;
                 Err(GeniusError::Process(format!("Not fixed: {} {reason}", failure.summary)))
             };
@@ -887,7 +1008,8 @@ impl Genius {
             };
             let cs = self.apply_changeset_inner(project_id, Some(task_id), &cs.id)?;
             applied.push(cs.id.clone());
-            attempts.push(json!({ "failure": failure.summary, "kind": failure.kind, "rootCause": root_cause, "changesetId": cs.id, "files": cs.files.iter().map(|f| f.path.clone()).collect::<Vec<_>>() }));
+            attempts
+                .push(json!({ "failure": failure.summary, "kind": failure.kind, "rootCause": root_cause, "changesetId": cs.id, "files": cs.files.iter().map(|f| f.path.clone()).collect::<Vec<_>>() }));
         }
     }
 
@@ -907,7 +1029,14 @@ impl Genius {
         if about_packages && !referenced.iter().any(|f| f == "package.json") {
             referenced.push("package.json".into());
         }
-        let mut ev = self.bus.start(Some(project_id), Some(task_id), EventKind::Diagnosis, EventStatus::Running, format!("Diagnosing: {}", failure.summary), json!({ "failure": failure.kind, "command": failure.command, "diagnostics": diags, "files": referenced }));
+        let mut ev = self.bus.start(
+            Some(project_id),
+            Some(task_id),
+            EventKind::Diagnosis,
+            EventStatus::Running,
+            format!("Diagnosing: {}", failure.summary),
+            json!({ "failure": failure.kind, "command": failure.command, "diagnostics": diags, "files": referenced }),
+        );
         let p = self.db.get_project(project_id)?;
         let s = self.settings()?;
         let query: String = diags.iter().map(|d| d.message.clone()).chain(std::iter::once(failure.summary.clone())).collect::<Vec<_>>().join(" ");
@@ -915,11 +1044,16 @@ impl Genius {
         let mut diag_text = if diags.is_empty() {
             format!("(no structured diagnostics recognised)\nSUMMARY: {}", failure.summary)
         } else {
-            diags.iter().map(|d| format!("{}:{}:{} {} {}", d.file.as_deref().unwrap_or("?"), d.line.unwrap_or(0), d.column.unwrap_or(0), d.code.as_deref().unwrap_or(""), d.message)).collect::<Vec<_>>().join("\n")
+            diags
+                .iter()
+                .map(|d| format!("{}:{}:{} {} {}", d.file.as_deref().unwrap_or("?"), d.line.unwrap_or(0), d.column.unwrap_or(0), d.code.as_deref().unwrap_or(""), d.message))
+                .collect::<Vec<_>>()
+                .join("\n")
         };
         diag_text.push_str(&missing_package_hints(ws.root(), &failure.output));
         let previous = self.repair_attempts(project_id);
-        let mut messages = prompts::repair_messages(&failure.command, failure.exit_code, &diag_text, &diagnostics::focus_log(&failure.output, 12_000), &context::render(&ws, &plan), &previous, &p.notes);
+        let mut messages =
+            prompts::repair_messages(&failure.command, failure.exit_code, &diag_text, &diagnostics::focus_log(&failure.output, 12_000), &context::render(&ws, &plan), &previous, &p.notes);
         for round in 0..2 {
             let (r, events) = match self.ai_call(project_id, task_id, if round == 0 { "Diagnosing and preparing a fix" } else { "Correcting the proposed fix" }, &messages, true, cancel).await {
                 Ok(x) => x,
@@ -929,7 +1063,12 @@ impl Genius {
                 }
             };
             let parsed = crate::blocks::collect(&events);
-            let root_cause = parsed.explanation.lines().find(|l| l.to_lowercase().starts_with("root cause")).map(|l| l.trim().to_string()).unwrap_or_else(|| parsed.explanation.lines().next().unwrap_or("").to_string());
+            let root_cause = parsed
+                .explanation
+                .lines()
+                .find(|l| l.to_lowercase().starts_with("root cause"))
+                .map(|l| l.trim().to_string())
+                .unwrap_or_else(|| parsed.explanation.lines().next().unwrap_or("").to_string());
             let safe = self.safe_changes(&ws, &parsed.files, &parsed.deletes)?;
             if safe.changes.is_empty() {
                 ev.update(EventStatus::Failed, json!({ "rootCause": root_cause, "note": "No applicable fix was proposed.", "rejectedPaths": safe.rejected }));
@@ -944,8 +1083,20 @@ impl Genius {
                 ev.update(EventStatus::Failed, json!({ "rootCause": root_cause, "blocked": safe.check.blockers }));
                 return Ok(None);
             }
-            self.repair_history.lock().unwrap().entry(project_id.to_string()).or_default().push(format!("{root_cause} (files: {})", safe.changes.iter().map(|c| c.path.as_str()).collect::<Vec<_>>().join(", ")));
-            let cs = ChangeStore::new(&self.db).create(project_id, Some(task_id), "repair", &format!("Fix: {}", failure.summary.chars().take(70).collect::<String>()), &parsed.explanation, &safe.changes)?;
+            self.repair_history
+                .lock()
+                .unwrap()
+                .entry(project_id.to_string())
+                .or_default()
+                .push(format!("{root_cause} (files: {})", safe.changes.iter().map(|c| c.path.as_str()).collect::<Vec<_>>().join(", ")));
+            let cs = ChangeStore::new(&self.db).create(
+                project_id,
+                Some(task_id),
+                "repair",
+                &format!("Fix: {}", failure.summary.chars().take(70).collect::<String>()),
+                &parsed.explanation,
+                &safe.changes,
+            )?;
             ev.update(EventStatus::Completed, json!({ "rootCause": root_cause, "changesetId": cs.id, "warnings": safe.check.warnings }));
             return Ok(Some((cs, root_cause)));
         }
@@ -991,7 +1142,16 @@ impl Genius {
         let trusted = crate::scaffold::trusted_scripts().iter().any(|(k, v)| *k == script && *v == actual);
         if !trusted {
             self.approvals
-                .request(&self.bus, Some(project_id), task_id, "untrusted_script", Policy::Ask, &format!("Run modified npm script \"{script}\""), json!({ "script": script, "command": actual, "note": "This script differs from the Genius template. It runs as a program on your computer." }), cancel)
+                .request(
+                    &self.bus,
+                    Some(project_id),
+                    task_id,
+                    "untrusted_script",
+                    Policy::Ask,
+                    &format!("Run modified npm script \"{script}\""),
+                    json!({ "script": script, "command": actual, "note": "This script differs from the Genius template. It runs as a program on your computer." }),
+                    cancel,
+                )
                 .await?;
         }
         Ok(())
@@ -1042,7 +1202,11 @@ fn name_from_description(d: &str) -> String {
             c.next().map(|f| f.to_uppercase().collect::<String>() + &c.as_str().to_lowercase()).unwrap_or_default()
         })
         .collect();
-    if words.is_empty() { "My App".into() } else { words.join(" ").chars().take(40).collect() }
+    if words.is_empty() {
+        "My App".into()
+    } else {
+        words.join(" ").chars().take(40).collect()
+    }
 }
 
 /// Honest summary of a generation's verification for the conversation.
@@ -1063,7 +1227,11 @@ fn creation_report(v: &Value) -> String {
         None => lines.push("Preview was not started.".into()),
     }
     let ok = v.get("ok").and_then(|x| x.as_bool()) == Some(true);
-    format!("{}\n\n{}", if ok { "Your app is ready. Tell me what to change next." } else { "The code was written, but something still needs attention. Press “Fix automatically” to let me repair it." }, lines.join("\n"))
+    format!(
+        "{}\n\n{}",
+        if ok { "Your app is ready. Tell me what to change next." } else { "The code was written, but something still needs attention. Press “Fix automatically” to let me repair it." },
+        lines.join("\n")
+    )
 }
 
 /// Deterministic hints for the repair prompt: packages the error mentions that are imported
@@ -1111,7 +1279,9 @@ mod tests {
 
     #[test]
     fn creation_report_is_honest() {
-        let r = creation_report(&json!({ "ok": false, "install": "succeeded", "build": { "status": "failed", "summary": "TypeScript error in src/App.tsx line 3: x" }, "preview": { "status": "ready", "url": "http://127.0.0.1:5555/" } }));
+        let r = creation_report(
+            &json!({ "ok": false, "install": "succeeded", "build": { "status": "failed", "summary": "TypeScript error in src/App.tsx line 3: x" }, "preview": { "status": "ready", "url": "http://127.0.0.1:5555/" } }),
+        );
         assert!(r.contains("✗ Production build failed") && r.contains("✓ Preview is running") && r.contains("Fix automatically"));
     }
 
