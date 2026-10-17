@@ -1,0 +1,77 @@
+name: Windows
+
+on:
+  push:
+    branches: [main, genius-stability-windows]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: windows-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  installer:
+    name: Build NSIS installer
+    runs-on: windows-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ". -> target"
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Build Tauri app and NSIS installer
+        run: npx tauri build --bundles nsis
+
+      - name: List installer
+        shell: pwsh
+        run: Get-ChildItem target/release/bundle/nsis | Format-Table Name, Length
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: genius-windows-installer
+          path: target/release/bundle/nsis/*.exe
+          if-no-files-found: error
+
+  tests:
+    name: Tests on Windows
+    runs-on: windows-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ". -> target"
+
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm run lint
+      - run: npm test
+
+      - name: Rust unit tests (core + app ACL)
+        run: |
+          New-Item -ItemType Directory -Force dist | Out-Null
+          if (-not (Test-Path dist/index.html)) { Set-Content dist/index.html '<!doctype html><title>Genius</title>' }
+          cargo test -p genius-core --lib
+          cargo test -p genius --lib
+        shell: pwsh
