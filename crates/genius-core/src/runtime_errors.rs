@@ -328,8 +328,9 @@ mod tests {
         assert!(g.preview_errors(&p.id).is_empty());
         assert_eq!(rec.on(channels::PREVIEW_ERRORS).last().unwrap()["errors"], json!([]));
         // Windows spellings: verbatim prefix, backslashes, Vite's mixed separators.
-        let win = format!(r"\\?\{}", p.path.replace('/', "\\"));
-        g.report_preview_errors(&p.id, vec![PreviewRuntimeError { source: Some(format!("{win}/src/Main.tsx")), stack: Some(format!("at App ({}\\src\\App.tsx:3:5)", p.path.replace('/', "\\"))), ..err("vite", "Other failure", Some(4)) }]).unwrap();
+        let plain = p.path.trim_start_matches(r"\\?\");
+        let win = format!(r"\\?\{}", plain.replace('/', "\\"));
+        g.report_preview_errors(&p.id, vec![PreviewRuntimeError { source: Some(format!("{win}/src/Main.tsx")), stack: Some(format!("at App ({}\\src\\App.tsx:3:5)", plain.replace('/', "\\"))), ..err("vite", "Other failure", Some(4)) }]).unwrap();
         let last = g.preview_errors(&p.id).pop().unwrap();
         assert_eq!(last.source.as_deref(), Some("src/Main.tsx"));
         assert!(last.stack.as_deref().unwrap().contains(r"(src\App.tsx:3:5)"), "{:?}", last.stack);
