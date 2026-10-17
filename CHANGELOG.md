@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.3.1]
+
+- **Fixed:** steering Genius while it works, rewinding and compacting a conversation, and the slash-command menu were blocked by the app's permission list in 0.3.0 and did nothing. They work now.
+- **Fixed (Windows):** crash locations from the preview showed full `C:\…` paths instead of project-relative ones, so Genius could not point at the failing file.
+- Every release is now checked end to end on Windows (tests, the app's permission list, and the real installers) before it is published.
+
 ## [0.3.0]
 
 Genius gets a new brain: faster, far more reliable, and it checks its own work.

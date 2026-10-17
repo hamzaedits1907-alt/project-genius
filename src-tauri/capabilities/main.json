@@ -25,6 +25,10 @@
       ]
     },
     "allow-get-settings",
+    "allow-compact-conversation",
+    "allow-rewind-conversation",
+    "allow-steer-agent",
+    "allow-list-commands",
     "allow-save-settings",
     "allow-key-status",
     "allow-save-api-key",
