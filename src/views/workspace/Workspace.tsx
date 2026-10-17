@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { Panel, PanelGroup, PanelResizeHandle, type ImperativePanelHandle } from 'react-resizable-panels';
-import { Brain, ClipboardList, Code2, FileStack, Plug, Download, FolderTree, GitBranch, Hammer, History as HistoryIcon, Monitor, Package, Play, Search, Square, Stethoscope, TestTube2, UploadCloud, Wand2, X } from 'lucide-react';
+import { Brain, ClipboardList, Code2, FileStack, Plug, Download, FolderTree, GitBranch, Hammer, History as HistoryIcon, Monitor, Package, Play, Search, Square, Stethoscope, TerminalSquare, TestTube2, UploadCloud, Wand2, X } from 'lucide-react';
 import { api, errorMessage } from '../../lib/api';
 import type { Operation } from '../../lib/types';
 import { useApp } from '../../store/app';
@@ -21,6 +21,7 @@ import PreviewPanel from './PreviewPanel';
 import ExportDialog from './ExportDialog';
 import PublishDialog from './PublishDialog';
 import QuickOpen from './QuickOpen';
+import { registerCommands, type PaletteCommand } from '../../lib/commands';
 
 type Side = 'files' | 'search' | 'git' | 'history' | 'memory' | 'references' | 'integrations';
 
@@ -70,19 +71,12 @@ export default function Workspace({ projectId }: { projectId: string }) {
     return () => window.removeEventListener('keydown', onKey);
   }, []);
 
-  if (!project || project.id !== projectId) {
-    return (
-      <div className="center" style={{ height: '100%' }}>
-        <Spinner size={20} />
-      </div>
-    );
-  }
-
   const running = tasks.filter((t) => t.kind !== 'verify');
   const verifying = tasks.filter((t) => t.kind === 'verify');
-  const lastBuild = project.status.lastBuild;
+  const lastBuild = project?.status.lastBuild;
 
   const runOp = async (op: Operation) => {
+    if (!project) return;
     setBusyOp(op);
     try {
       await api.startOperation(project.id, op);
@@ -95,6 +89,7 @@ export default function Workspace({ projectId }: { projectId: string }) {
     }
   };
   const togglePreview = async () => {
+    if (!project) return;
     setBusyOp('preview');
     try {
       if (preview.status === 'ready' || preview.status === 'starting') {
@@ -111,6 +106,7 @@ export default function Workspace({ projectId }: { projectId: string }) {
     }
   };
   const diagnose = async () => {
+    if (!project) return;
     try {
       await api.startDiagnose(project.id, null);
       setWs({ rightTab: 'assistant' });
@@ -118,6 +114,70 @@ export default function Workspace({ projectId }: { projectId: string }) {
       toast('bad', errorMessage(e));
     }
   };
+
+  const previewOn = preview.status === 'ready' || preview.status === 'starting';
+  /** Opens an IDE panel, switching to advanced mode first when needed. */
+  const showAdvanced = async (then: () => void) => {
+    if (uiMode !== 'advanced') await setUiMode('advanced');
+    // Panels mount with the advanced layout; let it render before expanding them.
+    setTimeout(then, 0);
+  };
+  const showSide = (id: Side) =>
+    void showAdvanced(() => {
+      setSide(id);
+      if (sideRef.current?.isCollapsed()) sideRef.current.expand();
+    });
+
+  // Command palette (Ctrl+K): this workspace's actions, re-registered with fresh state each render.
+  useEffect(() => {
+    if (!project || project.id !== projectId) return;
+    const simpleMode = uiMode === 'simple';
+    const cmds: PaletteCommand[] = [];
+    const add = (c: Omit<PaletteCommand, 'group'>) => cmds.push({ group: 'Project', ...c });
+    if (hasPkg) {
+      add({ id: 'ws.run', title: previewOn ? 'Stop app' : 'Run app', subtitle: previewOn ? 'Stop the live preview' : 'Start the live preview', keywords: ['preview', 'start', 'dev server', 'launch'], icon: previewOn ? <Square size={15} /> : <Play size={15} />, run: () => togglePreview() });
+      add({ id: 'ws.publish', title: 'Publish', subtitle: 'Put the project on GitHub', keywords: ['deploy', 'github', 'push', 'share'], icon: <UploadCloud size={15} />, run: () => setDialog('publish') });
+    }
+    if (project.spec) add({ id: 'ws.plan', title: 'Show Plan', icon: <ClipboardList size={15} />, run: () => (simpleMode ? setWs({ stage: 'plan' }) : openTab('plan')) });
+    add({ id: 'ws.code', title: 'Show Code', keywords: ['files', 'editor', 'explorer'], shortcut: simpleMode ? undefined : 'Ctrl+B', icon: <Code2 size={15} />, run: () => (simpleMode ? setWs({ stage: 'code' }) : showSide('files')) });
+    add({ id: 'ws.preview', title: 'Show Preview', icon: <Monitor size={15} />, run: () => setWs(simpleMode ? { stage: 'preview' } : { rightTab: 'preview' }) });
+    add({ id: 'ws.quickopen', title: 'Go to file…', keywords: ['quick open', 'find file'], shortcut: 'Ctrl+P', icon: <Search size={15} />, run: () => setDialog('quick') });
+    add({ id: 'ws.history', title: 'Open History', subtitle: simpleMode ? 'Advanced mode' : 'History & recovery', keywords: ['undo', 'restore', 'changes', 'recovery'], icon: <HistoryIcon size={15} />, run: () => showSide('history') });
+    add({ id: 'ws.git', title: 'Open Git', subtitle: simpleMode ? 'Advanced mode' : 'Source control', keywords: ['source control', 'commit', 'branch', 'version'], icon: <GitBranch size={15} />, run: () => showSide('git') });
+    add({
+      id: 'ws.terminal',
+      title: 'Open Terminal',
+      subtitle: simpleMode ? 'Advanced mode' : undefined,
+      keywords: ['console', 'output', 'logs'],
+      shortcut: simpleMode ? undefined : 'Ctrl+J',
+      icon: <TerminalSquare size={15} />,
+      run: () =>
+        void showAdvanced(() => {
+          setWs({ bottomTab: 'terminal' });
+          if (bottomRef.current?.isCollapsed()) bottomRef.current.expand();
+        }),
+    });
+    if (!simpleMode) {
+      add({ id: 'ws.assistant', title: 'Show Assistant', keywords: ['chat', 'genius', 'ai'], icon: <Wand2 size={15} />, run: () => setWs({ rightTab: 'assistant' }) });
+      if (hasPkg) {
+        add({ id: 'ws.install', title: 'Install dependencies', keywords: ['npm install'], icon: <Package size={15} />, run: () => runOp('install') });
+        add({ id: 'ws.build', title: 'Build', subtitle: 'Production build', keywords: ['compile', 'npm run build'], icon: <Hammer size={15} />, run: () => runOp('build') });
+        add({ id: 'ws.test', title: 'Run tests', keywords: ['npm test', 'vitest'], icon: <TestTube2 size={15} />, run: () => runOp('test') });
+      }
+      add({ id: 'ws.export', title: 'Export source', keywords: ['zip', 'download'], icon: <Download size={15} />, run: () => setDialog('export') });
+    }
+    if (lastBuild?.status === 'failed' && running.length === 0) add({ id: 'ws.doctor', title: simpleMode ? 'Fix it for me' : 'Build Doctor', subtitle: 'Diagnose the failed build', keywords: ['repair', 'fix', 'error'], icon: <Stethoscope size={15} />, run: () => diagnose() });
+    for (const t of running) add({ id: `ws.cancel.${t.id}`, title: `Stop: ${t.title}`, subtitle: 'Cancel the running task', keywords: ['cancel', 'abort'], icon: <X size={15} />, run: () => api.cancelTask(t.id) });
+    return registerCommands('workspace', cmds);
+  });
+
+  if (!project || project.id !== projectId) {
+    return (
+      <div className="center" style={{ height: '100%' }}>
+        <Spinner size={20} />
+      </div>
+    );
+  }
 
   const railItems: { id: Side; label: string; icon: React.ReactNode }[] = [
     { id: 'files', label: 'Files', icon: <FolderTree size={18} /> },
@@ -130,7 +190,6 @@ export default function Workspace({ projectId }: { projectId: string }) {
   ];
 
   const simple = uiMode === 'simple';
-  const previewOn = preview.status === 'ready' || preview.status === 'starting';
   const modeToggle = (
     <Segmented<'simple' | 'advanced'>
       label="Interface mode"

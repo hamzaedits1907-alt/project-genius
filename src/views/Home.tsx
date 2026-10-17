@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { ArrowUp, Check, FolderOpen, KeyRound, Plus, SlidersHorizontal, Sparkles, Trash2, Wrench, X, FileArchive } from 'lucide-react';
 import { open as openDialog } from '@tauri-apps/plugin-dialog';
 import { openUrl } from '@tauri-apps/plugin-opener';
@@ -10,6 +10,9 @@ import { useApp } from '../store/app';
 import { Badge, Button, Callout, Empty, Modal, Spinner, StatusBadge } from '../components/ui';
 import { GeniusAvatar } from '../components/GeniusAvatar';
 import { markAutoBuild } from '../store/workspace';
+import { BlueprintGallery } from '../components/BlueprintGallery';
+import { EnhanceButton } from '../components/EnhanceButton';
+import { blueprintById, type Blueprint } from '../lib/blueprints';
 
 const IDEAS = [
   { label: 'Portfolio website', text: 'A personal portfolio website with a bold hero, project gallery with filters, about section, testimonials and a contact form. Modern, elegant, responsive.' },
@@ -60,6 +63,12 @@ export default function Home() {
   const [cloning, setCloning] = useState(false);
   const [idea, setIdea] = useState('');
   const [starting, setStarting] = useState(false);
+  /** Blueprint whose brief is in the idea box (shows the "customise" hint). */
+  const [blueprint, setBlueprint] = useState<string | null>(null);
+  /** Blueprint being built straight from its card. */
+  const [buildingBp, setBuildingBp] = useState<string | null>(null);
+  const [enhancing, setEnhancing] = useState(false);
+  const ideaRef = useRef<HTMLTextAreaElement>(null);
 
   const load = () => api.listProjects().then(setProjects).catch((e) => toast('bad', errorMessage(e)));
   useEffect(() => {
@@ -92,12 +101,12 @@ export default function Home() {
   };
 
   const ready = !!keyStatus?.stored && !!settings?.model;
-  const buildIdea = async () => {
-    const text = idea.trim();
+  const startBuild = async (raw: string, name?: string) => {
+    const text = raw.trim();
     if (text.length < 10 || !ready) return;
     setStarting(true);
     try {
-      const p = await api.createProject(nameFromIdea(text), text);
+      const p = await api.createProject(name ?? nameFromIdea(text), text);
       markAutoBuild(p.id);
       await api.startPlan(p.id, text, '');
       navigate({ name: 'project', id: p.id });
@@ -105,6 +114,29 @@ export default function Home() {
       toast('bad', errorMessage(e));
     } finally {
       setStarting(false);
+    }
+  };
+  const loaded = blueprint ? blueprintById(blueprint) : undefined;
+  // Building an unedited blueprint keeps its friendly project name.
+  const buildIdea = () => startBuild(idea, loaded && idea.trim() === loaded.prompt.trim() ? loaded.projectName : undefined);
+
+  const pickBlueprint = (b: Blueprint) => {
+    setIdea(b.prompt);
+    setBlueprint(b.id);
+    const el = ideaRef.current;
+    if (el) {
+      el.focus();
+      el.setSelectionRange(0, 0);
+      el.scrollTop = 0;
+      el.scrollIntoView?.({ behavior: 'smooth', block: 'center' });
+    }
+  };
+  const buildBlueprint = async (b: Blueprint) => {
+    setBuildingBp(b.id);
+    try {
+      await startBuild(b.prompt, b.projectName);
+    } finally {
+      setBuildingBp(null);
     }
   };
 
@@ -120,21 +152,50 @@ export default function Home() {
     },
   ];
   const setupDone = setup.every((s) => s.done);
+  // New users see blueprints first; returning users see their projects first.
+  const gallery = <BlueprintGallery onUse={pickBlueprint} onBuild={(b) => void buildBlueprint(b)} canBuild={ready && !starting} building={buildingBp} selected={blueprint} />;
 
   return (
     <div className="page">
       <div className="page-inner">
         <div className="home-hero">
-          <GeniusAvatar size={96} mood={starting ? 'working' : idea.trim() ? 'listening' : 'idle'} />
+          <GeniusAvatar size={96} mood={starting || enhancing ? 'working' : idea.trim() ? 'listening' : 'idle'} />
           <div className="home-greet">{greeting()} I'm Genius.</div>
           <h1>What should we build today?</h1>
-          <div className="prompt-box">
+          <div className={`prompt-box ${enhancing ? 'enhancing' : ''}`}>
+            {loaded && (
+              <div className="prompt-hint fade-in">
+                <span className="badge accent">Blueprint</span>
+                <span className="ellipsis">
+                  <b>{loaded.title}</b> · Customize, then press Enter
+                </span>
+                <span className="spacer" />
+                <button
+                  className="icon-btn"
+                  style={{ width: 22, height: 22 }}
+                  aria-label="Clear blueprint"
+                  title="Clear"
+                  onClick={() => {
+                    setIdea('');
+                    setBlueprint(null);
+                    ideaRef.current?.focus();
+                  }}
+                >
+                  <X size={13} />
+                </button>
+              </div>
+            )}
             <textarea
+              ref={ideaRef}
               aria-label="Describe your app"
               placeholder="Describe your app or website… e.g. “A portfolio site for a photographer with a dark, elegant look”"
               value={idea}
-              rows={3}
-              onChange={(e) => setIdea(e.target.value)}
+              rows={idea.length > 240 || idea.split('\n').length > 4 ? 10 : 3}
+              readOnly={enhancing}
+              onChange={(e) => {
+                setIdea(e.target.value);
+                if (!e.target.value.trim()) setBlueprint(null);
+              }}
               onKeyDown={(e) => {
                 if (e.key === 'Enter' && !e.shiftKey) {
                   e.preventDefault();
@@ -147,6 +208,7 @@ export default function Home() {
               <button className="btn ghost sm" onClick={() => navigate({ name: 'create' })} title="Name, tech and design preferences, and review the plan before code is written">
                 <SlidersHorizontal size={13} /> Detailed setup
               </button>
+              <EnhanceButton value={idea} onChange={setIdea} disabled={!ready || starting} disabledReason="Finish setup below first" onBusyChange={setEnhancing} onEnhanced={() => ideaRef.current?.focus()} />
               <span className="spacer" />
               <span className="faint tiny">{ready ? 'Genius plans it, then writes the code' : 'Finish setup below first'}</span>
               <button className="send-btn lg" aria-label="Build it" title="Build it (Enter)" disabled={idea.trim().length < 10 || !ready || starting} onClick={() => void buildIdea()}>
@@ -156,7 +218,13 @@ export default function Home() {
           </div>
           <div className="suggestions center-row">
             {IDEAS.map((x) => (
-              <button key={x.label} onClick={() => setIdea(x.text)}>
+              <button
+                key={x.label}
+                onClick={() => {
+                  setIdea(x.text);
+                  setBlueprint(null);
+                }}
+              >
                 {x.label}
               </button>
             ))}
@@ -192,6 +260,8 @@ export default function Home() {
             </div>
           </div>
         )}
+
+        {!projects?.length && gallery}
 
         <div className="section-title">
           <h2>Recent projects</h2>
@@ -244,6 +314,7 @@ export default function Home() {
             })}
           </div>
         )}
+        {!!projects?.length && gallery}
       </div>
       {deleting && (
         <DeleteDialog

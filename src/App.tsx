@@ -1,5 +1,5 @@
 import { Component, useEffect, type ErrorInfo, type ReactNode } from 'react';
-import { ArrowDownCircle, FolderKanban, Home as HomeIcon, Plus, Settings as SettingsIcon, X } from 'lucide-react';
+import { ArrowDownCircle, Command, FolderKanban, Home as HomeIcon, Plus, Settings as SettingsIcon, X } from 'lucide-react';
 import { useApp } from './store/app';
 import { subscribeAll } from './store/events';
 import { useSubscription } from './lib/effects';
@@ -13,6 +13,7 @@ import ApprovalDialog from './views/ApprovalDialog';
 import UpdateDialog from './views/UpdateDialog';
 import { GeniusAvatar } from './components/GeniusAvatar';
 import { useWorkspace } from './store/workspace';
+import CommandPalette, { openCommandPalette, shortcutLabel } from './components/CommandPalette';
 
 class ErrorBoundary extends Component<{ children: ReactNode; view: string }, { error: Error | null; componentStack: string; logPath: string | null }> {
   state = { error: null as Error | null, componentStack: '', logPath: null as string | null };
@@ -142,6 +143,9 @@ export default function App() {
           </button>
         )}
         <div className="spacer" />
+        <button onClick={openCommandPalette} title={`Command palette (${shortcutLabel('Ctrl+K')})`} aria-label="Command palette">
+          <Command size={18} />
+        </button>
         {update?.available && update.latestVersion !== skipped && (
           <button className="update-dot" onClick={() => setShowUpdate(true)} title={`Update available: ${update.latestVersion}`} aria-label="Update available">
             <ArrowDownCircle size={19} />
@@ -162,6 +166,7 @@ export default function App() {
       </main>
       {approvals.length > 0 && <ApprovalDialog request={approvals[0]} remaining={approvals.length - 1} />}
       {showUpdate && <UpdateDialog onClose={() => setShowUpdate(false)} />}
+      <CommandPalette />
       <Toasts />
     </div>
   );

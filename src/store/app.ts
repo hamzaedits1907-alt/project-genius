@@ -42,6 +42,8 @@ interface AppState {
   setDeviceCode: (c: AppState['deviceCode']) => void;
   /** Simple mode hides the IDE; advanced shows files, terminal, git and every tool. */
   setUiMode: (mode: Settings['uiMode']) => Promise<void>;
+  /** Saves a colour theme (applied immediately). */
+  setTheme: (theme: Settings['theme']) => Promise<void>;
   checkUpdate: (manual?: boolean) => Promise<UpdateInfo | null>;
   setShowUpdate: (v: boolean) => void;
 }
@@ -108,6 +110,16 @@ export const useApp = create<AppState>((set, get) => ({
       set({ settings: await api.saveSettings({ ...cur, uiMode }) });
     } catch (e) {
       get().toast('bad', `Could not save the interface mode: ${errorMessage(e)}`);
+    }
+  },
+  setTheme: async (theme) => {
+    const cur = get().settings;
+    if (!cur || cur.theme === theme) return;
+    get().setSettings({ ...cur, theme });
+    try {
+      get().setSettings(await api.saveSettings({ ...cur, theme }));
+    } catch (e) {
+      get().toast('bad', `Could not save the theme: ${errorMessage(e)}`);
     }
   },
   checkUpdate: async (manual = false) => {

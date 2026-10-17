@@ -12,6 +12,7 @@ pub mod context;
 pub mod conversation;
 pub mod db;
 pub mod diagnostics;
+pub mod enhance;
 pub mod error;
 pub mod events;
 pub mod export;
