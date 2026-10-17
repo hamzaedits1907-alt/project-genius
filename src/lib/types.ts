@@ -5,6 +5,11 @@ export type Policy = 'ask' | 'auto';
 export interface Settings {
   baseUrl: string;
   model: string | null;
+  /** "auto": Genius picks the best available model per job; "manual": always `model`. */
+  modelMode: ModelMode;
+  effort: Effort;
+  /** Let reasoning models think (reasoning streams on `genius://ai-thinking`). */
+  thinking: boolean;
   temperature: number;
   maxTokens: number;
   contextBudgetChars: number;
@@ -80,6 +85,29 @@ export interface ModelList {
   stale: boolean;
   baseUrl: string;
   probes: Record<string, ProbeResult>;
+}
+
+export type ModelMode = 'auto' | 'manual';
+export type Effort = 'fast' | 'balanced' | 'max';
+export type ModelRole = 'agent' | 'code' | 'plan' | 'subagent' | 'quick' | 'vision';
+
+/** Fallback chain (best first) auto mode uses for each job. */
+export type ResolvedModels = Record<ModelRole, string[]>;
+
+export interface UsageSummary {
+  promptTokens: number;
+  completionTokens: number;
+  totalTokens: number;
+  calls: number;
+  /** Total tokens per model. */
+  byModel: Record<string, number>;
+}
+
+/** Payload of `genius://ai-thinking` (live model reasoning). */
+export interface AiThinking {
+  taskId: string;
+  projectId: string;
+  text: string;
 }
 
 export interface ToolStatus {

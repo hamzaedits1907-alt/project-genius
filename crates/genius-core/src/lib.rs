@@ -21,6 +21,7 @@ pub mod integrations;
 pub mod nvidia;
 pub mod process;
 pub mod redact;
+pub mod router;
 pub mod scaffold;
 pub mod secrets;
 pub mod secretscan;

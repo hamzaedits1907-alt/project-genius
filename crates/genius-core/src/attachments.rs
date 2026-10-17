@@ -415,9 +415,13 @@ impl Genius {
             if a.status != "ready" {
                 return Err(GeniusError::Validation(format!("{} could not be imported: {}", a.name, a.error.unwrap_or_default())));
             }
-            if a.kind == "image" && self.settings()?.model.as_deref().and_then(|m| self.vision_probe(m)) != Some(true) {
+            // Images go to a model verified to see them, or are described by a vision model
+            // for the main model (vision handoff).
+            let selected_sees = self.settings()?.model.as_deref().and_then(|m| self.vision_probe(m)) == Some(true);
+            let handoff = !self.resolve_models_cached(crate::router::ModelRole::Vision, crate::settings::Effort::Max).unwrap_or_default().is_empty();
+            if a.kind == "image" && !selected_sees && !handoff {
                 return Err(GeniusError::Validation(format!(
-                    "{} is an image, but image input has not been verified for the selected model. Use Settings → AI provider → Test image input, or choose a vision model.",
+                    "{} is an image, but none of your available models is known to read images. Refresh the model list in Settings → AI provider (Genius then hands images to a vision model), or verify image input for the selected model.",
                     a.name
                 )));
             }
@@ -489,7 +493,7 @@ impl Genius {
         // 8x8 solid red PNG.
         const RED_PNG: &str = "iVBORw0KGgoAAAANSUhEUgAAAAgAAAAICAIAAABLbSncAAAAEklEQVR4nGP4z8CAFWEXHbQSACj/P8Fu7N9hAAAAAElFTkSuQmCC";
         let msg = crate::nvidia::ChatMessage { role: "user".into(), content: "What is the dominant colour of this image? Answer with one word.".into(), images: vec![format!("data:image/png;base64,{RED_PNG}")] };
-        let opts = crate::nvidia::ChatOptions { temperature: 0.0, top_p: 1.0, max_tokens: 16, stream: false };
+        let opts = crate::nvidia::ChatOptions { temperature: 0.0, top_p: 1.0, max_tokens: 16, stream: false, thinking: Some(false), reasoning_effort: None };
         let cancel = tokio_util::sync::CancellationToken::new();
         let res = client.chat(model, &[msg], &opts, &cancel, |_| {}).await;
         let (ok, answer, error) = match res {

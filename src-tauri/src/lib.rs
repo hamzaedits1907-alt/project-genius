@@ -77,6 +77,8 @@ pub fn run() {
             commands::list_models,
             commands::probe_model,
             commands::select_model,
+            commands::resolved_models,
+            commands::usage_summary,
             commands::detect_tools,
             commands::app_info,
             commands::list_projects,

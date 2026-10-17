@@ -24,6 +24,9 @@ export async function subscribeAll(): Promise<UnlistenFn> {
     listen<AiDelta>('genius://ai-delta', ({ payload }) => {
       if (payload.projectId === ws().projectId) ws().onAiDelta(payload.taskId, payload.text);
     }),
+    listen<AiDelta>('genius://ai-thinking', ({ payload }) => {
+      if (payload.projectId === ws().projectId) ws().onAiThinking(payload.taskId, payload.text);
+    }),
     listen<FileStreamEvent>('genius://file-stream', ({ payload }) => ws().onFileStream(payload)),
     listen<ProcessOutput>('genius://process-output', ({ payload }) => {
       // batch output lines into animation frames so long installs keep the UI responsive

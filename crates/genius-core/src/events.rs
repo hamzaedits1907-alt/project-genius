@@ -86,6 +86,8 @@ pub trait Emitter: Send + Sync {
 pub mod channels {
     pub const ACTIVITY: &str = "genius://activity";
     pub const AI_DELTA: &str = "genius://ai-delta";
+    /// Reasoning ("thinking") deltas: `{ taskId, projectId, text }`, batched like AI_DELTA.
+    pub const AI_THINKING: &str = "genius://ai-thinking";
     pub const FILE_STREAM: &str = "genius://file-stream";
     pub const PROCESS_OUTPUT: &str = "genius://process-output";
     pub const PROCESS_STATE: &str = "genius://process-state";

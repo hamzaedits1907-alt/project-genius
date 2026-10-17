@@ -78,8 +78,13 @@ impl Genius {
         let s = self.settings()?;
         let key = self.key_status();
         let probes = self.probes();
-        let probe = s.model.as_ref().and_then(|m| probes.get(m).cloned());
-        let vision = s.model.as_ref().and_then(|m| self.vision_probe(m));
+        // Auto mode: the model Genius routes agent work to (from the cached model list).
+        let auto = s.is_auto();
+        let routed = if auto { self.resolve_models_cached(crate::router::ModelRole::Agent, s.effort).unwrap_or_default() } else { vec![] };
+        let vision_helpers = self.resolve_models_cached(crate::router::ModelRole::Vision, s.effort).unwrap_or_default();
+        let active = if auto { routed.first().cloned().or_else(|| s.model.clone()) } else { s.model.clone() };
+        let probe = active.as_ref().and_then(|m| probes.get(m).cloned());
+        let vision = active.as_ref().and_then(|m| self.vision_probe(m));
         let mut caps = Vec::new();
 
         caps.push(if key.stored {
@@ -87,10 +92,16 @@ impl Genius {
         } else {
             cap("provider_key", "NVIDIA API key", "unavailable", "no key is stored", "Settings → AI provider → paste your NVIDIA API key")
         });
-        caps.push(match (&s.model, &probe) {
-            (None, _) => cap("chat", "Chat with a model", "unavailable", "no model selected", "Settings → AI provider → Refresh models and pick one"),
-            (Some(m), Some(p)) if p.chat => cap("chat", "Chat with a model", if key.stored { "available" } else { "unavailable" }, format!("{m} answered a verification probe ({} ms)", p.latency_ms), if key.stored { "" } else { "save an API key" }),
-            (Some(m), _) => cap("chat", "Chat with a model", if key.stored { "unverified" } else { "unavailable" }, format!("{m} selected but not verified with a real request yet"), "Settings → AI provider → Verify"),
+        let mode = if auto {
+            format!("Auto mode (effort: {}): Genius picks the best available model for each job and switches to the next one if a model is unavailable or failing{}. ", s.effort.as_str(), if routed.len() > 1 { format!("; agent work uses {} (fallbacks: {})", routed[0], routed[1..].join(", ")) } else { String::new() })
+        } else {
+            format!("Manual mode (effort: {}). ", s.effort.as_str())
+        };
+        caps.push(match (&active, &probe) {
+            (None, _) if auto => cap("chat", "Chat with a model", if key.stored { "unverified" } else { "unavailable" }, format!("{mode}The model list has not been loaded yet, so no model is chosen."), if key.stored { "Settings → AI provider → Refresh models" } else { "save an API key" }),
+            (None, _) => cap("chat", "Chat with a model", "unavailable", "no model selected", "Settings → AI provider → Refresh models and pick one, or switch to Auto"),
+            (Some(m), Some(p)) if p.chat => cap("chat", "Chat with a model", if key.stored { "available" } else { "unavailable" }, format!("{mode}{m} answered a verification probe ({} ms)", p.latency_ms), if key.stored { "" } else { "save an API key" }),
+            (Some(m), _) => cap("chat", "Chat with a model", if key.stored { "unverified" } else { "unavailable" }, format!("{mode}{m} {} but not verified with a real request yet", if auto { "is used" } else { "selected" }), "Settings → AI provider → Verify"),
         });
         caps.push(match &probe {
             Some(p) if p.streaming => cap("streaming", "Streaming responses", "available", "verification probe streamed tokens", ""),
@@ -99,6 +110,7 @@ impl Genius {
         });
         caps.push(match vision {
             Some(true) => cap("vision", "Image input (screenshots)", "available", "the model accepted an image in a verification request", ""),
+            _ if !vision_helpers.is_empty() => cap("vision", "Image input (screenshots)", if key.stored { "available" } else { "unavailable" }, format!("images are described in detail by the vision model {} (fallbacks: {}) and the description is given to the main model (vision handoff); the vision model's answers are not verified in advance", vision_helpers[0], if vision_helpers.len() > 1 { vision_helpers[1..].join(", ") } else { "none".into() }), ""),
             Some(false) => cap("vision", "Image input (screenshots)", "unavailable", "the model rejected image input in a verification request", "choose a vision-capable model (e.g. one with 'vision' or 'vl' in its id) and verify it"),
             None => cap("vision", "Image input (screenshots)", "unverified", "image input has not been tested with this model", "Settings → AI provider → Test image input"),
         });
@@ -188,7 +200,7 @@ impl Genius {
 
         Ok(CapabilityReport {
             generated_at: crate::db::now(),
-            provider: json!({ "name": "NVIDIA (OpenAI-compatible API)", "baseUrl": s.base_url, "model": s.model, "maxTokens": s.max_tokens, "keyStored": key.stored }),
+            provider: json!({ "name": "NVIDIA (OpenAI-compatible API)", "baseUrl": s.base_url, "model": active, "selectedModel": s.model, "modelMode": s.model_mode, "effort": s.effort, "thinking": s.thinking, "autoModels": routed, "visionModels": vision_helpers, "maxTokens": s.max_tokens, "keyStored": key.stored }),
             capabilities: caps,
             agent_tools: crate::agent::tool_specs().iter().map(|t| json!({ "name": t.name, "description": t.description, "readOnly": t.read_only })).collect(),
             integrations,

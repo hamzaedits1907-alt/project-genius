@@ -6,6 +6,9 @@ import type * as T from '../lib/types';
 export const settings: T.Settings = {
   baseUrl: 'https://integrate.api.nvidia.com/v1',
   model: 'meta/llama-3.3-70b-instruct',
+  modelMode: 'auto',
+  effort: 'max',
+  thinking: true,
   temperature: 0.2,
   maxTokens: 4096,
   contextBudgetChars: 60000,
@@ -64,6 +67,8 @@ export const defaults: Record<string, Handler> = {
   install_update: () => 'Genius is already up to date.',
   list_models: () => ({ models: [], fetchedAt: null, source: 'cache', stale: true, baseUrl: settings.baseUrl, probes: {} }),
   detect_tools: () => [],
+  resolved_models: (): T.ResolvedModels => ({ agent: ['nvidia/nemotron-3-super-120b-a12b', 'qwen/qwen3-coder-480b-a35b-instruct'], code: ['nvidia/nemotron-3-super-120b-a12b'], plan: ['nvidia/nemotron-3-super-120b-a12b'], subagent: ['nvidia/nemotron-3-super-120b-a12b'], quick: ['nvidia/nemotron-3-super-120b-a12b'], vision: [] }),
+  usage_summary: (): T.UsageSummary => ({ promptTokens: 0, completionTokens: 0, totalTokens: 0, calls: 0, byModel: {} }),
   list_projects: () => [project],
   get_project: () => project,
   open_project: () => project,

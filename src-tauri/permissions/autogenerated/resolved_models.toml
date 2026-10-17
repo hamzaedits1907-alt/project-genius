@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-resolved-models"
+description = "Enables the resolved_models command without any pre-configured scope."
+commands.allow = ["resolved_models"]
+
+[[permission]]
+identifier = "deny-resolved-models"
+description = "Denies the resolved_models command without any pre-configured scope."
+commands.deny = ["resolved_models"]

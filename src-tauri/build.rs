@@ -12,6 +12,8 @@ fn main() {
         "list_models",
         "probe_model",
         "select_model",
+        "resolved_models",
+        "usage_summary",
         "detect_tools",
         "app_info",
         "list_projects",

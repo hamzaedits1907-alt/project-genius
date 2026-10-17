@@ -12,6 +12,8 @@
 use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use std::collections::{HashMap, HashSet};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio_util::sync::CancellationToken;
 
@@ -125,11 +127,18 @@ pub struct ChatOptions {
     pub top_p: f32,
     pub max_tokens: u32,
     pub stream: bool,
+    /// Reasoning on/off for model families with a known switch (see [`thinking_style`]);
+    /// `None` leaves the model's default.
+    #[serde(default)]
+    pub thinking: Option<bool>,
+    /// "low" | "medium" | "high" for models that take `reasoning_effort` (gpt-oss).
+    #[serde(default)]
+    pub reasoning_effort: Option<String>,
 }
 
 impl Default for ChatOptions {
     fn default() -> Self {
-        Self { temperature: 0.2, top_p: 0.95, max_tokens: 8192, stream: true }
+        Self { temperature: 0.2, top_p: 0.95, max_tokens: 8192, stream: true, thinking: None, reasoning_effort: None }
     }
 }
 
@@ -140,9 +149,22 @@ pub struct ChatResult {
     pub finish_reason: Option<String>,
     pub streamed: bool,
     pub usage: Option<Value>,
-    /// True when the model emitted separate reasoning tokens (not shown, only counted).
+    /// True when the model emitted reasoning (separate `reasoning_content` or inline `<think>`).
     pub had_reasoning: bool,
+    /// The model that produced this reply.
+    pub model: String,
+    /// Reasoning text (never part of `content`), clipped to [`MAX_REASONING_CHARS`].
+    pub reasoning: String,
 }
+
+pub const MAX_REASONING_CHARS: usize = 20_000;
+
+/// Optional request parameters a model rejected, remembered per model so they are not sent
+/// again. Shared between clients (a new client is created per call).
+pub type ParamMemory = Arc<Mutex<HashMap<String, HashSet<String>>>>;
+
+/// Optional body parameters that are dropped (and remembered) when a server rejects them.
+const OPTIONAL_PARAMS: [&str; 3] = ["stream_options", "chat_template_kwargs", "reasoning_effort"];
 
 #[derive(Clone)]
 pub struct NvidiaClient {
@@ -151,6 +173,7 @@ pub struct NvidiaClient {
     api_key: Option<String>,
     pub idle_timeout: Duration,
     pub max_retries: u32,
+    params: ParamMemory,
 }
 
 impl NvidiaClient {
@@ -161,7 +184,18 @@ impl NvidiaClient {
             .user_agent(concat!("ProjectGenius/", env!("CARGO_PKG_VERSION")))
             .build()
             .map_err(|e| ProviderError::Network(e.to_string()))?;
-        Ok(Self { http, base_url: base, api_key, idle_timeout: Duration::from_secs(180), max_retries: 3 })
+        Ok(Self { http, base_url: base, api_key, idle_timeout: Duration::from_secs(180), max_retries: 3, params: ParamMemory::default() })
+    }
+
+    /// Share the memory of rejected optional parameters with other clients.
+    pub fn with_param_memory(mut self, params: ParamMemory) -> Self {
+        self.params = params;
+        self
+    }
+
+    /// Optional parameters this model is known to reject.
+    pub fn rejected_params(&self, model: &str) -> HashSet<String> {
+        self.params.lock().unwrap().get(model).cloned().unwrap_or_default()
     }
 
     pub fn base_url(&self) -> &str {
@@ -205,8 +239,9 @@ impl NvidiaClient {
     pub async fn probe_model(&self, model: &str, cancel: &CancellationToken) -> PResult<ProbeResult> {
         let started = std::time::Instant::now();
         let msgs = vec![ChatMessage::user("Reply with the single word: ready")];
-        // Moderate sampling: some hosted models reject temperature 0.
-        let opts = ChatOptions { temperature: 0.2, top_p: 0.7, max_tokens: 16, stream: true };
+        // Moderate sampling: some hosted models reject temperature 0. Thinking off so a reasoning
+        // model does not spend the tiny budget on reasoning.
+        let opts = ChatOptions { temperature: 0.2, top_p: 0.7, max_tokens: 16, stream: true, thinking: Some(false), reasoning_effort: None };
         let res = self.chat(model, &msgs, &opts, cancel, |_| {}).await?;
         Ok(ProbeResult {
             model: model.into(),
@@ -219,13 +254,20 @@ impl NvidiaClient {
 
     /// Chat completion with streaming (falls back to non-streaming when the model rejects it).
     /// `on_delta` receives content text as it arrives.
-    pub async fn chat(
+    pub async fn chat(&self, model: &str, messages: &[ChatMessage], opts: &ChatOptions, cancel: &CancellationToken, on_delta: impl FnMut(&str)) -> PResult<ChatResult> {
+        self.chat_with_reasoning(model, messages, opts, cancel, on_delta, |_| {}).await
+    }
+
+    /// [`chat`](Self::chat) that also streams reasoning (separate `reasoning_content` deltas and
+    /// inline `<think>` sections, which never reach `on_delta`) to `on_reasoning`.
+    pub async fn chat_with_reasoning(
         &self,
         model: &str,
         messages: &[ChatMessage],
         opts: &ChatOptions,
         cancel: &CancellationToken,
         mut on_delta: impl FnMut(&str),
+        mut on_reasoning: impl FnMut(&str),
     ) -> PResult<ChatResult> {
         if model.trim().is_empty() {
             return Err(ProviderError::NoModel);
@@ -235,9 +277,22 @@ impl NvidiaClient {
         let mut opts = opts.clone();
         loop {
             attempt += 1;
-            let res = self.chat_once(model, messages, &opts, stream, cancel, &mut on_delta).await;
+            let body = build_chat_body_with(model, messages, &opts, stream, &self.rejected_params(model));
+            let res = self.chat_once(model, &body, stream, cancel, &mut on_delta, &mut on_reasoning).await;
             match res {
-                Ok(r) => return Ok(r),
+                Ok(mut r) => {
+                    r.model = model.to_string();
+                    if r.reasoning.len() > MAX_REASONING_CHARS {
+                        r.reasoning = r.reasoning.chars().take(MAX_REASONING_CHARS).collect();
+                    }
+                    return Ok(r);
+                }
+                Err(ProviderError::BadRequest { ref message, .. }) if rejected_param(message, &body).is_some() => {
+                    // An optional parameter is not supported by this model: drop it for good.
+                    let p = rejected_param(message, &body).unwrap_or_default();
+                    log::info!("{model} rejected optional parameter {p}; retrying without it");
+                    self.params.lock().unwrap().entry(model.to_string()).or_default().insert(p.to_string());
+                }
                 Err(ProviderError::BadRequest { ref message, .. })
                     if opts.max_tokens > 1024 && is_token_limit_error(message) =>
                 {
@@ -268,20 +323,19 @@ impl NvidiaClient {
     async fn chat_once(
         &self,
         model: &str,
-        messages: &[ChatMessage],
-        opts: &ChatOptions,
+        body: &Value,
         stream: bool,
         cancel: &CancellationToken,
         on_delta: &mut impl FnMut(&str),
+        on_reasoning: &mut impl FnMut(&str),
     ) -> PResult<ChatResult> {
         let key = self.key()?;
-        let body = build_chat_body(model, messages, opts, stream);
         let mut req = self
             .http
             .post(format!("{}/chat/completions", self.base_url))
             .bearer_auth(key)
             .header("Accept", if stream { "text/event-stream" } else { "application/json" })
-            .json(&body);
+            .json(body);
         if !stream {
             req = req.timeout(Duration::from_secs(600));
         }
@@ -314,11 +368,16 @@ impl NvidiaClient {
             };
             if stream && text.trim_start().starts_with("data:") {
                 // Server sent SSE with a wrong content-type: parse it as a stream anyway.
-                return parse_sse_body(&text, on_delta);
+                return parse_sse_body(&text, on_delta, on_reasoning);
             }
             let mut r = parse_completion(&text)?;
             let mut filter = ThinkFilter::default();
             r.content = filter.push(&r.content) + &filter.finish();
+            r.reasoning.push_str(&filter.take_thought());
+            r.had_reasoning |= filter.saw_think;
+            if !r.reasoning.is_empty() {
+                on_reasoning(&r.reasoning);
+            }
             if !r.content.is_empty() {
                 on_delta(&r.content);
             }
@@ -342,6 +401,11 @@ impl NvidiaClient {
             for data in sse.push(&String::from_utf8_lossy(&chunk)) {
                 if data.trim() == "[DONE]" {
                     let tail = filter.finish();
+                    let thought = filter.take_thought();
+                    if !thought.is_empty() {
+                        on_reasoning(&thought);
+                        result.reasoning.push_str(&thought);
+                    }
                     if !tail.is_empty() {
                         on_delta(&tail);
                         result.content.push_str(&tail);
@@ -358,13 +422,20 @@ impl NvidiaClient {
                 }
                 let Some(choice) = v.get("choices").and_then(|c| c.get(0)) else { continue };
                 let delta = &choice["delta"];
-                if delta.get("reasoning_content").and_then(|r| r.as_str()).is_some_and(|r| !r.is_empty()) {
+                if let Some(r) = reasoning_of(delta) {
                     result.had_reasoning = true;
+                    on_reasoning(r);
+                    result.reasoning.push_str(r);
                 }
                 if let Some(text) = delta.get("content").and_then(|c| c.as_str()) {
                     let visible = filter.push(text);
                     if filter.saw_think {
                         result.had_reasoning = true;
+                    }
+                    let thought = filter.take_thought();
+                    if !thought.is_empty() {
+                        on_reasoning(&thought);
+                        result.reasoning.push_str(&thought);
                     }
                     if !visible.is_empty() {
                         on_delta(&visible);
@@ -378,19 +449,29 @@ impl NvidiaClient {
         }
         // Stream ended without [DONE]: accept if we got a finish_reason, otherwise report truncation.
         let tail = filter.finish();
+        let thought = filter.take_thought();
+        if !thought.is_empty() {
+            on_reasoning(&thought);
+            result.reasoning.push_str(&thought);
+        }
         if !tail.is_empty() {
             on_delta(&tail);
             result.content.push_str(&tail);
         }
-        if result.finish_reason.is_none() && result.content.is_empty() {
+        if result.finish_reason.is_none() && result.content.is_empty() && result.reasoning.is_empty() {
             return Err(ProviderError::Malformed("stream ended without any content".into()));
         }
         Ok(result)
     }
 }
 
+/// Reasoning text of a stream delta or message (`reasoning_content`, or `reasoning` on some servers).
+fn reasoning_of(v: &Value) -> Option<&str> {
+    v.get("reasoning_content").or_else(|| v.get("reasoning")).and_then(|r| r.as_str()).filter(|r| !r.is_empty())
+}
+
 /// Parse a fully-buffered SSE body (used when a server mislabels its content type).
-fn parse_sse_body(text: &str, on_delta: &mut impl FnMut(&str)) -> PResult<ChatResult> {
+fn parse_sse_body(text: &str, on_delta: &mut impl FnMut(&str), on_reasoning: &mut impl FnMut(&str)) -> PResult<ChatResult> {
     let mut result = ChatResult { streamed: true, ..Default::default() };
     let mut sse = SseParser::default();
     let mut filter = ThinkFilter::default();
@@ -401,6 +482,14 @@ fn parse_sse_body(text: &str, on_delta: &mut impl FnMut(&str)) -> PResult<ChatRe
             break;
         }
         let v: Value = serde_json::from_str(&data).map_err(|e| ProviderError::Malformed(format!("invalid stream chunk: {e}")))?;
+        if let Some(u) = v.get("usage").filter(|u| !u.is_null()) {
+            result.usage = Some(u.clone());
+        }
+        if let Some(r) = v.pointer("/choices/0/delta").and_then(reasoning_of) {
+            on_reasoning(r);
+            result.reasoning.push_str(r);
+            result.had_reasoning = true;
+        }
         if let Some(c) = v.pointer("/choices/0/delta/content").and_then(|c| c.as_str()) {
             let visible = filter.push(c);
             if !visible.is_empty() {
@@ -415,7 +504,12 @@ fn parse_sse_body(text: &str, on_delta: &mut impl FnMut(&str)) -> PResult<ChatRe
     let tail = filter.finish();
     on_delta(&tail);
     result.content.push_str(&tail);
-    result.had_reasoning = filter.saw_think;
+    let thought = filter.take_thought();
+    if !thought.is_empty() {
+        on_reasoning(&thought);
+        result.reasoning.push_str(&thought);
+    }
+    result.had_reasoning |= filter.saw_think;
     Ok(result)
 }
 
@@ -435,15 +529,121 @@ fn is_token_limit_error(message: &str) -> bool {
         && !m.contains("stream")
 }
 
+/// The optional parameter a 400 response complains about, if it is one Genius sent.
+fn rejected_param(message: &str, body: &Value) -> Option<&'static str> {
+    let m = message.to_lowercase();
+    let sent: Vec<&'static str> = OPTIONAL_PARAMS.iter().copied().filter(|p| body.get(*p).is_some()).collect();
+    if let Some(p) = sent.iter().find(|p| m.contains(**p)) {
+        return Some(p);
+    }
+    if m.contains("enable_thinking") || m.contains("thinking") || m.contains("template") {
+        if let Some(p) = sent.iter().find(|p| **p == "chat_template_kwargs") {
+            return Some(p);
+        }
+    }
+    if m.contains("include_usage") {
+        return sent.iter().find(|p| **p == "stream_options").copied();
+    }
+    // Generic "unknown field" errors that do not name it: drop the least important first.
+    let generic = ["extra inputs are not permitted", "extra_forbidden", "unrecognized", "unknown parameter", "unsupported parameter", "unexpected keyword", "unknown field", "additional properties"];
+    if generic.iter().any(|g| m.contains(g)) {
+        return sent.first().copied();
+    }
+    None
+}
+
+/// How a model family's reasoning is switched on or off.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ThinkingStyle {
+    /// No known switch: nothing is sent.
+    None,
+    /// `chat_template_kwargs: {"enable_thinking": bool}` (Nemotron 3, Qwen3, GLM 4.5+).
+    EnableThinking,
+    /// `chat_template_kwargs: {"thinking": bool}` (DeepSeek V3.1+).
+    DeepSeekThinking,
+    /// System prompt "detailed thinking on|off" (Llama-Nemotron Super/Ultra v1).
+    SystemDetailed,
+    /// System prompt "/think" | "/no_think" (Llama-Nemotron v1.5, Nemotron Nano v2).
+    SystemSlash,
+    /// `reasoning_effort: "low"|"medium"|"high"` (gpt-oss).
+    ReasoningEffort,
+}
+
+/// Version number right after `prefix` in `id` (e.g. "deepseek-v" in "deepseek-v3.1" → 3.1).
+pub fn version_after(id: &str, prefix: &str) -> Option<f32> {
+    let rest = &id[id.find(prefix)? + prefix.len()..];
+    let rest = rest.trim_start_matches(['-', '_']);
+    let v: String = rest.chars().take_while(|c| c.is_ascii_digit() || *c == '.').collect();
+    v.trim_end_matches('.').parse().ok()
+}
+
+pub fn thinking_style(model: &str) -> ThinkingStyle {
+    let l = model.to_lowercase();
+    let vision = l.contains("-vl") || l.contains("vision");
+    if l.contains("gpt-oss") {
+        ThinkingStyle::ReasoningEffort
+    } else if l.contains("llama") && l.contains("nemotron") {
+        if l.contains("v1.5") || l.contains("v1_5") { ThinkingStyle::SystemSlash } else { ThinkingStyle::SystemDetailed }
+    } else if l.contains("nemotron-nano") && l.contains("-v2") && !vision {
+        ThinkingStyle::SystemSlash
+    } else if version_after(&l, "nemotron-").is_some_and(|v| v >= 3.0) && !vision && !l.contains("340b") {
+        ThinkingStyle::EnableThinking
+    } else if version_after(&l, "deepseek-v").is_some_and(|v| v >= 3.1) {
+        ThinkingStyle::DeepSeekThinking
+    } else if l.contains("qwen3") && !l.contains("coder") && !vision {
+        ThinkingStyle::EnableThinking
+    } else if version_after(&l, "glm").is_some_and(|v| v >= 4.5) {
+        ThinkingStyle::EnableThinking
+    } else {
+        ThinkingStyle::None
+    }
+}
+
 pub fn build_chat_body(model: &str, messages: &[ChatMessage], opts: &ChatOptions, stream: bool) -> Value {
-    json!({
+    build_chat_body_with(model, messages, opts, stream, &HashSet::new())
+}
+
+/// Request body; optional parameters listed in `skip` (rejected by this model before) are left out.
+pub fn build_chat_body_with(model: &str, messages: &[ChatMessage], opts: &ChatOptions, stream: bool, skip: &HashSet<String>) -> Value {
+    let mut wire: Vec<Value> = messages.iter().map(ChatMessage::to_wire).collect();
+    let style = thinking_style(model);
+    let flag = match (style, opts.thinking) {
+        (ThinkingStyle::SystemDetailed, Some(on)) => Some(if on { "detailed thinking on" } else { "detailed thinking off" }),
+        (ThinkingStyle::SystemSlash, Some(on)) => Some(if on { "/think" } else { "/no_think" }),
+        _ => None,
+    };
+    if let Some(flag) = flag {
+        match wire.first_mut() {
+            Some(first) if first["role"] == "system" && first["content"].is_string() => {
+                first["content"] = json!(format!("{flag}\n\n{}", first["content"].as_str().unwrap_or("")));
+            }
+            _ => wire.insert(0, json!({ "role": "system", "content": flag })),
+        }
+    }
+    let mut body = json!({
         "model": model,
-        "messages": messages.iter().map(ChatMessage::to_wire).collect::<Vec<_>>(),
+        "messages": wire,
         "temperature": opts.temperature,
         "top_p": opts.top_p,
         "max_tokens": opts.max_tokens,
         "stream": stream,
-    })
+    });
+    let allowed = |p: &str| !skip.contains(p);
+    if stream && allowed("stream_options") {
+        body["stream_options"] = json!({ "include_usage": true });
+    }
+    match (style, opts.thinking) {
+        (ThinkingStyle::EnableThinking, Some(on)) if allowed("chat_template_kwargs") => body["chat_template_kwargs"] = json!({ "enable_thinking": on }),
+        (ThinkingStyle::DeepSeekThinking, Some(on)) if allowed("chat_template_kwargs") => body["chat_template_kwargs"] = json!({ "thinking": on }),
+        (ThinkingStyle::ReasoningEffort, t) if allowed("reasoning_effort") => {
+            let level = opts.reasoning_effort.clone().or_else(|| t.map(|on| if on { "high" } else { "low" }.to_string()));
+            if let Some(level) = level {
+                body["reasoning_effort"] = json!(level);
+            }
+        }
+        _ => {}
+    }
+    body
 }
 
 pub fn normalize_base_url(url: &str) -> Result<String, String> {
@@ -486,7 +686,7 @@ pub fn classify(status: u16, body: &str, model: Option<&str>, retry_after: Optio
         402 => ProviderError::Quota { status, message },
         403 if lower.contains("credit") || lower.contains("quota") => ProviderError::Quota { status, message },
         403 => ProviderError::Auth { status, message },
-        404 => ProviderError::ModelUnavailable { model: model.unwrap_or("?").into(), status, message },
+        404 | 410 => ProviderError::ModelUnavailable { model: model.unwrap_or("?").into(), status, message },
         429 => ProviderError::RateLimited { retry_after_secs: retry_after, message },
         400 | 422 if model.is_some() && (lower.contains("model") && (lower.contains("not found") || lower.contains("does not exist") || lower.contains("unknown"))) => {
             ProviderError::ModelUnavailable { model: model.unwrap_or("?").into(), status, message }
@@ -550,17 +750,22 @@ pub fn parse_completion(body: &str) -> PResult<ChatResult> {
         .get("choices")
         .and_then(|c| c.get(0))
         .ok_or_else(|| ProviderError::Malformed("response has no choices".into()))?;
-    let content = choice
-        .pointer("/message/content")
-        .and_then(|c| c.as_str())
-        .ok_or_else(|| ProviderError::Malformed("response has no message content".into()))?
-        .to_string();
+    let message = choice.get("message").ok_or_else(|| ProviderError::Malformed("response has no message".into()))?;
+    // `content` may be null when a reasoning model spent its whole budget thinking.
+    let content = match message.get("content") {
+        Some(Value::String(c)) => c.clone(),
+        Some(Value::Null) | None if reasoning_of(message).is_some() => String::new(),
+        _ => return Err(ProviderError::Malformed("response has no message content".into())),
+    };
+    let reasoning = choice.get("message").and_then(reasoning_of).unwrap_or("").to_string();
     Ok(ChatResult {
         content,
         finish_reason: choice.get("finish_reason").and_then(|f| f.as_str()).map(String::from),
         streamed: false,
-        usage: v.get("usage").cloned(),
-        had_reasoning: choice.pointer("/message/reasoning_content").is_some_and(|r| !r.is_null()),
+        usage: v.get("usage").cloned().filter(|u| !u.is_null()),
+        had_reasoning: !reasoning.is_empty(),
+        reasoning,
+        model: String::new(),
     })
 }
 
@@ -596,6 +801,8 @@ pub struct ThinkFilter {
     pending: String,
     inside: bool,
     pub saw_think: bool,
+    /// Reasoning text removed from the content, not yet taken.
+    thought: String,
 }
 
 impl ThinkFilter {
@@ -605,6 +812,7 @@ impl ThinkFilter {
         loop {
             if self.inside {
                 if let Some(p) = self.pending.find("</think>") {
+                    self.thought.push_str(&self.pending[..p]);
                     self.pending.drain(..p + "</think>".len());
                     self.inside = false;
                     continue;
@@ -612,6 +820,7 @@ impl ThinkFilter {
                 // keep a tail that could be the start of a closing tag
                 let keep = partial_suffix(&self.pending, "</think>");
                 let cut = self.pending.len() - keep;
+                self.thought.push_str(&self.pending[..cut]);
                 self.pending.drain(..cut);
                 break;
             } else {
@@ -632,9 +841,15 @@ impl ThinkFilter {
         out
     }
 
+    /// Reasoning removed since the last call.
+    pub fn take_thought(&mut self) -> String {
+        std::mem::take(&mut self.thought)
+    }
+
     pub fn finish(&mut self) -> String {
         if self.inside {
-            self.pending.clear();
+            let rest = std::mem::take(&mut self.pending);
+            self.thought.push_str(&rest);
             String::new()
         } else {
             std::mem::take(&mut self.pending)
@@ -909,5 +1124,139 @@ mod tests {
             .unwrap_err();
         assert_eq!(err.kind(), "cancelled");
         assert!(started.elapsed() < Duration::from_secs(5));
+    }
+
+    fn think(on: bool) -> ChatOptions {
+        ChatOptions { thinking: Some(on), ..Default::default() }
+    }
+
+    #[test]
+    fn thinking_params_per_family() {
+        let msgs = [ChatMessage::system("Be helpful."), ChatMessage::user("hi")];
+        let body = |m: &str, o: &ChatOptions| build_chat_body(m, &msgs, o, true);
+        // chat_template_kwargs.enable_thinking: Nemotron 3, Qwen3, GLM
+        for m in ["nvidia/nemotron-3-super-120b-a12b", "nvidia/nemotron-3-nano-30b-a3b", "qwen/qwen3-235b-a22b", "qwen/qwen3.5-397b-a17b", "z-ai/glm4.7"] {
+            assert_eq!(body(m, &think(false))["chat_template_kwargs"], json!({ "enable_thinking": false }), "{m}");
+            assert_eq!(body(m, &think(true))["chat_template_kwargs"]["enable_thinking"], true, "{m}");
+        }
+        // DeepSeek V3.1+ uses "thinking"; R1 and V3.0 have no switch
+        assert_eq!(body("deepseek-ai/deepseek-v3.1-terminus", &think(true))["chat_template_kwargs"], json!({ "thinking": true }));
+        assert_eq!(body("deepseek-ai/deepseek-v3.2", &think(false))["chat_template_kwargs"], json!({ "thinking": false }));
+        assert!(body("deepseek-ai/deepseek-r1", &think(true)).get("chat_template_kwargs").is_none());
+        // Llama-Nemotron: system prompt switch
+        let b = body("nvidia/llama-3.1-nemotron-ultra-253b-v1", &think(true));
+        assert_eq!(b["messages"][0]["content"], "detailed thinking on\n\nBe helpful.");
+        assert!(b.get("chat_template_kwargs").is_none());
+        let b = body("nvidia/llama-3.3-nemotron-super-49b-v1.5", &think(false));
+        assert_eq!(b["messages"][0]["content"], "/no_think\n\nBe helpful.");
+        let b = build_chat_body("nvidia/llama-3.3-nemotron-super-49b-v1", &[ChatMessage::user("hi")], &think(false), true);
+        assert_eq!(b["messages"][0], json!({ "role": "system", "content": "detailed thinking off" }));
+        assert_eq!(b["messages"][1]["role"], "user");
+        // gpt-oss: reasoning_effort
+        assert_eq!(body("openai/gpt-oss-120b", &think(true))["reasoning_effort"], "high");
+        assert_eq!(body("openai/gpt-oss-20b", &think(false))["reasoning_effort"], "low");
+        assert_eq!(body("openai/gpt-oss-120b", &ChatOptions { reasoning_effort: Some("medium".into()), ..think(true) })["reasoning_effort"], "medium");
+        // no switch, no default override
+        for m in ["qwen/qwen3-coder-480b-a35b-instruct", "moonshotai/kimi-k2-instruct", "meta/llama-3.3-70b-instruct"] {
+            let b = body(m, &think(true));
+            assert!(b.get("chat_template_kwargs").is_none() && b.get("reasoning_effort").is_none(), "{m}");
+            assert_eq!(b["messages"][0]["content"], "Be helpful.");
+        }
+        assert!(body("nvidia/nemotron-3-super-120b-a12b", &ChatOptions::default()).get("chat_template_kwargs").is_none());
+        // usage is requested when streaming
+        assert_eq!(body("a/b", &ChatOptions::default())["stream_options"], json!({ "include_usage": true }));
+        assert!(build_chat_body("a/b", &msgs, &ChatOptions::default(), false).get("stream_options").is_none());
+        let skip: HashSet<String> = ["chat_template_kwargs".to_string(), "stream_options".to_string()].into();
+        let b = build_chat_body_with("z-ai/glm4.7", &msgs, &think(true), true, &skip);
+        assert!(b.get("chat_template_kwargs").is_none() && b.get("stream_options").is_none());
+    }
+
+    #[test]
+    fn version_parsing() {
+        assert_eq!(version_after("deepseek-ai/deepseek-v3.1-terminus", "deepseek-v"), Some(3.1));
+        assert_eq!(version_after("z-ai/glm-4.5", "glm"), Some(4.5));
+        assert_eq!(version_after("moonshotai/kimi-k2.5", "kimi-k"), Some(2.5));
+        assert_eq!(version_after("qwen/qwen3-coder", "/qwen"), Some(3.0));
+        assert_eq!(version_after("nvidia/nemotron-nano-12b", "nemotron-"), None);
+    }
+
+    #[tokio::test]
+    async fn unsupported_param_is_dropped_and_remembered() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/chat/completions"))
+            .and(wiremock::matchers::body_partial_json(json!({ "chat_template_kwargs": { "enable_thinking": true } })))
+            .respond_with(ResponseTemplate::new(400).set_body_string(r#"{"error":{"message":"Unrecognized request argument supplied: chat_template_kwargs"}}"#))
+            .mount(&server)
+            .await;
+        Mock::given(method("POST")).and(path("/v1/chat/completions")).respond_with(ResponseTemplate::new(200).set_body_raw(sse(&["ok"]), "text/event-stream")).mount(&server).await;
+        let c = client(&server, Some("nvapi-k-0000000000000"));
+        let model = "z-ai/glm4.7";
+        let r = c.chat(model, &[ChatMessage::user("x")], &think(true), &CancellationToken::new(), |_| {}).await.unwrap();
+        assert_eq!(r.content, "ok");
+        assert_eq!(r.model, model);
+        assert!(c.rejected_params(model).contains("chat_template_kwargs"));
+        // a second call does not send it again (memory survives a fresh client sharing it)
+        let c2 = NvidiaClient::new(c.base_url(), Some("nvapi-k-0000000000000".into())).unwrap().with_param_memory(c.params.clone());
+        c2.chat(model, &[ChatMessage::user("x")], &think(true), &CancellationToken::new(), |_| {}).await.unwrap();
+        let reqs = server.received_requests().await.unwrap();
+        assert_eq!(reqs.len(), 3, "one rejected request, one retry, one clean request");
+        let last: Value = serde_json::from_slice(&reqs[2].body).unwrap();
+        assert!(last.get("chat_template_kwargs").is_none());
+        assert!(last.get("stream_options").is_some(), "only the rejected parameter is dropped");
+    }
+
+    #[tokio::test]
+    async fn stream_options_rejection_keeps_streaming() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/chat/completions"))
+            .and(wiremock::matchers::body_partial_json(json!({ "stream_options": { "include_usage": true } })))
+            .respond_with(ResponseTemplate::new(400).set_body_string(r#"{"detail":"stream_options is not supported"}"#))
+            .mount(&server)
+            .await;
+        Mock::given(method("POST")).and(path("/v1/chat/completions")).respond_with(ResponseTemplate::new(200).set_body_raw(sse(&["hi"]), "text/event-stream")).mount(&server).await;
+        let r = client(&server, Some("nvapi-k-0000000000000")).chat("a/b", &[ChatMessage::user("x")], &ChatOptions::default(), &CancellationToken::new(), |_| {}).await.unwrap();
+        assert_eq!(r.content, "hi");
+        assert!(r.streamed, "streaming itself was not turned off");
+    }
+
+    #[tokio::test]
+    async fn usage_and_reasoning_are_streamed() {
+        let server = MockServer::start().await;
+        let body = [
+            json!({"choices":[{"index":0,"delta":{"reasoning_content":"Let me "},"finish_reason":null}]}),
+            json!({"choices":[{"index":0,"delta":{"reasoning_content":"plan."},"finish_reason":null}]}),
+            json!({"choices":[{"index":0,"delta":{"content":"<think>inline</think>Answer"},"finish_reason":null}]}),
+            json!({"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}),
+            json!({"choices":[],"usage":{"prompt_tokens":12,"completion_tokens":30,"total_tokens":42}}),
+        ]
+        .iter()
+        .map(|v| format!("data: {v}\n\n"))
+        .collect::<String>()
+            + "data: [DONE]\n\n";
+        Mock::given(method("POST")).and(path("/v1/chat/completions")).respond_with(ResponseTemplate::new(200).set_body_raw(body, "text/event-stream")).mount(&server).await;
+        let (mut content, mut thoughts) = (String::new(), String::new());
+        let r = client(&server, Some("nvapi-k-0000000000000"))
+            .chat_with_reasoning("a/b", &[ChatMessage::user("x")], &ChatOptions::default(), &CancellationToken::new(), |d| content.push_str(d), |t| thoughts.push_str(t))
+            .await
+            .unwrap();
+        assert_eq!(r.content, "Answer");
+        assert_eq!(content, "Answer");
+        assert_eq!(thoughts, "Let me plan.inline");
+        assert_eq!(r.reasoning, "Let me plan.inline");
+        assert!(r.had_reasoning);
+        assert_eq!(r.usage.unwrap()["total_tokens"], 42);
+        let sent: Value = serde_json::from_slice(&server.received_requests().await.unwrap()[0].body).unwrap();
+        assert_eq!(sent["stream_options"]["include_usage"], true);
+    }
+
+    #[test]
+    fn reasoning_only_completion_is_not_malformed() {
+        let r = parse_completion(r#"{"choices":[{"message":{"role":"assistant","content":null,"reasoning_content":"thinking..."},"finish_reason":"length"}],"usage":{"total_tokens":5}}"#).unwrap();
+        assert_eq!(r.content, "");
+        assert_eq!(r.reasoning, "thinking...");
+        assert_eq!(r.finish_reason.as_deref(), Some("length"));
+        assert!(parse_completion(r#"{"choices":[{"message":{"role":"assistant","content":null}}]}"#).is_err());
     }
 }

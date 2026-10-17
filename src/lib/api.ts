@@ -26,6 +26,9 @@ export const api = {
   listModels: (refresh: boolean) => call<T.ModelList>('list_models', { refresh }),
   probeModel: (model: string) => call<T.ProbeResult>('probe_model', { model }),
   selectModel: (model: string) => call<T.Settings>('select_model', { model }),
+  /** Models auto mode uses per job (may fetch the model list once). */
+  resolvedModels: () => call<T.ResolvedModels>('resolved_models'),
+  usageSummary: (projectId: string) => call<T.UsageSummary>('usage_summary', { projectId }),
   detectTools: () => call<T.ToolStatus[]>('detect_tools'),
   appInfo: () => call<T.AppInfo>('app_info'),
 

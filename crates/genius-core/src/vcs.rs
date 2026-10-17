@@ -205,7 +205,7 @@ impl Genius {
         }
         let diff = git.staged_diff(ws.root()).await?;
         let diff = crate::redact::redact(&crate::diagnostics::focus_log(&diff, 14_000));
-        let (r, _) = self.ai_call_simple(project_id, "Writing commit message", &prompts::commit_message_messages(&diff, &staged)).await?;
+        let (r, _) = self.ai_call_simple(project_id, "Writing commit message", &prompts::commit_message_messages(&diff, &staged), crate::router::ModelRole::Quick).await?;
         Ok(prompts::clean_commit_message(&r))
     }
 
@@ -298,7 +298,7 @@ impl Genius {
         if !content.contains("<<<<<<<") {
             return Err(GeniusError::Validation(format!("{path} has no conflict markers")));
         }
-        let (text, _) = self.ai_call_simple(project_id, &format!("Resolving merge conflict in {path}"), &prompts::conflict_messages(path, &content)).await?;
+        let (text, _) = self.ai_call_simple(project_id, &format!("Resolving merge conflict in {path}"), &prompts::conflict_messages(path, &content), crate::router::ModelRole::Code).await?;
         let parsed = crate::blocks::collect(&crate::blocks::parse_all(&text));
         let resolved = parsed.files.into_iter().find(|(p, _)| p == path).map(|(_, c)| c).ok_or_else(|| GeniusError::Validation("The model did not return the resolved file.".into()))?;
         if resolved.contains("<<<<<<<") || resolved.contains(">>>>>>>") {
@@ -343,24 +343,12 @@ impl Genius {
         }
     }
 
-    async fn ai_call_simple(&self, project_id: &str, purpose: &str, messages: &[crate::nvidia::ChatMessage]) -> Result<(String, ())> {
-        let s = self.settings()?;
-        let key = self.secrets.get(crate::secrets::NVIDIA_KEY)?;
-        let client = crate::nvidia::NvidiaClient::new(&s.base_url, key)?;
-        let model = s.model.clone().ok_or(crate::nvidia::ProviderError::NoModel)?;
-        let mut ev = self.bus.start(Some(project_id), None, EventKind::Ai, EventStatus::Running, format!("{purpose} ({model})"), json!({ "model": model }));
-        let opts = crate::nvidia::ChatOptions { temperature: s.temperature, top_p: 0.95, max_tokens: s.max_tokens.min(8192), stream: true };
-        match client.chat(&model, messages, &opts, &CancellationToken::new(), |_| {}).await {
-            Ok(r) => {
-                ev.update(EventStatus::Completed, json!({ "outputChars": r.content.len() }));
-                Ok((r.content, ()))
-            }
-            Err(e) => {
-                let e = GeniusError::from(e);
-                ev.update(EventStatus::Failed, json!({ "error": { "kind": e.kind(), "message": e.to_string() } }));
-                Err(e)
-            }
-        }
+    /// Routed AI call outside a task (no chat streaming); see [`Genius::ai_call_opts`].
+    async fn ai_call_simple(&self, project_id: &str, purpose: &str, messages: &[crate::nvidia::ChatMessage], role: crate::router::ModelRole) -> Result<(String, ())> {
+        self.has_usable_model()?;
+        let opts = crate::app::CallOptions::role(role);
+        let (r, _) = self.ai_call_opts(project_id, "", purpose, messages, false, &CancellationToken::new(), &opts).await?;
+        Ok((r.content, ()))
     }
 
     // ===================================================================== GitHub

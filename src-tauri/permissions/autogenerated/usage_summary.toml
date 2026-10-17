@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-usage-summary"
+description = "Enables the usage_summary command without any pre-configured scope."
+commands.allow = ["usage_summary"]
+
+[[permission]]
+identifier = "deny-usage-summary"
+description = "Denies the usage_summary command without any pre-configured scope."
+commands.deny = ["usage_summary"]

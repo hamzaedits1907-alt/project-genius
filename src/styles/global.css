@@ -612,3 +612,13 @@ pre.block { margin: 0; padding: 10px 12px; background: var(--bg-0); border: 1px 
 .progress { height: 6px; border-radius: 6px; background: var(--bg-3); overflow: hidden; }
 .progress > div { height: 100%; background: var(--brand); border-radius: 6px; transition: width 0.25s var(--ease); }
 .quick-setup { margin-top: 18px; border-color: rgba(124, 92, 255, 0.4); background: linear-gradient(180deg, var(--accent-soft), transparent 80%), var(--bg-1); }
+
+/* ======================================================================
+   AI provider: auto model routing
+   ====================================================================== */
+.choice { display: flex; gap: 10px; align-items: flex-start; padding: 10px 12px; border: 1px solid var(--border); border-radius: var(--r); cursor: pointer; background: var(--bg-2); }
+.choice.on { border-color: var(--accent); background: var(--accent-soft); }
+.choice input { accent-color: var(--accent); margin-top: 3px; }
+.auto-models { width: 100%; border-collapse: collapse; }
+.auto-models td { padding: 6px 8px; border-top: 1px solid var(--border); vertical-align: top; }
+.auto-models td:first-child { width: 42%; color: var(--text-2); }

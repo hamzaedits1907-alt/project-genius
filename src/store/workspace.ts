@@ -44,6 +44,8 @@ interface WorkspaceState {
   drafts: Record<string, Draft>;
   followDrafts: boolean;
   aiStream: Record<string, string>;
+  /** Live model reasoning per task (`genius://ai-thinking`), clipped to the last 40k chars. */
+  aiThinking: Record<string, string>;
   activity: ActivityEvent[];
   runs: Record<string, RunView>;
   runOrder: string[];
@@ -75,6 +77,7 @@ interface WorkspaceState {
   saveFile: (path: string) => Promise<void>;
   onActivity: (ev: ActivityEvent) => void;
   onAiDelta: (taskId: string, text: string) => void;
+  onAiThinking: (taskId: string, text: string) => void;
   onFileStream: (ev: FileStreamEvent) => void;
   onProcessOutput: (runId: string, stream: 'stdout' | 'stderr', line: string) => void;
   onProcessState: (run: RunInfo, state: RunView['state'], outcome?: RunOutcome) => void;
@@ -124,6 +127,7 @@ const initial = {
   drafts: {},
   followDrafts: true,
   aiStream: {},
+  aiThinking: {},
   activity: [],
   runs: {},
   runOrder: [],
@@ -316,6 +320,11 @@ export const useWorkspace = create<WorkspaceState>((set, get) => ({
     const cur = get().aiStream[taskId] ?? '';
     const next = (cur + text).slice(-200_000);
     set({ aiStream: { ...get().aiStream, [taskId]: next } });
+  },
+
+  onAiThinking: (taskId, text) => {
+    const next = ((get().aiThinking[taskId] ?? '') + text).slice(-40_000);
+    set({ aiThinking: { ...get().aiThinking, [taskId]: next } });
   },
 
   onFileStream: (ev) => {
