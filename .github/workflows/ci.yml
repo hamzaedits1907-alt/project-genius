@@ -57,10 +57,26 @@ jobs:
             echo "::error title=Windows core test failures::${summary}"
             exit 1
           fi
+      - name: Build the frontend (the Tauri app embeds dist/)
+        run: npm run build
       - name: Tauri shell tests (command ACL)
-        run: cargo test -p genius
+        shell: bash
+        run: |
+          set -o pipefail
+          if ! cargo test -p genius 2>&1 | tee shell-tests.log; then
+            summary=$(grep -E "^error|panicked|FAILED|failures:" -A6 shell-tests.log | head -c 5000 | sed ':a;N;$!ba;s/%/%25/g;s/\r//g;s/\n/%0A/g')
+            echo "::error title=Windows shell test failure::${summary}"
+            exit 1
+          fi
       - name: Build Windows installers
-        run: npx tauri build
+        shell: bash
+        run: |
+          set -o pipefail
+          if ! npx tauri build 2>&1 | tee tauri-build.log; then
+            summary=$(grep -E "^error|error\[|failed|Error" -B1 -A6 tauri-build.log | head -c 5000 | sed ':a;N;$!ba;s/%/%25/g;s/\r//g;s/\n/%0A/g')
+            echo "::error title=Windows installer build failure::${summary}"
+            exit 1
+          fi
       - name: List installers
         shell: bash
         run: |
