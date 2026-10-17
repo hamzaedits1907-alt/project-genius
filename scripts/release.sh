@@ -46,5 +46,8 @@ git add Cargo.toml Cargo.lock src-tauri/tauri.conf.json package.json package-loc
 git commit -m "Release v$version"
 git tag "v$version"
 git push origin HEAD
-git push origin "v$version"
+if ! git push origin "v$version"; then
+  echo "Could not push the tag. Start the release from GitHub instead: Actions → Release → Run workflow (branch main)." >&2
+  exit 1
+fi
 echo "Pushed v$version. Follow the build at https://github.com/hamzaedits1907-alt/project-genius/actions"

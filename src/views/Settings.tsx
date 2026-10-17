@@ -764,6 +764,8 @@ function UpdateSettings() {
   const update = useApp((s) => s.update);
   const checkUpdate = useApp((s) => s.checkUpdate);
   const setShowUpdate = useApp((s) => s.setShowUpdate);
+  const skipped = useApp((s) => s.skippedVersion);
+  const skipVersion = useApp((s) => s.skipVersion);
   const save = useSave();
   const [checking, setChecking] = useState(false);
   const check = async () => {
@@ -789,6 +791,14 @@ function UpdateSettings() {
         </div>
         <div className="muted small">New versions are published as GitHub releases. Genius downloads the installer for your system, verifies it, and restarts into the new version. Your projects and settings are kept.</div>
         {update?.detail && !update.available && <div className="faint small">{update.detail}</div>}
+        {skipped && (
+          <div className="faint small">
+            You skipped version {skipped}.{' '}
+            <button className="link" onClick={() => skipVersion(null)}>
+              Undo
+            </button>
+          </div>
+        )}
         <div className="row">
           <Button icon={<RefreshCw size={14} />} loading={checking} onClick={() => void check()}>
             Check for updates

@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.2.1]
+
+- **Skip this version.** Not ready to update? Skip a release and Genius won't nag you about it (undo any time in Settings → Updates & about).
+- One-command releases with `scripts/release.sh`, with a fallback to GitHub's "Run workflow" button.
+
 ## [0.2.0]
 
 Meet the new Genius.

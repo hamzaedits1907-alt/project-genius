@@ -29,6 +29,9 @@ interface AppState {
   showUpdate: boolean;
   /** Set to the new version on the first start after an update (shows "What's new"). */
   justUpdated: string | null;
+  /** A version the user chose to skip: no announcement or sidebar badge for it. */
+  skippedVersion: string | null;
+  skipVersion: (v: string | null) => void;
   navigate: (r: Route) => void;
   toast: (tone: Toast['tone'], text: string) => void;
   dismissToast: (id: number) => void;
@@ -56,6 +59,11 @@ export const useApp = create<AppState>((set, get) => ({
   update: null,
   showUpdate: false,
   justUpdated: null,
+  skippedVersion: storage('genius.skipVersion'),
+  skipVersion: (v) => {
+    storage('genius.skipVersion', v ?? '');
+    set({ skippedVersion: v, showUpdate: false });
+  },
   navigate: (route) => set({ route }),
   toast: (tone, text) => {
     const id = ++toastId;
@@ -107,7 +115,7 @@ export const useApp = create<AppState>((set, get) => ({
       const update = await api.checkForUpdate();
       set({ update });
       // Announce each new version once (the green arrow in the sidebar stays until installed).
-      if (!manual && update.available && update.latestVersion && storage('genius.updateAnnounced') !== update.latestVersion) {
+      if (!manual && update.available && update.latestVersion && storage('genius.updateAnnounced') !== update.latestVersion && get().skippedVersion !== update.latestVersion) {
         storage('genius.updateAnnounced', update.latestVersion);
         set({ showUpdate: true });
       }

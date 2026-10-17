@@ -90,6 +90,7 @@ export default function App() {
   const showUpdate = useApp((s) => s.showUpdate);
   const setShowUpdate = useApp((s) => s.setShowUpdate);
   const busy = useWorkspace((s) => s.tasks.some((t) => t.kind !== 'verify'));
+  const skipped = useApp((s) => s.skippedVersion);
 
   // Backend events: released even if the app unmounts before `listen` resolves (StrictMode
   // mounts twice in development; the old code leaked the first set and delivered every event twice).
@@ -141,7 +142,7 @@ export default function App() {
           </button>
         )}
         <div className="spacer" />
-        {update?.available && (
+        {update?.available && update.latestVersion !== skipped && (
           <button className="update-dot" onClick={() => setShowUpdate(true)} title={`Update available: ${update.latestVersion}`} aria-label="Update available">
             <ArrowDownCircle size={19} />
             <span className="count ok" />

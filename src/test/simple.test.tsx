@@ -125,3 +125,27 @@ describe('helpers', () => {
     expect(nameFromIdea('!!!')).toBe('My App');
   });
 });
+
+describe('updates', () => {
+  afterEach(() => {
+    cleanup();
+    clearMocks();
+  });
+
+  it('offers the new version, installs it, or skips it', async () => {
+    const { default: UpdateDialog } = await import('../views/UpdateDialog');
+    installIpc({ install_update: () => 'Genius was updated and will restart.' });
+    useApp.setState({
+      update: { currentVersion: '0.2.0', latestVersion: '0.2.1', available: true, notes: '- Skip versions', publishedAt: null, releaseUrl: null, asset: { name: 'Genius_0.2.1_amd64.AppImage', size: 10, url: 'https://github.com/x', sha256Url: 'https://github.com/x.sha256' }, detail: null },
+      skippedVersion: null,
+    });
+    const onClose = vi.fn();
+    render(<UpdateDialog onClose={onClose} />);
+    expect(screen.getByText('Genius 0.2.1 is available')).toBeInTheDocument();
+    expect(screen.getByText('Skip versions')).toBeInTheDocument();
+    await act(async () => void fireEvent.click(screen.getByRole('button', { name: 'Skip this version' })));
+    expect(useApp.getState().skippedVersion).toBe('0.2.1');
+    await act(async () => void fireEvent.click(screen.getByRole('button', { name: /Update now/ })));
+    expect(calls.some((c) => c.cmd === 'install_update')).toBe(true);
+  });
+});

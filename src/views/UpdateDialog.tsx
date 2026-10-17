@@ -14,6 +14,7 @@ import { Markdown } from '../components/Markdown';
 export default function UpdateDialog({ onClose }: { onClose: () => void }) {
   const update = useApp((s) => s.update);
   const justUpdated = useApp((s) => s.justUpdated);
+  const skipVersion = useApp((s) => s.skipVersion);
   const [progress, setProgress] = useState<UpdateProgress | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -59,6 +60,11 @@ export default function UpdateDialog({ onClose }: { onClose: () => void }) {
             </Button>
           )}
           <span className="spacer" />
+          {update.available && update.latestVersion && (
+            <Button variant="ghost" onClick={() => skipVersion(update.latestVersion)} disabled={busy}>
+              Skip this version
+            </Button>
+          )}
           <Button onClick={onClose} disabled={busy}>
             Later
           </Button>
