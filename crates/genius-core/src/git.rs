@@ -4,7 +4,9 @@
 //! (`GIT_TERMINAL_PROMPT=0`), and is scoped to the project directory. Genius refuses to
 //! operate on a repository whose top level is *not* the project directory, so a project
 //! that happens to live inside some other repository can never modify that repository.
-//! No destructive command (force push, reset --hard, clean, history rewrite) is exposed.
+//! No destructive command (force push, reset --hard, clean, history rewrite) is exposed on a
+//! user repository. The one force push is [`Git::push_pages_snapshot`]: it publishes a build
+//! from a throwaway repository to the Genius-owned `gh-pages` branch only.
 
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
@@ -76,6 +78,9 @@ pub struct GitOutput {
     pub stdout: String,
     pub stderr: String,
 }
+
+/// Branch GitHub Pages serves the website from. Owned by Genius: replaced on every deploy.
+pub const PAGES_BRANCH: &str = "gh-pages";
 
 #[derive(Clone)]
 pub struct Git {
@@ -426,6 +431,53 @@ impl Git {
         self.run(dir, &["add", "--", path]).await
     }
 
+    /// Publish the contents of `content` (e.g. a build's `dist/`) as a single commit on the
+    /// remote's [`PAGES_BRANCH`], replacing what was there. Runs in a fresh repository at
+    /// `scratch` (which must not exist; the caller removes it), so the user's repository,
+    /// branches and working tree are never touched. Returns the pushed commit, verified
+    /// against the remote.
+    pub async fn push_pages_snapshot(&self, scratch: &Path, content: &Path, remote_url: &str, message: &str, identity: (&str, &str)) -> Result<String> {
+        let local_remote = Path::new(remote_url).is_absolute() && Path::new(remote_url).is_dir(); // tests: a local bare repo
+        if !local_remote {
+            validate_remote_url(remote_url)?;
+        }
+        if scratch.exists() {
+            return Err(GeniusError::Internal("pages scratch directory already exists".into()));
+        }
+        if !content.join("index.html").is_file() {
+            return Err(GeniusError::Validation(format!("{} has no index.html to publish", content.display())));
+        }
+        std::fs::create_dir_all(scratch)?;
+        let clean = |s: &str| s.chars().filter(|c| !c.is_control()).collect::<String>();
+        // Explicit --git-dir/--work-tree: no repository discovery from `content`'s parents.
+        let gd = format!("--git-dir={}", scratch.join(".git").to_string_lossy());
+        let wt = format!("--work-tree={}", content.to_string_lossy());
+        let (name, email) = (format!("user.name={}", clean(identity.0)), format!("user.email={}", clean(identity.1)));
+        self.run(scratch, &["init", "-q", "-b", PAGES_BRANCH]).await?;
+        self.run(content, &["-c", "core.autocrlf=false", &gd, &wt, "add", "-A"]).await?;
+        self.run(content, &["-c", &name, "-c", &email, &gd, &wt, "commit", "-q", "--no-verify", "-m", message]).await?;
+        let refspec = format!("HEAD:refs/heads/{PAGES_BRANCH}");
+        let out = self.raw(scratch, &["push", "--force", remote_url, &refspec], true).await?;
+        if out.exit_code != 0 {
+            let e = out.stderr.to_lowercase();
+            let hint = if e.contains("authentication") || e.contains("could not read username") || e.contains("permission") || e.contains("403") {
+                "GitHub rejected the credentials. Connect your GitHub account in Settings → GitHub, then retry."
+            } else if e.contains("repository not found") {
+                "The GitHub repository was not found or you don't have access to it."
+            } else {
+                "Uploading the website failed."
+            };
+            return Err(GeniusError::Git(format!("{hint}\n\n{}", out.stderr.trim())));
+        }
+        let local = self.run(scratch, &["rev-parse", "HEAD"]).await?.stdout.trim().to_string();
+        let r = format!("refs/heads/{PAGES_BRANCH}");
+        let remote = self.run_net(scratch, &["ls-remote", remote_url, &r]).await?.stdout.split_whitespace().next().map(String::from);
+        if remote.as_deref() != Some(local.as_str()) {
+            return Err(GeniusError::Git(format!("The upload finished but {PAGES_BRANCH} on GitHub is at {} instead of {local}.", remote.as_deref().unwrap_or("(missing)"))));
+        }
+        Ok(local)
+    }
+
     pub async fn clone_repo(&self, parent: &Path, url: &str, dir_name: &str) -> Result<GitOutput> {
         validate_remote_url(url)?;
         crate::workspace::normalize_rel(dir_name)?;
@@ -673,6 +725,44 @@ u UU N... 100644 100644 100644 100644 h1 h2 h3 conflict.ts\0\
         g.commit(&dir, "local change").await.unwrap();
         let err = g.push(&dir, "origin", "main").await.unwrap_err().to_string();
         assert!(err.contains("Pull"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn pages_snapshot_replaces_branch_without_touching_project() {
+        let (d, g, dir) = repo().await;
+        std::fs::write(dir.join("a.txt"), "x\n").unwrap();
+        g.stage(&dir, &["a.txt".into()]).await.unwrap();
+        let head = g.commit(&dir, "init").await.unwrap().sha;
+        let bare = d.path().join("remote.git");
+        assert_eq!(capture(&g.program, &["init", "--bare", "-b", "main", bare.to_str().unwrap()], None, Duration::from_secs(20)).await.unwrap().0, 0);
+        g.run(&dir, &["remote", "add", "origin", bare.to_str().unwrap()]).await.unwrap();
+        g.push(&dir, "origin", "main").await.unwrap();
+
+        let dist = dir.join("dist");
+        std::fs::create_dir_all(dist.join("assets")).unwrap();
+        std::fs::write(dist.join("index.html"), "<div id=root></div>").unwrap();
+        std::fs::write(dist.join("assets/app.js"), "1").unwrap();
+        let remote = bare.to_str().unwrap();
+        assert!(g.push_pages_snapshot(&d.path().join("s0"), &dir, remote, "x", ("G", "g@x")).await.is_err(), "needs an index.html");
+        let first = g.push_pages_snapshot(&d.path().join("s1"), &dist, remote, "Deploy 1", ("Genius", "g@example.com")).await.unwrap();
+        std::fs::remove_file(dist.join("assets/app.js")).unwrap();
+        std::fs::write(dist.join("assets/app2.js"), "2").unwrap();
+        let second = g.push_pages_snapshot(&d.path().join("s2"), &dist, remote, "Deploy 2", ("Genius", "g@example.com")).await.unwrap();
+        assert_ne!(first, second);
+        assert!(g.push_pages_snapshot(&d.path().join("s2"), &dist, remote, "again", ("G", "g@x")).await.is_err(), "scratch must be fresh");
+
+        let tree = g.run(&dir, &["ls-tree", "-r", "--name-only", &second]).await;
+        assert!(tree.is_err(), "pages commit is not in the project repository");
+        let files = capture(&g.program, &["--git-dir", remote, "ls-tree", "-r", "--name-only", PAGES_BRANCH], None, Duration::from_secs(20)).await.unwrap().1;
+        assert_eq!(files.lines().collect::<Vec<_>>(), vec!["assets/app2.js", "index.html"], "branch replaced by the new build");
+        let log = capture(&g.program, &["--git-dir", remote, "rev-list", "--count", PAGES_BRANCH], None, Duration::from_secs(20)).await.unwrap().1;
+        assert_eq!(log.trim(), "1", "one snapshot commit, no history");
+        let main = capture(&g.program, &["--git-dir", remote, "rev-parse", "main"], None, Duration::from_secs(20)).await.unwrap().1;
+        assert_eq!(main.trim(), head, "main untouched on the remote");
+        let st = g.status(&dir).await.unwrap();
+        assert_eq!((st.branch.as_deref(), st.head.as_deref()), (Some("main"), Some(head.as_str())), "local branch and HEAD untouched");
+        assert!(!g.branches(&dir).await.unwrap().iter().any(|b| b.name == PAGES_BRANCH));
+        assert!(g.push_pages_snapshot(&d.path().join("s3"), &dist, "ext::sh -c x", "x", ("G", "g@x")).await.is_err());
     }
 
     impl Git {

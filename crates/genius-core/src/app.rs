@@ -82,6 +82,7 @@ pub struct Genius {
     tasks: Arc<Mutex<HashMap<String, TaskEntry>>>,
     previews: Arc<Mutex<HashMap<String, String>>>,
     repair_history: Arc<Mutex<HashMap<String, Vec<String>>>>,
+    pub(crate) runtime_errors: crate::runtime_errors::Store,
     data_dir: PathBuf,
     /// Runtime used for background work. Captured at construction so tasks can be spawned
     /// from any thread (Tauri runs synchronous commands on the main thread, outside Tokio).
@@ -112,6 +113,7 @@ impl Genius {
             tasks: Arc::new(Mutex::new(HashMap::new())),
             previews: Arc::new(Mutex::new(HashMap::new())),
             repair_history: Arc::new(Mutex::new(HashMap::new())),
+            runtime_errors: Default::default(),
             data_dir: data_dir.to_path_buf(),
         }))
     }
@@ -457,6 +459,7 @@ impl Genius {
             Ok(cs) => {
                 store.mark_reverted_if_restore(&cs)?;
                 self.bus.resolve_changeset(id, EventStatus::Completed, "applied");
+                self.clear_preview_errors(project_id); // the code changed: old runtime errors are stale
                 ev.set_title(format!("Applied: {}", cs.title));
                 ev.update(EventStatus::Completed, json!({ "files": cs.files.len() }));
                 self.emit_applied(project_id, task_id, &cs);
@@ -893,7 +896,7 @@ impl Genius {
 
     /// Approvals required before running an npm operation. Scripts that differ from the
     /// Genius template always require approval showing the exact script text.
-    async fn gate_operation(&self, project_id: &str, task_id: Option<&str>, op: Operation, user_initiated: bool, cancel: &CancellationToken) -> Result<()> {
+    pub(crate) async fn gate_operation(&self, project_id: &str, task_id: Option<&str>, op: Operation, user_initiated: bool, cancel: &CancellationToken) -> Result<()> {
         let ws = self.workspace(project_id)?;
         let pkg: Value = ws.read_text_opt("package.json")?.and_then(|t| serde_json::from_str(&t).ok()).ok_or_else(|| GeniusError::Validation("package.json is missing or invalid".into()))?;
         if op == Operation::Install {
@@ -1073,6 +1076,7 @@ impl Genius {
         self.gate_operation(project_id, task_id, Operation::Dev, true, &cancel).await?;
         let ws = self.workspace(project_id)?;
         self.bus.push(channels::PREVIEW, json!({ "projectId": project_id, "status": "starting" }));
+        self.clear_preview_errors(project_id);
         // Element picker support; if it cannot be prepared the preview still runs without it.
         let inspector = crate::inspector::prepare(ws.root()).unwrap_or_else(|e| {
             log::warn!("preview inspector unavailable: {e}");

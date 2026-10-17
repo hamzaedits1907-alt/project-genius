@@ -105,6 +105,17 @@ impl Operation {
     }
 }
 
+/// `npm run build -- --base=/<repo>/`: a production build for a sub-path (GitHub project
+/// pages) without touching the project's vite.config. `base` must be `/` or `/<name>/`.
+pub fn build_args_with_base(base: &str) -> Result<Vec<String>> {
+    let inner = base.strip_prefix('/').and_then(|b| b.strip_suffix('/'));
+    let ok = base == "/" || inner.is_some_and(|n| !n.is_empty() && n.len() <= 100 && n != "." && n != ".." && !n.starts_with('-') && n.chars().all(|c| c.is_ascii_alphanumeric() || "._-".contains(c)));
+    if !ok {
+        return Err(GeniusError::Validation(format!("invalid base path {base:?}")));
+    }
+    Ok(vec!["run".into(), "build".into(), "--".into(), format!("--base={base}")])
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RunInfo {
@@ -419,6 +430,24 @@ impl ProcessManager {
         }
     }
 
+    /// Production build for a sub-path (see [`build_args_with_base`]); start and wait,
+    /// honouring `cancel`. Recorded like any other build run.
+    pub async fn run_build_with_base(&self, project_id: &str, task_id: Option<&str>, cwd: &Path, base: &str, reason: &str, cancel: &CancellationToken) -> Result<RunOutcome> {
+        let args = build_args_with_base(base)?;
+        let npm = self.npm_path()?;
+        if !cwd.join("package.json").is_file() {
+            return Err(GeniusError::Validation("This project has no package.json, so npm commands cannot run.".into()));
+        }
+        let info = self.spawn(project_id, task_id, cwd, Operation::Build, reason, &npm, &args, None).await?;
+        tokio::select! {
+            o = self.wait(&info.id) => o,
+            _ = cancel.cancelled() => {
+                self.stop(&info.id).await?;
+                self.wait(&info.id).await
+            }
+        }
+    }
+
     pub async fn stop(&self, run_id: &str) -> Result<()> {
         let token = {
             let runs = self.runs.lock().unwrap();
@@ -636,6 +665,15 @@ mod tests {
         let dev = Operation::Dev.npm_args(Some(5000), Some("node_modules/.genius/preview.config.mjs"));
         assert!(dev.ends_with(&["--config".into(), "node_modules/.genius/preview.config.mjs".into()]));
         assert_eq!(Operation::Install.npm_args(None, None)[0], "install");
+    }
+
+    #[test]
+    fn base_path_build_args() {
+        assert_eq!(build_args_with_base("/my-app/").unwrap(), vec!["run", "build", "--", "--base=/my-app/"]);
+        assert_eq!(build_args_with_base("/").unwrap().last().unwrap(), "--base=/");
+        for bad in ["my-app", "/my-app", "/a/b/", "/../", "//", "/x y/", "/--config=x/", "/-x/", ""] {
+            assert!(build_args_with_base(bad).is_err(), "{bad}");
+        }
     }
 
     #[test]

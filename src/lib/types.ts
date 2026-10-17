@@ -121,6 +121,7 @@ export interface ProjectStatus {
   lastInstall?: RunStatusSummary;
   lastTypecheck?: RunStatusSummary;
   publish?: { repo: string; step: string; url?: string; verified?: boolean; at: string; visibility: string };
+  deploy?: DeployStatus;
 }
 
 export interface Project {
@@ -427,6 +428,33 @@ export interface PreviewEvent {
   status: 'starting' | 'ready' | 'stopped' | 'failed';
   url?: string;
   error?: string;
+}
+
+/** A runtime problem seen in the live preview (reported by the injected preview script). */
+export interface PreviewRuntimeError {
+  kind: 'error' | 'rejection' | 'console' | 'resource' | 'blank' | 'vite';
+  message: string;
+  /** File/URL, or "console.error" / "console.warn" for console calls. */
+  source?: string | null;
+  line?: number | null;
+  column?: number | null;
+  stack?: string | null;
+  page: string;
+  at: string;
+  count: number;
+}
+
+/** GitHub Pages deployment of a project (persisted in project status as `deploy`). */
+export interface DeployStatus {
+  step: 'building' | 'uploading' | 'enabling' | 'deployed' | 'failed';
+  repo: string | null;
+  /** Live site of the last successful deploy. */
+  url: string | null;
+  head: string | null;
+  at: string;
+  deployedAt: string | null;
+  error: string | null;
+  running: boolean;
 }
 
 // ---- conversations & agent

@@ -88,6 +88,10 @@ export const api = {
   startPreview: (projectId: string) => call<string>('start_preview', { projectId }),
   stopPreview: (projectId: string) => call<void>('stop_preview', { projectId }),
   previewStatus: (projectId: string) => call<string | null>('preview_status', { projectId }),
+  /** Forward runtime errors posted by the preview page; returns the merged current list. */
+  reportPreviewErrors: (projectId: string, errors: T.PreviewRuntimeError[]) => call<T.PreviewRuntimeError[]>('report_preview_errors', { projectId, errors }),
+  previewErrors: (projectId: string) => call<T.PreviewRuntimeError[]>('preview_errors', { projectId }),
+  clearPreviewErrors: (projectId: string) => call<void>('clear_preview_errors', { projectId }),
 
   // activity, export
   listActivity: (projectId: string | null, limit = 1500) => call<T.ActivityEvent[]>('list_activity', { projectId, limit }),
@@ -172,4 +176,7 @@ export const api = {
   supabaseGenerateTypes: (projectId: string) => call<{ changesetId: string | null; note?: string }>('supabase_generate_types', { projectId }),
 
   publish: (projectId: string, request: T.PublishRequest) => call<{ url: string; repo: string; branch: string; verified: boolean }>('publish', { projectId, request }),
+  /** Build and deploy the website to GitHub Pages (a task; progress via deployStatus). */
+  deployPages: (projectId: string) => call<T.TaskInfo>('deploy_pages', { projectId }),
+  deployStatus: (projectId: string) => call<T.DeployStatus | null>('deploy_status', { projectId }),
 };
