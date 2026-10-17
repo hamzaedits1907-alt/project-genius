@@ -15,6 +15,26 @@ pub enum Policy {
     Auto,
 }
 
+/// How hard the model should work: trades speed for quality (output budget, reasoning, model choice).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum Effort {
+    Fast,
+    Balanced,
+    #[default]
+    Max,
+}
+
+impl Effort {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Effort::Fast => "fast",
+            Effort::Balanced => "balanced",
+            Effort::Max => "max",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase", default)]
 pub struct ApprovalPolicies {
@@ -39,6 +59,11 @@ impl Default for ApprovalPolicies {
 pub struct Settings {
     pub base_url: String,
     pub model: Option<String>,
+    /// "auto": Genius picks the best available model per job; "manual": always `model`.
+    pub model_mode: String,
+    pub effort: Effort,
+    /// Let reasoning models think before answering (reasoning is streamed to the UI).
+    pub thinking: bool,
     pub temperature: f32,
     pub max_tokens: u32,
     pub context_budget_chars: usize,
@@ -65,8 +90,11 @@ impl Default for Settings {
         Self {
             base_url: DEFAULT_BASE_URL.into(),
             model: None,
+            model_mode: "auto".into(),
+            effort: Effort::Max,
+            thinking: true,
             temperature: 0.2,
-            max_tokens: 8192,
+            max_tokens: 16384,
             context_budget_chars: 60_000,
             workspace_dir: None,
             approvals: ApprovalPolicies::default(),
@@ -95,13 +123,21 @@ impl Settings {
         db.set_setting(KEY, &serde_json::to_value(self)?)
     }
 
+    /// Auto model routing (anything but an explicit "manual").
+    pub fn is_auto(&self) -> bool {
+        self.model_mode != "manual"
+    }
+
     pub fn validate(&self) -> Result<()> {
         normalize_base_url(&self.base_url).map_err(GeniusError::Validation)?;
         if !(0.0..=2.0).contains(&self.temperature) {
             return Err(GeniusError::Validation("temperature must be between 0 and 2".into()));
         }
-        if !(256..=65536).contains(&self.max_tokens) {
-            return Err(GeniusError::Validation("max tokens must be between 256 and 65536".into()));
+        if !(256..=131_072).contains(&self.max_tokens) {
+            return Err(GeniusError::Validation("max tokens must be between 256 and 131072".into()));
+        }
+        if !["auto", "manual"].contains(&self.model_mode.as_str()) {
+            return Err(GeniusError::Validation("model mode must be \"auto\" or \"manual\"".into()));
         }
         if !(4_000..=400_000).contains(&self.context_budget_chars) {
             return Err(GeniusError::Validation("context budget must be between 4,000 and 400,000 characters".into()));
@@ -153,7 +189,11 @@ mod tests {
         assert!(s.save(&db).is_err());
         let s = Settings { assistant_name: "x".repeat(41), ..Default::default() };
         assert!(s.save(&db).is_err());
-        let s = Settings { ui_mode: "advanced".into(), assistant_name: "Nova".into(), ..Default::default() };
+        let s = Settings { model_mode: "smart".into(), ..Default::default() };
+        assert!(s.save(&db).is_err());
+        let s = Settings { max_tokens: 131_073, ..Default::default() };
+        assert!(s.save(&db).is_err());
+        let s = Settings { ui_mode: "advanced".into(), assistant_name: "Nova".into(), max_tokens: 131_072, model_mode: "manual".into(), ..Default::default() };
         assert!(s.save(&db).is_ok());
     }
 
@@ -169,6 +209,11 @@ mod tests {
         assert_eq!(v["autoCheckUpdates"], true);
         assert_eq!(v["internetAccess"], true);
         assert_eq!(v["assistantName"], "Genius");
+        assert_eq!(v["modelMode"], "auto");
+        assert_eq!(v["effort"], "max");
+        assert_eq!(v["thinking"], true);
+        let e: Effort = serde_json::from_value(serde_json::json!("balanced")).unwrap();
+        assert_eq!(e, Effort::Balanced);
     }
 
     #[test]
@@ -177,8 +222,11 @@ mod tests {
         db.set_setting(KEY, &serde_json::json!({"model": "x/y"})).unwrap();
         let s = Settings::load(&db).unwrap();
         assert_eq!(s.model.as_deref(), Some("x/y"));
-        assert_eq!(s.max_tokens, 8192);
+        assert_eq!(s.max_tokens, 16384);
         assert_eq!(s.ui_mode, "simple");
+        assert_eq!(s.model_mode, "auto", "existing settings without the field switch to auto");
+        assert_eq!(s.effort, Effort::Max);
+        assert!(s.thinking);
         assert!(s.internet_access);
     }
 }

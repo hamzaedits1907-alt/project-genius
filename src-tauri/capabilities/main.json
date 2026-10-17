@@ -33,6 +33,8 @@
     "allow-list-models",
     "allow-probe-model",
     "allow-select-model",
+    "allow-resolved-models",
+    "allow-usage-summary",
     "allow-detect-tools",
     "allow-app-info",
     "allow-list-projects",

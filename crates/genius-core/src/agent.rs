@@ -813,9 +813,7 @@ impl Genius {
         if conv.project_id != project_id {
             return Err(GeniusError::Validation("That conversation belongs to another project.".into()));
         }
-        if self.settings()?.model.is_none() {
-            return Err(crate::nvidia::ProviderError::NoModel.into());
-        }
+        self.has_usable_model()?;
         self.client()?;
         let title = format!("Genius: {}", req.message.trim().lines().next().unwrap_or("").chars().take(60).collect::<String>());
         let me = self.clone();

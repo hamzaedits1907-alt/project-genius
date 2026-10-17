@@ -166,7 +166,7 @@ impl Genius {
         let idea = validate_idea(text)?;
         let (client, _s) = self.client()?;
         let model = self.enhance_model()?;
-        let opts = ChatOptions { temperature: TEMPERATURE, top_p: 0.9, max_tokens: MAX_TOKENS, stream: false };
+        let opts = ChatOptions { temperature: TEMPERATURE, top_p: 0.9, max_tokens: MAX_TOKENS, stream: false, thinking: Some(false), reasoning_effort: Some("low".into()) };
         let mut ev = self.bus.start(None, None, EventKind::Ai, EventStatus::Running, format!("Improving your prompt ({model})"), json!({ "model": model, "purpose": "enhance prompt", "promptChars": idea.len() }));
         match client.chat(&model, &enhance_messages(idea), &opts, cancel, |_| {}).await {
             Ok(r) => {

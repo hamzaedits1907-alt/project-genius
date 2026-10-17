@@ -760,8 +760,7 @@ pre.block { margin: 0; padding: 10px 12px; background: var(--bg-0); border: 1px 
   .bp-card:hover .bp-art { transform: none; }
 }
 
-/* ======================================================================
-   Command palette
+/* ===============================================================   Command palette
    ====================================================================== */
 .palette-backdrop { place-items: start center; padding-top: min(14vh, 120px); z-index: 60; }
 .palette { width: min(640px, calc(100vw - 32px)); max-height: min(560px, calc(100vh - 140px)); display: flex; flex-direction: column; background: var(--bg-1); border: 1px solid var(--border-strong); border-radius: var(--r-xl); box-shadow: var(--shadow), 0 0 0 1px rgba(124, 92, 255, 0.08); overflow: hidden; animation: rise 0.16s var(--ease); }
@@ -784,3 +783,12 @@ pre.block { margin: 0; padding: 10px 12px; background: var(--bg-0); border: 1px 
   .palette-foot { display: none; }
   .palette-sub { display: none; }
 }
+=======
+   AI provider: auto model routing
+   ====================================================================== */
+.choice { display: flex; gap: 10px; align-items: flex-start; padding: 10px 12px; border: 1px solid var(--border); border-radius: var(--r); cursor: pointer; background: var(--bg-2); }
+.choice.on { border-color: var(--accent); background: var(--accent-soft); }
+.choice input { accent-color: var(--accent); margin-top: 3px; }
+.auto-models { width: 100%; border-collapse: collapse; }
+.auto-models td { padding: 6px 8px; border-top: 1px solid var(--border); vertical-align: top; }
+.auto-models td:first-child { width: 42%; color: var(--text-2); }

@@ -25,6 +25,7 @@ pub mod process;
 pub mod pages;
 pub mod redact;
 pub mod runtime_errors;
+pub mod router;
 pub mod scaffold;
 pub mod secrets;
 pub mod secretscan;

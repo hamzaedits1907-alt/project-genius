@@ -75,6 +75,18 @@ pub fn select_model(g: G, model: String) -> Result<Settings> {
     g.select_model(&model)
 }
 
+/// Models auto mode uses per job: `{ agent: [..], code, plan, subagent, quick, vision }`.
+#[tauri::command]
+pub async fn resolved_models(g: G<'_>) -> Result<Value> {
+    g.resolved_models().await
+}
+
+/// Token usage of the project's recent AI calls.
+#[tauri::command]
+pub fn usage_summary(g: G, project_id: String) -> Result<Value> {
+    g.usage_summary(&project_id)
+}
+
 #[tauri::command]
 pub async fn detect_tools() -> Vec<ToolStatus> {
     genius_core::process::detect_tools().await

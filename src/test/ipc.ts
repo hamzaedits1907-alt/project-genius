@@ -19,7 +19,7 @@ export const settings: T.Settings = {
   autoCheckUpdates: true,
   internetAccess: true,
   assistantName: 'Genius',
-  modelMode: 'manual',
+  modelMode: 'auto',
   effort: 'max',
   thinking: true,
 };
@@ -68,6 +68,8 @@ export const defaults: Record<string, Handler> = {
   list_models: () => ({ models: [], fetchedAt: null, source: 'cache', stale: true, baseUrl: settings.baseUrl, probes: {} }),
   detect_tools: () => [],
   enhance_prompt: (_c, a) => `A polished web app for: ${String(a.text).trim()}.\nPages/sections: home, details\nKey features: search, favourites\nData: saved in localStorage (sample data labelled as sample)`,
+  resolved_models: (): T.ResolvedModels => ({ agent: ['nvidia/nemotron-3-super-120b-a12b', 'qwen/qwen3-coder-480b-a35b-instruct'], code: ['nvidia/nemotron-3-super-120b-a12b'], plan: ['nvidia/nemotron-3-super-120b-a12b'], subagent: ['nvidia/nemotron-3-super-120b-a12b'], quick: ['nvidia/nemotron-3-super-120b-a12b'], vision: [] }),
+  usage_summary: (): T.UsageSummary => ({ promptTokens: 0, completionTokens: 0, totalTokens: 0, calls: 0, byModel: {} }),
   list_projects: () => [project],
   get_project: () => project,
   open_project: () => project,
