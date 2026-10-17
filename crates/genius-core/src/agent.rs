@@ -300,36 +300,51 @@ impl Genius {
         let mut messages = self.agent_prompt(project_id, conv_id, Role::Main, req.mode)?;
         messages.push(self.user_turn(project_id, req, &attachments)?);
 
-        let result = self.agent_loop(&mut run, &mut messages, cancel).await;
-        let final_text = match result {
-            Ok(t) => t,
-            Err(e) => {
-                let msg = format!("I stopped because of an error: {e}");
-                let report = self.build_report(&run, None, &json!(null), Some(&e.to_string()), "");
-                self.db.add_message_in(conv_id, project_id, Some(task_id), "assistant", "error", &msg, &json!({ "report": report }))?;
-                return Err(e);
+        // Act, validate, and give the model a bounded chance to correct a blocked proposal:
+        // a proposal that would break the project never reaches the user's files.
+        let mut validation_rounds = 0;
+        let (final_text, parsed, explanation, changes, rejected, check) = loop {
+            let final_text = match self.agent_loop(&mut run, &mut messages, cancel).await {
+                Ok(t) => t,
+                Err(e) => {
+                    let msg = format!("I stopped because of an error: {e}");
+                    let report = self.build_report(&run, None, &json!(null), Some(&e.to_string()), "");
+                    self.db.add_message_in(conv_id, project_id, Some(task_id), "assistant", "error", &msg, &json!({ "report": report }))?;
+                    return Err(e);
+                }
+            };
+            let events = crate::blocks::parse_all(&final_text);
+            let parsed = collect(&events);
+            let explanation = if parsed.explanation.trim().is_empty() { final_text.clone() } else { parsed.explanation.clone() };
+            let wants_changes = !parsed.files.is_empty() || !parsed.deletes.is_empty();
+            if !wants_changes || req.mode == AgentMode::Plan {
+                let mut note = String::new();
+                if wants_changes {
+                    note = "Plan mode: file changes in the answer were not proposed. Switch to Build mode and ask me to go ahead.".into();
+                }
+                let report = self.build_report(&run, None, &json!(null), None, &explanation);
+                let kind = if run.steps.iter().any(|s| s.tool == "delegate") || req.mode == AgentMode::Plan { "plan" } else { "answer" };
+                let content = if note.is_empty() { explanation.clone() } else { format!("{explanation}\n\n_{note}_") };
+                self.db.add_message_in(conv_id, project_id, Some(task_id), "assistant", kind, &content, &json!({ "report": report }))?;
+                return Ok(json!({ "kind": kind, "steps": run.steps.len() }));
             }
+            let ws = self.workspace(project_id)?;
+            let crate::app::SafeChanges { changes, rejected, check } = self.safe_changes(&ws, &parsed.files, &parsed.deletes)?;
+            if check.ok() || changes.is_empty() {
+                break (final_text, parsed, explanation, changes, rejected, check);
+            }
+            self.bus.record(Some(project_id), Some(task_id), EventKind::Changeset, EventStatus::Failed, format!("Blocked an invalid proposal ({} problem(s)); asking the model to correct it", check.blockers.len()), json!({ "blockers": check.blockers, "round": validation_rounds + 1 }));
+            if validation_rounds >= 2 {
+                let report = self.build_report(&run, None, &json!({ "blocked": check.blockers }), None, &explanation);
+                let content = format!("I could not produce a safe version of this change, so nothing was modified. The proposal was blocked because:\n- {}\n\nTry rephrasing the request or splitting it into smaller steps.", check.blockers.join("\n- "));
+                self.db.add_message_in(conv_id, project_id, Some(task_id), "assistant", "error", &content, &json!({ "report": report, "blocked": check.blockers }))?;
+                return Err(GeniusError::Validation(format!("proposal blocked: {}", check.blockers.join("; "))));
+            }
+            validation_rounds += 1;
+            messages.push(ChatMessage::assistant(final_text));
+            messages.push(crate::prompts::validation_feedback(&check.blockers));
         };
-
-        // Act: file blocks in the final answer become a reviewable changeset.
-        let events = crate::blocks::parse_all(&final_text);
-        let parsed = collect(&events);
-        let explanation = if parsed.explanation.trim().is_empty() { final_text.clone() } else { parsed.explanation.clone() };
-        let wants_changes = !parsed.files.is_empty() || !parsed.deletes.is_empty();
-        if !wants_changes || req.mode == AgentMode::Plan {
-            let mut note = String::new();
-            if wants_changes {
-                note = "Plan mode: file changes in the answer were not proposed. Switch to Build mode and ask me to go ahead.".into();
-            }
-            let report = self.build_report(&run, None, &json!(null), None, &explanation);
-            let kind = if run.steps.iter().any(|s| s.tool == "delegate") || req.mode == AgentMode::Plan { "plan" } else { "answer" };
-            let content = if note.is_empty() { explanation.clone() } else { format!("{explanation}\n\n_{note}_") };
-            self.db.add_message_in(conv_id, project_id, Some(task_id), "assistant", kind, &content, &json!({ "report": report }))?;
-            return Ok(json!({ "kind": kind, "steps": run.steps.len() }));
-        }
-
-        let ws = self.workspace(project_id)?;
-        let (changes, rejected) = self.safe_changes(&ws, &parsed.files, &parsed.deletes)?;
+        let _ = &final_text;
         if changes.is_empty() {
             let report = self.build_report(&run, None, &json!({ "rejectedPaths": rejected }), None, &explanation);
             let content = format!("{explanation}\n\n_No changes were proposed: the files are identical to the current ones{}._", if rejected.is_empty() { "" } else { " or were rejected by the workspace safety checks" });
@@ -355,7 +370,7 @@ impl Genius {
         let policy = self.settings()?.approvals.apply_ai_edits;
         let outcome = self.finish_proposal(project_id, task_id, &cs, policy, cancel, json!({ "rejectedPaths": rejected, "incomplete": parsed.incomplete, "review": review })).await?;
         let report = self.build_report(&run, Some(&cs), &outcome, None, &explanation);
-        let meta = json!({ "changesetId": cs.id, "files": cs.files, "review": review, "report": report, "rejectedPaths": rejected });
+        let meta = json!({ "changesetId": cs.id, "files": cs.files, "review": review, "report": report, "rejectedPaths": rejected, "warnings": check.warnings, "validationRounds": validation_rounds, "addedPackages": check.added_packages });
         self.db.add_message_in(conv_id, project_id, Some(task_id), "assistant", "proposal", &explanation, &meta)?;
         Ok(json!({ "kind": "proposal", "changesetId": cs.id, "applied": outcome.get("applied"), "verify": outcome.get("verify") }))
     }
@@ -562,9 +577,6 @@ impl Genius {
                     Some("typecheck") => Operation::Typecheck,
                     other => return Err(GeniusError::Validation(format!("check must be build, test or typecheck (got {other:?})"))),
                 };
-                if self.needs_install(pid)? {
-                    return Err(GeniusError::Validation("dependencies are not installed or package.json changed; ask the user to press Install (or apply a change, which installs with approval)".into()));
-                }
                 let out = self.run_operation(pid, Some(run.task_id), op, &format!("Requested by the {} agent", run.role.as_str()), false, cancel).await?;
                 let text = format!("status: {}\nexit code: {}\nduration: {} ms\noutput tail:\n{}", out.status, out.exit_code.map(|c| c.to_string()).unwrap_or_else(|| "none".into()), out.duration_ms, clip(&out.output_tail, 8000));
                 Ok(ToolOutcome { ok: out.ok(), summary: format!("{} {} (exit {})", op.label(), out.status, out.exit_code.map(|c| c.to_string()).unwrap_or_else(|| "none".into())), text, data: json!({ "check": a.check, "status": out.status, "exitCode": out.exit_code, "runId": out.id }) })

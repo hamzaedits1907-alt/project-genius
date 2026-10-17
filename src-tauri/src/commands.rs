@@ -7,6 +7,8 @@ use genius_core::approvals::ApprovalRequest;
 use genius_core::changes::{Changeset, FileChange};
 use genius_core::context::ContextPlan;
 use genius_core::db::{MessageRow, ProjectRow, RunRow};
+use genius_core::deps::DepStatus;
+use genius_core::preview::PreviewState;
 use genius_core::events::ActivityEvent;
 use genius_core::export::ExportResult;
 use genius_core::git::{Branch, Commit, RepoStatus};
@@ -282,9 +284,39 @@ pub fn needs_install(g: G, project_id: String) -> Result<bool> {
     g.needs_install(&project_id)
 }
 
+/// Dependency state computed from disk (never a cached flag).
 #[tauri::command]
-pub async fn start_preview(g: G<'_>, project_id: String) -> Result<String> {
-    g.start_preview(&project_id, None).await
+pub fn dep_status(g: G, project_id: String) -> Result<DepStatus> {
+    g.dep_status(&project_id)
+}
+
+/// Starts (or returns the already starting/running) preview; progress arrives as events.
+#[tauri::command]
+pub fn start_preview(g: G, project_id: String) -> Result<PreviewState> {
+    g.start_preview(&project_id)
+}
+
+#[tauri::command]
+pub fn restart_preview(g: G, project_id: String) -> Result<PreviewState> {
+    g.restart_preview(&project_id)
+}
+
+#[tauri::command]
+pub fn preview_state(g: G, project_id: String) -> PreviewState {
+    g.preview_state(&project_id)
+}
+
+/// "Fix automatically": bounded check → repair → re-check loop.
+#[tauri::command]
+pub fn start_auto_fix(g: G, project_id: String, runtime_error: Option<String>) -> Result<TaskInfo> {
+    g.start_auto_fix(&project_id, runtime_error)
+}
+
+/// Create a project from a description and build it end to end (or stop after the plan).
+#[tauri::command]
+pub fn start_create_app(g: G, name: Option<String>, description: String, review_plan: bool) -> Result<Value> {
+    let (project, task) = g.start_create_app(name.as_deref(), &description, review_plan)?;
+    Ok(json!({ "project": project, "task": task }))
 }
 
 #[tauri::command]

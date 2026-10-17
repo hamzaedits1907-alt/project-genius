@@ -22,6 +22,13 @@ pub fn trusted_scripts() -> Vec<(&'static str, &'static str)> {
     ]
 }
 
+/// Packages the template itself declares (trusted: installing them needs no extra approval).
+pub fn template_packages() -> Vec<String> {
+    let f = files("x", "");
+    let pkg: serde_json::Value = serde_json::from_str(&f[0].1).unwrap_or_default();
+    crate::deps::declared(&pkg).into_keys().collect()
+}
+
 pub fn slugify(name: &str) -> String {
     let mut s: String = name
         .to_lowercase()

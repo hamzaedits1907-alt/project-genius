@@ -409,6 +409,12 @@ impl Db {
         Ok(())
     }
 
+    /// Rewrite a stored project path (used to normalise legacy Windows `\\?\\` paths).
+    pub fn update_project_path(&self, id: &str, path: &str) -> Result<()> {
+        self.conn().execute("UPDATE projects SET path = ?2 WHERE id = ?1", params![id, path])?;
+        Ok(())
+    }
+
     pub fn rename_project(&self, id: &str, name: &str, description: &str) -> Result<()> {
         self.conn().execute(
             "UPDATE projects SET name = ?2, description = ?3, updated_at = ?4 WHERE id = ?1",

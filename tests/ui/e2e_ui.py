@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
 """Drive the real Genius desktop app through WebDriver (tauri-driver + WebKitWebDriver).
 
-Covers the MVP workflow through the actual UI: settings → key → model picker → test
-connection → describe app → plan → generate (with approval dialog) → live preview
-(interacting with the running app inside the iframe) → change request → diff review →
-apply → history → Git init/commit → restart and reopen.
+Covers the beginner workflow through the actual UI: settings → key → model picker → test
+connection → describe the app on Home → one-step creation (plan, code, real npm install,
+build, dev server) → live preview (interacting with the running app inside the iframe) →
+element picker → follow-up change applied from the conversation → a blocked proposal
+corrected + new-package approval + preview restart → a broken edit repaired with
+"Fix automatically" → terminal, history, Git commit, readiness → restart and reopen.
 
 Only the NVIDIA API is replaced by tests/ui/mock_nvidia.py. Requires: Xvfb, tauri-driver,
 WebKitWebDriver, selenium, Node/npm, and a debug build (npx tauri build --debug --no-bundle).
@@ -19,6 +21,7 @@ import time
 
 from selenium import webdriver
 from selenium.webdriver.common.by import By
+from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.common.options import ArgOptions
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.support.ui import WebDriverWait
@@ -145,24 +148,15 @@ try:
     shot(d, "settings-connected")
     log("settings OK")
 
-    # ---- Create project → plan
-    click(d, "//button[@aria-label='New project']")
-    set_input(wait(d, "//input[@id='pname']"), "Genius Todo")
-    set_input(wait(d, "//textarea[@id='pdesc']"), "A small todo list where I can add tasks and check them off.")
-    click(d, btn("Create plan"))
-    wait(d, "//h2[.='Genius Todo']", 60)
-    text_present(d, "Add tasks")
-    shot(d, "plan-review")
-    log("plan OK")
-
-    # ---- Generate: approval for npm install, then real build and preview
-    click(d, "//button[contains(., 'Generate application')]")
-    wait(d, "//*[@role='dialog'][@aria-label='Approval required']", 90)
-    text_present(d, "npm install --no-audit --no-fund")
-    shot(d, "approval-install")
-    click(d, "//*[@role='dialog']//button[.='Approve']")
-    log("install approved; waiting for real install + build + dev server…")
-    frame = wait(d, "//iframe[@title='Application preview']", 300)
+    # ---- Describe the app on Home → one step: plan → code → install → build → preview
+    click(d, "//button[@aria-label='Home']")
+    set_input(wait(d, "//textarea[@aria-label='Describe your app']"), "A small todo list where I can add tasks and check them off.")
+    shot(d, "home-describe")
+    click(d, btn("Create"))
+    text_present(d, "Ask Genius", 30)
+    shot(d, "workspace-creating")
+    log("creating: waiting for real plan → files → npm install → build → dev server…")
+    frame = wait(d, "//iframe[@title='Application preview']", 360)
     time.sleep(2)
     shot(d, "preview-running")
     d.switch_to.frame(frame)
@@ -179,8 +173,12 @@ try:
     d.execute_script("[...document.querySelectorAll('button')].find(b => b.textContent === 'Add task').click()")
     wait(d, "//li[contains(., 'Write the report')]")
     d.switch_to.default_content()
+    text_present(d, "Your app is ready", 120)
+    text_present(d, "Preview is running at http://127.0.0.1:")
+    text_present(d, "Production build succeeded")
+    wait(d, "//header//span[contains(@class,'badge')][contains(., 'Preview running')]")
     shot(d, "preview-interacted")
-    log("generated app runs and responds inside the preview")
+    log("one-step creation: the generated app runs and responds inside the preview")
 
     # ---- Element picker: select the heading inside the running app
     click(d, "//button[@aria-label='Select an element to change']")
@@ -191,30 +189,73 @@ try:
     d.switch_to.default_content()
     text_present(d, "Selected in preview:", 15)
     shot(d, "element-picked")
+    click(d, "//button[@aria-label='Clear selected element']")
     log("element picker returned the clicked element")
 
-    # ---- Change request → review diff → apply → verified build
-    click(d, "//button[@role='tab'][contains(., 'Assistant')]")
+    # ---- Follow-up in the same conversation → Apply in the chat → preview updates
     set_input(wait(d, "//textarea[@aria-label='Change request']"), "Add a footer that says Made with Genius")
-    time.sleep(0.8)  # let the context preview compute
     click(d, btn("Send"))
-    wait(d, "//button[starts-with(normalize-space(.), 'Apply 1 file')]", 90)
-    time.sleep(0.5)
-    shot(d, "review-proposed")
-    # The conversation records the agent's real tool use and an honest report.
+    apply_xp = "//div[contains(@class,'task-card')]//button[normalize-space(.)='Apply']"
+    wait(d, apply_xp, 90)
     text_present(d, "Proposed changes")
     text_present(d, "What Genius did")
     text_present(d, "Files read: src/App.tsx")
-    click(d, "//button[starts-with(normalize-space(.), 'Apply 1 file')]")
-    wait(d, "//*[contains(@class,'ev')]//*[contains(., 'Production build')]", 30)
-    WebDriverWait(d, 240).until(lambda drv: drv.find_elements(By.XPATH, "//header//span[contains(@class,'badge')][contains(., 'build succeeded')]") and not drv.find_elements(By.XPATH, "//header//span[contains(@class,'badge run')]"))
-    click(d, "//button[@role='tab'][contains(., 'Preview')]")
-    frame = wait(d, "//iframe[@title='Application preview']")
+    shot(d, "change-proposed")
+    click(d, apply_xp)
+    frame = wait(d, "//iframe[@title='Application preview']", 60)
     d.switch_to.frame(frame)
-    wait(d, "//footer[contains(., 'Made with Genius')]", 60)
+    wait(d, "//footer[contains(., 'Made with Genius')]", 120)
     d.switch_to.default_content()
     shot(d, "preview-after-change")
-    log("change applied, build verified, preview hot-reloaded")
+    log("change applied in the same project; preview hot-reloaded")
+
+    # ---- A proposal that imports an undeclared package is blocked and corrected; the new
+    #      package needs approval; dependencies are recalculated and the preview restarts.
+    WebDriverWait(d, 240).until(lambda drv: not drv.find_elements(By.XPATH, "//header//span[contains(@class,'badge run')]"))
+    set_input(wait(d, "//textarea[@aria-label='Change request']"), "Show the current year using dayjs")
+    click(d, btn("Send"))
+    wait(d, apply_xp, 120)
+    shot(d, "dayjs-proposed")
+    click(d, apply_xp)
+    wait(d, "//*[@role='dialog'][@aria-label='Approval required']", 120)
+    text_present(d, "Install 1 new package(s): dayjs")
+    shot(d, "approval-new-package")
+    click(d, "//*[@role='dialog']//button[.='Approve']")
+    frame = wait(d, "//iframe[@title='Application preview']", 300)
+    d.switch_to.frame(frame)
+    wait(d, "//p[contains(@class,'year')][contains(., 'Year 2024')]", 300)
+    d.switch_to.default_content()
+    click(d, "//button[@role='tab'][contains(., 'Activity')]")
+    text_present(d, "Blocked an invalid proposal", 15)
+    shot(d, "preview-with-new-package")
+    log("blocked proposal corrected; new package approved, installed; preview restarted")
+
+    # ---- Advanced tools: break the app in the editor, then Fix automatically
+    WebDriverWait(d, 240).until(lambda drv: not drv.find_elements(By.XPATH, "//header//span[contains(@class,'badge run')]"))
+    click(d, btn("Show code & tools"))
+    click(d, "//div[contains(@class,'tabs')]//div[@role='tab'][@title='src/App.tsx']")
+    editor = wait(d, "//div[contains(@class,'cm-content')]", 30)
+    editor.click()
+    editor.send_keys(Keys.CONTROL, Keys.HOME)
+    # a side-effect import is never elided (an unused `import x from` would be dropped by
+    # esbuild, and the dev preview would rightly keep working)
+    editor.send_keys("import 'left-pad';")
+    editor.send_keys(Keys.ENTER)
+    editor.send_keys(Keys.CONTROL, "s")
+    click(d, "//button[@role='tab'][contains(., 'Preview')]")
+    text_present(d, "Your website has an error", 60)
+    text_present(d, "left-pad")
+    shot(d, "preview-compile-error")
+    click(d, "//div[contains(@class,'pv-problem')]//button[normalize-space(.)='Fix automatically']")
+    wait(d, "//*[@role='dialog'][@aria-label='Approval required']", 180)
+    text_present(d, "left-pad")
+    click(d, "//*[@role='dialog']//button[.='Approve']")
+    click(d, "//button[@role='tab'][contains(., 'Assistant')]")
+    text_present(d, "Fixed. I applied 1 change(s) and verified the result", 360)
+    shot(d, "fixed-automatically")
+    click(d, "//button[@role='tab'][contains(., 'Preview')]")
+    wait(d, "//iframe[@title='Application preview']", 60)
+    log("Fix automatically repaired the missing dependency and verified it")
 
     # ---- Terminal + history
     click(d, "//button[@role='tab'][contains(., 'Terminal')]")
@@ -248,12 +289,13 @@ try:
 
     # ---- Restart: project persisted
     d = session()
-    wait(d, "//h3[.='Genius Todo']", 30)
+    wait(d, "//h3[.='Small Todo List']", 30)  # name derived from the description
     text_present(d, "build succeeded")
     shot(d, "home-after-restart")
     click(d, "//*[contains(@class,'project-card')]")
     text_present(d, "Add a footer that says Made with Genius", 30)
     text_present(d, "Added a footer below the list")
+    text_present(d, "Show the current year using dayjs")
     shot(d, "conversation-after-restart")
     log("conversation history persisted across restart")
     d.quit()

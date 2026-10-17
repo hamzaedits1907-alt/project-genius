@@ -1,5 +1,5 @@
 // Pure, framework-free state logic (unit tested in logic.test.ts).
-import type { ActivityEvent, EventKind, FileEntry, FileStreamEvent } from './types';
+import type { ActivityEvent, EventKind, FileEntry, FileStreamEvent, PreviewState, PreviewStatus } from './types';
 
 // ---------------------------------------------------------------- activity
 
@@ -190,4 +190,91 @@ export const STATUS_LABEL: Record<string, string> = {
 export function firstComponent(stack: string): string | null {
   const m = /^\s*(?:at\s+)?([A-Z][\w$.]*)/m.exec(stack.trim());
   return m ? m[1] : null;
+}
+
+// ---------------------------------------------------------------- preview
+
+
+export function idlePreview(projectId: string | null): PreviewState {
+  return { projectId: projectId ?? '', status: 'idle', message: 'The preview is not running.', url: null, port: null, runId: null, problem: null, modulesChecked: 0, generation: 0, inspector: false, updatedAt: '' };
+}
+
+/**
+ * Accept a backend preview state only if it belongs to the open project and is not older
+ * than what is shown (events of a previous server generation never overwrite a newer one).
+ */
+export function applyPreviewState(cur: PreviewState, next: PreviewState, openProjectId: string | null): PreviewState {
+  if (!openProjectId || next.projectId !== openProjectId) return cur;
+  if (cur.projectId === next.projectId && next.generation < cur.generation) return cur;
+  return next;
+}
+
+export const PREVIEW_STEPS: { status: PreviewStatus; label: string }[] = [
+  { status: 'checking', label: 'Check project' },
+  { status: 'installing', label: 'Install dependencies' },
+  { status: 'starting', label: 'Start server' },
+  { status: 'compiling', label: 'Compile app' },
+  { status: 'ready', label: 'Ready' },
+];
+
+export function previewBusy(s: PreviewStatus): boolean {
+  return s === 'checking' || s === 'installing' || s === 'starting' || s === 'compiling' || s === 'stopping';
+}
+
+/** The iframe may show the page only when a real server of this run is answering. */
+export function canShowFrame(p: PreviewState): boolean {
+  return !!p.url && !!p.runId && (p.status === 'ready' || (p.status === 'failed' && p.problem?.stage === 'compile'));
+}
+
+export function previewLabel(p: PreviewState): { text: string; tone: 'ok' | 'bad' | 'run' | 'idle' } {
+  if (p.status === 'ready') return { text: 'Preview running', tone: 'ok' };
+  if (p.status === 'failed') return { text: p.problem?.stage === 'compile' ? 'App has an error' : 'Preview failed', tone: 'bad' };
+  if (previewBusy(p.status)) return { text: p.status === 'stopping' ? 'Stopping…' : 'Starting…', tone: 'run' };
+  return { text: 'Preview stopped', tone: 'idle' };
+}
+
+// ---------------------------------------------------------------- beginner activity summary
+
+export interface ActivityItem {
+  id: string;
+  kind: EventKind;
+  status: ActivityEvent['status'];
+  title: string;
+  ts: string;
+  files?: string[];
+}
+
+/**
+ * Plain-language view of real activity events: consecutive file reads and writes are grouped
+ * ("Read 3 files: …"), model token traffic is reduced to "Thinking", and nothing is invented —
+ * every item maps to recorded events and keeps their real status.
+ */
+export function summarizeActivity(events: ActivityEvent[], max = 40): ActivityItem[] {
+  const out: ActivityItem[] = [];
+  for (const e of events) {
+    const prev = out[out.length - 1];
+    if (e.kind === 'file_read' || e.kind === 'file_write') {
+      const path = typeof e.detail.path === 'string' ? e.detail.path : null;
+      const files = path ? [path] : Array.isArray(e.detail.files) ? (e.detail.files as string[]) : [];
+      if (prev && prev.kind === e.kind && prev.status === e.status && prev.files) {
+        prev.files = [...new Set([...prev.files, ...files])];
+        prev.title = `${e.kind === 'file_read' ? 'Read' : 'Changed'} ${prev.files.length} file${prev.files.length === 1 ? '' : 's'}: ${prev.files.slice(0, 4).map((f) => f.split('/').pop()).join(', ')}${prev.files.length > 4 ? '…' : ''}`;
+        prev.ts = e.ts;
+        continue;
+      }
+      out.push({ id: e.id, kind: e.kind, status: e.status, ts: e.ts, files, title: files.length ? `${e.kind === 'file_read' ? 'Read' : 'Changed'} ${files.length} file${files.length === 1 ? '' : 's'}: ${files.slice(0, 4).map((f) => f.split('/').pop()).join(', ')}` : e.title });
+      continue;
+    }
+    if (e.kind === 'ai') {
+      const title = e.status === 'running' ? 'Thinking…' : e.status === 'failed' ? `AI request failed: ${(e.detail.error as { message?: string } | undefined)?.message ?? e.title}` : 'Thought about the next step';
+      if (prev && prev.kind === 'ai' && prev.status !== 'failed') {
+        Object.assign(prev, { id: e.id, status: e.status, title, ts: e.ts });
+        continue;
+      }
+      out.push({ id: e.id, kind: e.kind, status: e.status, ts: e.ts, title });
+      continue;
+    }
+    out.push({ id: e.id, kind: e.kind, status: e.status, ts: e.ts, title: e.title });
+  }
+  return out.slice(-max);
 }

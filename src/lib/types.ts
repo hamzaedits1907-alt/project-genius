@@ -392,11 +392,49 @@ export interface ProcessState {
   outcome?: RunOutcome;
 }
 
+export type PreviewStatus = 'idle' | 'checking' | 'installing' | 'starting' | 'compiling' | 'ready' | 'failed' | 'stopping';
+
+export interface PreviewProblem {
+  /** "config" | "install" | "start" | "compile" | "identity" | "runtime" */
+  stage: string;
+  summary: string;
+  details: string;
+  file: string | null;
+  runId: string | null;
+  fixable: boolean;
+}
+
+/** Backend-verified preview state (see crates/genius-core/src/preview.rs). */
+export interface PreviewState {
+  projectId: string;
+  status: PreviewStatus;
+  message: string;
+  url: string | null;
+  port: number | null;
+  runId: string | null;
+  problem: PreviewProblem | null;
+  modulesChecked: number;
+  generation: number;
+  inspector: boolean;
+  updatedAt: string;
+}
+
 export interface PreviewEvent {
   projectId: string;
+  state?: PreviewState;
+  /** legacy fields */
   status: 'starting' | 'ready' | 'stopped' | 'failed';
   url?: string;
   error?: string;
+}
+
+export interface DepStatus {
+  state: 'ready' | 'needs_install' | 'no_package_json' | 'invalid_package_json';
+  reason: string;
+  missing: string[];
+  packages: string[];
+  newPackages: string[];
+  fingerprint: string | null;
 }
 
 // ---- conversations & agent

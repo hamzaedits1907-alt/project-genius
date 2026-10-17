@@ -26,11 +26,17 @@ key save (masked) → live model list → cache → select → test connection (
 
 Requires Node/npm and npm registry access; skipped with a message otherwise (`GENIUS_SKIP_E2E=1` to skip).
 
+## 2b. Project lifecycle — `cargo test -p genius-core --test lifecycle`
+
+Real: the Genius template, `npm install` from the project root, Vite dev server, identity-checked HTTP readiness + module-graph compile check, `tsc && vite build`, **headless Chromium rendering the preview** (`/opt/pw-browsers/chromium`, or `chromium`/`google-chrome` on PATH; render checks are skipped with a note otherwise), process-group cleanup, database reopen. Mock: the model (deterministic scripted wiremock — says nothing about real NVIDIA models).
+
+Covers: dependencies detected missing → one call installs, starts and verifies → page renders → no second server on a second Preview → conversational change hot-reloads → duplicate-key `package.json` proposal blocked after bounded correction rounds with files untouched → undeclared `uuid` import blocked, corrected proposal adds it, dependency state recalculated, package installed, server restarted → hand-written `dayjs` import reported as a compile error with file → *Fix automatically* repairs it and verifies → production-build type error diagnosed precisely while the dev preview keeps working → restart/stop without duplicate or orphaned processes, port released → restart of Genius keeps project and conversation and claims no old server. Also: two projects never share or mistake a server (token mismatch and a foreign HTTP server are rejected), and never-approved packages require approval.
+
 ## 3. UI end-to-end — `tests/ui/e2e_ui.py`
 
 Drives the **real desktop app** through WebDriver (`tauri-driver` + `WebKitWebDriver`) under Xvfb, with `tests/ui/mock_nvidia.py` standing in for NVIDIA:
 
-settings (base URL, key, refresh models, embedding model hidden, select, test connection) → new project → plan rendered → generate → **approval dialog for npm install** → real install/build/dev server → preview shows the generated app and **responds to input** → element picker returns the clicked element → change request → diff review → apply → verification build succeeds → preview hot-reloads with the change → terminal output → history → Git init, identity, stage, commit → readiness → **restart the app** → project and build status persisted. Screenshots are written for every step.
+settings (base URL, key, refresh models, embedding model hidden, select, test connection) → **describe the app on Home → Create** → real plan/code/install/build/dev server → preview shows the generated app and **responds to input** → element picker → follow-up change applied from the conversation → preview hot-reloads → a proposal importing an undeclared package is **blocked and corrected**, the **new package needs approval**, is installed and the preview restarts → a broken edit in the editor shows *"Your website has an error"* → **Fix automatically** repairs and verifies it → terminal, history, Git init/identity/stage/commit, readiness → **restart the app** → project and conversation persisted. Screenshots are written for every step.
 
 ```bash
 sudo apt install xvfb webkit2gtk-driver && cargo install tauri-driver && pip install selenium

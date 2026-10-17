@@ -38,6 +38,9 @@ const SCRUBBED_ENV: &[&str] = &[
 #[serde(rename_all = "snake_case")]
 pub enum Operation {
     Install,
+    /// `npm install --legacy-peer-deps`: retried automatically only when a normal install
+    /// failed with a peer-dependency conflict (ERESOLVE). Same trust level as Install.
+    InstallLegacyPeers,
     Dev,
     Build,
     Test,
@@ -47,7 +50,7 @@ pub enum Operation {
 impl Operation {
     pub fn script(&self) -> Option<&'static str> {
         match self {
-            Operation::Install => None,
+            Operation::Install | Operation::InstallLegacyPeers => None,
             Operation::Dev => Some("dev"),
             Operation::Build => Some("build"),
             Operation::Test => Some("test"),
@@ -57,7 +60,7 @@ impl Operation {
 
     pub fn event_kind(&self) -> EventKind {
         match self {
-            Operation::Install => EventKind::Install,
+            Operation::Install | Operation::InstallLegacyPeers => EventKind::Install,
             Operation::Dev => EventKind::Preview,
             Operation::Build | Operation::Typecheck => EventKind::Build,
             Operation::Test => EventKind::Test,
@@ -67,6 +70,7 @@ impl Operation {
     pub fn label(&self) -> &'static str {
         match self {
             Operation::Install => "Install dependencies",
+            Operation::InstallLegacyPeers => "Install dependencies (compatibility mode)",
             Operation::Dev => "Development server",
             Operation::Build => "Production build",
             Operation::Test => "Tests",
@@ -76,7 +80,7 @@ impl Operation {
 
     pub fn as_str(&self) -> &'static str {
         match self {
-            Operation::Install => "install",
+            Operation::Install | Operation::InstallLegacyPeers => "install",
             Operation::Dev => "dev",
             Operation::Build => "build",
             Operation::Test => "test",
@@ -88,6 +92,7 @@ impl Operation {
     pub fn npm_args(&self, port: Option<u16>, dev_config: Option<&str>) -> Vec<String> {
         match self {
             Operation::Install => vec!["install".into(), "--no-audit".into(), "--no-fund".into()],
+            Operation::InstallLegacyPeers => vec!["install".into(), "--no-audit".into(), "--no-fund".into(), "--legacy-peer-deps".into()],
             Operation::Dev => {
                 let mut a: Vec<String> = vec!["run".into(), "dev".into(), "--".into(), "--host".into(), "127.0.0.1".into(), "--strictPort".into()];
                 if let Some(p) = port {
@@ -143,12 +148,79 @@ struct RunState {
     done: watch::Receiver<Option<RunOutcome>>,
 }
 
+/// How npm is started. On Windows npm ships as `npm.cmd`, a batch file that only runs through
+/// `cmd.exe`. Genius prefers to bypass the batch file and run `node.exe <npm-cli.js>` directly
+/// (no `cmd.exe` involved, so no batch-file argument parsing and a clean process tree); it falls
+/// back to `npm.cmd`, which Rust's standard library launches through `cmd.exe` with escaped
+/// arguments, after Genius has validated every argument against a strict character set.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NpmLauncher {
+    pub program: PathBuf,
+    /// Arguments placed before the npm arguments (the npm-cli.js path for the node launcher).
+    pub prefix: Vec<String>,
+    /// "npm" | "npm.cmd" | "node npm-cli.js"
+    pub kind: &'static str,
+}
+
+/// Resolve npm from `PATH` directories. Pure apart from file-existence checks, so the Windows
+/// branch is unit-tested on every platform.
+pub fn resolve_npm(dirs: &[PathBuf], windows: bool) -> Option<NpmLauncher> {
+    if !windows {
+        let p = dirs.iter().map(|d| d.join("npm")).find(|c| is_executable_file(c))?;
+        return Some(NpmLauncher { program: p, prefix: vec![], kind: "npm" });
+    }
+    for d in dirs {
+        let node = d.join("node.exe");
+        let cli = d.join("node_modules").join("npm").join("bin").join("npm-cli.js");
+        if node.is_file() && cli.is_file() {
+            return Some(NpmLauncher { program: node, prefix: vec![cli.to_string_lossy().to_string()], kind: "node npm-cli.js" });
+        }
+    }
+    // Only real launchers: never `npm` (a POSIX shell script) or `npm.ps1`.
+    for d in dirs {
+        for name in ["npm.cmd", "npm.exe"] {
+            let c = d.join(name);
+            if c.is_file() {
+                return Some(NpmLauncher { program: c, prefix: vec![], kind: if name == "npm.cmd" { "npm.cmd" } else { "npm" } });
+            }
+        }
+    }
+    None
+}
+
+fn is_executable_file(p: &Path) -> bool {
+    if !p.is_file() {
+        return false;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        return p.metadata().map(|m| m.permissions().mode() & 0o111 != 0).unwrap_or(false);
+    }
+    #[allow(unreachable_code)]
+    true
+}
+
+/// Every npm argument Genius passes must match this character set. It excludes whitespace,
+/// quotes and every character with meaning to `cmd.exe` (`&|<>^%!"()` …), so even the
+/// `npm.cmd` fallback can never turn an argument into a command.
+pub fn validate_npm_arg(a: &str) -> Result<()> {
+    let ok = !a.is_empty() && a.len() <= 200 && a.chars().all(|c| c.is_ascii_alphanumeric() || "-_./:=@".contains(c));
+    if ok {
+        Ok(())
+    } else {
+        Err(GeniusError::Validation(format!("refusing to pass an unexpected argument to npm: {a:?}")))
+    }
+}
+
 #[derive(Clone)]
 pub struct ProcessManager {
     db: Arc<Db>,
     bus: EventBus,
     runs: Arc<Mutex<HashMap<String, RunState>>>,
-    npm: Arc<Mutex<Option<PathBuf>>>,
+    npm: Arc<Mutex<Option<NpmLauncher>>>,
+    /// Every cleaned output line as (run id, line), for in-process watchers (preview).
+    lines: tokio::sync::broadcast::Sender<(String, String)>,
 }
 
 static ANSI: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b\][^\x07]*\x07").unwrap());
@@ -169,14 +241,32 @@ pub fn clean_line(s: &str) -> String {
 
 impl ProcessManager {
     pub fn new(db: Arc<Db>, bus: EventBus) -> Self {
-        Self { db, bus, runs: Arc::new(Mutex::new(HashMap::new())), npm: Arc::new(Mutex::new(None)) }
+        Self { db, bus, runs: Arc::new(Mutex::new(HashMap::new())), npm: Arc::new(Mutex::new(None)), lines: tokio::sync::broadcast::channel(2048).0 }
     }
 
-    fn npm_path(&self) -> Result<PathBuf> {
+    pub fn subscribe_lines(&self) -> tokio::sync::broadcast::Receiver<(String, String)> {
+        self.lines.subscribe()
+    }
+
+    /// Final outcome of a run that has exited (None while it is running or unknown).
+    pub fn outcome(&self, run_id: &str) -> Option<RunOutcome> {
+        self.runs.lock().unwrap().get(run_id).and_then(|r| r.done.borrow().clone())
+    }
+
+    pub fn is_running(&self, run_id: &str) -> bool {
+        self.runs.lock().unwrap().get(run_id).is_some_and(|r| r.done.borrow().is_none())
+    }
+
+    pub fn npm_launcher(&self) -> Result<NpmLauncher> {
+        self.npm()
+    }
+
+    fn npm(&self) -> Result<NpmLauncher> {
         if let Some(p) = self.npm.lock().unwrap().clone() {
             return Ok(p);
         }
-        let p = find_executable("npm").ok_or_else(|| {
+        let dirs: Vec<PathBuf> = std::env::var_os("PATH").map(|p| std::env::split_paths(&p).collect()).unwrap_or_default();
+        let p = resolve_npm(&dirs, cfg!(windows)).ok_or_else(|| {
             GeniusError::MissingTool(
                 "npm was not found on PATH. Install Node.js 20 or newer from https://nodejs.org and restart Genius.".into(),
             )
@@ -208,10 +298,19 @@ impl ProcessManager {
     /// Like [`start`], optionally pointing the dev server at a Genius-generated config wrapper
     /// (a fixed, validated relative path inside node_modules/.genius).
     pub async fn start_with(&self, project_id: &str, task_id: Option<&str>, cwd: &Path, op: Operation, reason: &str, dev_config: Option<&str>) -> Result<RunInfo> {
+        self.start_env(project_id, task_id, cwd, op, reason, dev_config, &[]).await
+    }
+
+    /// Start an allowlisted npm operation with extra (Genius-defined) environment variables.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn start_env(&self, project_id: &str, task_id: Option<&str>, cwd: &Path, op: Operation, reason: &str, dev_config: Option<&str>, env: &[(&str, String)]) -> Result<RunInfo> {
         if dev_config.is_some_and(|c| c != "node_modules/.genius/preview.config.mjs") {
             return Err(GeniusError::Validation("unexpected dev server config".into()));
         }
-        let npm = self.npm_path()?;
+        if env.iter().any(|(k, _)| !k.starts_with("GENIUS_")) {
+            return Err(GeniusError::Validation("only GENIUS_* variables may be added to a project process".into()));
+        }
+        let npm = self.npm()?;
         if !cwd.join("package.json").is_file() {
             return Err(GeniusError::Validation("This project has no package.json, so npm commands cannot run.".into()));
         }
@@ -221,10 +320,17 @@ impl ProcessManager {
             }
         }
         let port = if op == Operation::Dev { Some(free_port()?) } else { None };
-        let args = op.npm_args(port, if op == Operation::Dev { dev_config } else { None });
-        self.spawn(project_id, task_id, cwd, op, reason, &npm, &args, port).await
+        let npm_args = op.npm_args(port, if op == Operation::Dev { dev_config } else { None });
+        for a in &npm_args {
+            validate_npm_arg(a)?;
+        }
+        let mut args = npm.prefix.clone();
+        args.extend(npm_args.iter().cloned());
+        let shown = format!("npm {}", npm_args.join(" "));
+        self.spawn_cmd(project_id, task_id, cwd, op, reason, &npm.program, &args, port, &shown, env).await
     }
 
+    #[cfg(test)]
     #[allow(clippy::too_many_arguments)]
     async fn spawn(
         &self,
@@ -237,9 +343,28 @@ impl ProcessManager {
         args: &[String],
         port: Option<u16>,
     ) -> Result<RunInfo> {
-        let id = uuid::Uuid::new_v4().to_string();
         let prog_name = program.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_else(|| "npm".into());
-        let command = format!("{} {}", prog_name, args.join(" "));
+        let shown = format!("{} {}", prog_name, args.join(" "));
+        self.spawn_cmd(project_id, task_id, cwd, op, reason, program, args, port, &shown, &[]).await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn spawn_cmd(
+        &self,
+        project_id: &str,
+        task_id: Option<&str>,
+        cwd: &Path,
+        op: Operation,
+        reason: &str,
+        program: &Path,
+        args: &[String],
+        port: Option<u16>,
+        shown: &str,
+        env: &[(&str, String)],
+    ) -> Result<RunInfo> {
+        let id = uuid::Uuid::new_v4().to_string();
+        let command = shown.to_string();
+        let cwd = &crate::workspace::display_path(cwd);
         let info = RunInfo {
             id: id.clone(),
             project_id: project_id.into(),
@@ -287,6 +412,9 @@ impl ProcessManager {
         for k in SCRUBBED_ENV {
             cmd.env_remove(k);
         }
+        for (k, v) in env {
+            cmd.env(k, v);
+        }
         #[cfg(unix)]
         cmd.process_group(0);
         #[cfg(windows)]
@@ -316,6 +444,7 @@ impl ProcessManager {
             let bus = self.bus.clone();
             let tail = tail.clone();
             let run_id = id.clone();
+            let line_tx = self.lines.clone();
             readers.push(tokio::spawn(async move {
                 let mut lines = BufReader::new(reader).lines();
                 while let Ok(Some(line)) = lines.next_line().await {
@@ -327,6 +456,7 @@ impl ProcessManager {
                             t.pop_front();
                         }
                     }
+                    let _ = line_tx.send((run_id.clone(), line.clone()));
                     bus.push(channels::PROCESS_OUTPUT, json!({ "runId": run_id, "stream": stream_name, "line": line }));
                 }
             }));
@@ -703,6 +833,44 @@ mod tests {
         if find_executable("npm").is_some() {
             let err = pm.start("p", None, dir.path(), Operation::Build, "x").await.unwrap_err();
             assert!(matches!(err, GeniusError::Validation(_)));
+        }
+    }
+
+    #[test]
+    fn windows_npm_resolution_prefers_node_cli_and_never_the_shell_script() {
+        let d = tempfile::tempdir().unwrap();
+        let bin = d.path().join("nodejs");
+        std::fs::create_dir_all(bin.join("node_modules/npm/bin")).unwrap();
+        // what a Node.js install on Windows contains
+        for f in ["npm", "npm.cmd", "npm.ps1", "node.exe"] {
+            std::fs::write(bin.join(f), "").unwrap();
+        }
+        let dirs = vec![d.path().join("empty"), bin.clone()];
+        // without npm-cli.js: the batch file, not the POSIX `npm` script
+        let l = resolve_npm(&dirs, true).unwrap();
+        assert_eq!(l.kind, "npm.cmd");
+        assert!(l.program.ends_with("npm.cmd"));
+        // with npm-cli.js next to node.exe: run node directly, no cmd.exe involved
+        std::fs::write(bin.join("node_modules/npm/bin/npm-cli.js"), "").unwrap();
+        let l = resolve_npm(&dirs, true).unwrap();
+        assert_eq!(l.kind, "node npm-cli.js");
+        assert!(l.program.ends_with("node.exe"));
+        assert!(l.prefix[0].ends_with("npm-cli.js"));
+        assert!(resolve_npm(&[d.path().join("empty")], true).is_none());
+    }
+
+    #[test]
+    fn npm_arguments_are_validated_against_cmd_metacharacters() {
+        for op in [Operation::Install, Operation::InstallLegacyPeers, Operation::Build, Operation::Test, Operation::Typecheck] {
+            for a in op.npm_args(None, None) {
+                validate_npm_arg(&a).unwrap();
+            }
+        }
+        for a in Operation::Dev.npm_args(Some(51234), Some("node_modules/.genius/preview.config.mjs")) {
+            validate_npm_arg(&a).unwrap();
+        }
+        for bad in ["a b", "x&calc", "\"q\"", "%PATH%", "a|b", "^", "!x!", "", "(x)", "a>b"] {
+            assert!(validate_npm_arg(bad).is_err(), "{bad} must be rejected");
         }
     }
 

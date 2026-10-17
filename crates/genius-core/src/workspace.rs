@@ -18,7 +18,12 @@ pub const IGNORED_DIRS: &[&str] = &["node_modules", ".git", "dist", "build", ".v
 
 #[derive(Debug, Clone)]
 pub struct Workspace {
+    /// Root as handed to child processes and shown to the user. On Windows this is a plain
+    /// `C:\\…` path, never a `\\?\\` verbatim path: `cmd.exe` (which runs `npm.cmd`) refuses a
+    /// verbatim current directory and silently falls back to `C:\\Windows`.
     root: PathBuf,
+    /// Fully canonical root used only for the symlink-escape comparison.
+    canonical: PathBuf,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -43,8 +48,9 @@ impl Workspace {
     pub fn new(root: impl Into<PathBuf>) -> Result<Self> {
         let root = root.into();
         std::fs::create_dir_all(&root)?;
-        let root = root.canonicalize()?;
-        Ok(Self { root })
+        let canonical = root.canonicalize()?;
+        let root = display_path(&canonical);
+        Ok(Self { root, canonical })
     }
 
     pub fn root(&self) -> &Path {
@@ -62,7 +68,7 @@ impl Workspace {
                 let real = probe.canonicalize().map_err(|_| {
                     GeniusError::PathRejected(format!("'{rel}' points through a broken or unreadable link"))
                 })?;
-                if !real.starts_with(&self.root) {
+                if !real.starts_with(&self.canonical) {
                     return Err(GeniusError::PathRejected(format!("'{rel}' resolves outside the project workspace")));
                 }
                 break;
@@ -202,6 +208,17 @@ impl Workspace {
         }
         Ok(hits)
     }
+}
+
+/// A canonical path in the form ordinary programs accept. Strips the Windows verbatim prefix
+/// (`\\?\\C:\\x` → `C:\\x`) when that is lossless; a no-op on other platforms.
+pub fn display_path(p: &Path) -> PathBuf {
+    dunce::simplified(p).to_path_buf()
+}
+
+/// `canonicalize` that never returns a Windows verbatim path when a plain one is equivalent.
+pub fn canonical_dir(p: &Path) -> std::io::Result<PathBuf> {
+    dunce::canonicalize(p)
 }
 
 pub fn to_slash(p: &Path) -> String {

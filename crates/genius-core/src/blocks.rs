@@ -26,6 +26,11 @@ pub enum BlockEvent {
     Delete { path: String },
 }
 
+/// Render files back into the block protocol (used to show the model its own earlier output).
+pub fn render_files(files: &[(String, String)]) -> String {
+    files.iter().map(|(p, c)| format!("<<<FILE: {p}>>>\n{}{}<<<END FILE>>>\n", c, if c.ends_with('\n') { "" } else { "\n" })).collect()
+}
+
 #[derive(Default)]
 pub struct BlockParser {
     partial: String,

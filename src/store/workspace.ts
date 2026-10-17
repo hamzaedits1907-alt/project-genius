@@ -1,7 +1,7 @@
 import { create } from 'zustand';
 import { api, errorMessage } from '../lib/api';
-import { applyFileStream, upsertEvent, type Draft } from '../lib/logic';
-import type { ActivityEvent, AgentStep, FileEntry, FileStreamEvent, Project, RunInfo, RunOutcome, TaskInfo } from '../lib/types';
+import { applyFileStream, applyPreviewState, idlePreview, upsertEvent, type Draft } from '../lib/logic';
+import type { ActivityEvent, AgentStep, FileEntry, FileStreamEvent, PreviewState, Project, RunInfo, RunOutcome, TaskInfo } from '../lib/types';
 import { useApp } from './app';
 
 export type TabId = string; // "file:<path>" | "draft:<path>" | "review:<changesetId>" | "plan" | "commit:<sha>"
@@ -47,7 +47,12 @@ interface WorkspaceState {
   activity: ActivityEvent[];
   runs: Record<string, RunView>;
   runOrder: string[];
-  preview: { status: 'stopped' | 'starting' | 'ready' | 'failed'; url?: string; error?: string; nonce: number };
+  /** Backend-verified preview state; `nonce` forces an iframe reload (Refresh). */
+  preview: PreviewState & { nonce: number };
+  /** Uncaught error reported by the previewed page itself (cleared on reload/new server). */
+  runtimeError: { message: string; stack: string; runId: string | null } | null;
+  /** Beginner layout (Ask Genius + Preview) or the full IDE layout. */
+  layout: 'simple' | 'advanced';
   tasks: TaskInfo[];
   gitVersion: number;
   historyVersion: number;
@@ -77,6 +82,8 @@ interface WorkspaceState {
   onProcessOutput: (runId: string, stream: 'stdout' | 'stderr', line: string) => void;
   onProcessState: (run: RunInfo, state: RunView['state'], outcome?: RunOutcome) => void;
   setPreview: (p: Partial<WorkspaceState['preview']>) => void;
+  onPreviewState: (st: PreviewState) => void;
+  setLayout: (l: WorkspaceState['layout']) => void;
   set: (p: Partial<WorkspaceState>) => void;
 }
 
@@ -95,7 +102,8 @@ const initial = {
   activity: [],
   runs: {},
   runOrder: [],
-  preview: { status: 'stopped' as const, nonce: 0 },
+  preview: { ...idlePreview(null), nonce: 0 },
+  runtimeError: null as WorkspaceState['runtimeError'],
   tasks: [],
   gitVersion: 0,
   historyVersion: 0,
@@ -107,8 +115,17 @@ const initial = {
   agentSteps: {} as Record<string, AgentStep[]>,
 };
 
+function savedLayout(): WorkspaceState['layout'] {
+  try {
+    return localStorage.getItem('genius.layout') === 'advanced' ? 'advanced' : 'simple';
+  } catch {
+    return 'simple';
+  }
+}
+
 export const useWorkspace = create<WorkspaceState>((set, get) => ({
   ...initial,
+  layout: savedLayout(),
 
   onAgentStep: (step) => {
     if (step.projectId !== get().projectId) return;
@@ -118,17 +135,20 @@ export const useWorkspace = create<WorkspaceState>((set, get) => ({
   },
 
   open: async (projectId) => {
-    if (get().projectId === projectId) return;
-    set({ ...initial, projectId });
+    const previous = get().projectId;
+    if (previous === projectId) return;
+    // Closing a project stops its development server (no orphaned servers across projects).
+    if (previous) void api.stopPreview(previous).catch(() => undefined);
+    set({ ...initial, projectId, layout: get().layout });
     try {
-      const [project, files, activity, tasks, runs, active, url] = await Promise.all([
+      const [project, files, activity, tasks, runs, active, previewState] = await Promise.all([
         api.openProject(projectId),
         api.listFiles(projectId).catch(() => [] as FileEntry[]),
         api.listActivity(projectId),
         api.activeTasks(projectId),
         api.listRuns(projectId),
         api.activeRuns(projectId),
-        api.previewStatus(projectId),
+        api.previewState(projectId).catch(() => idlePreview(projectId)),
       ]);
       if (get().projectId !== projectId) return;
       // Rehydrate terminal history from persisted run tails (real output from previous runs).
@@ -153,7 +173,7 @@ export const useWorkspace = create<WorkspaceState>((set, get) => ({
         tasks,
         runs: runViews,
         runOrder: order,
-        preview: url ? { status: 'ready', url, nonce: 0 } : { status: 'stopped', nonce: 0 },
+        preview: { ...previewState, nonce: 0 },
         tabs: showPlan ? ['plan'] : [],
         active: showPlan ? 'plan' : null,
       });
@@ -163,7 +183,7 @@ export const useWorkspace = create<WorkspaceState>((set, get) => ({
     }
   },
 
-  close: () => set({ ...initial }),
+  close: () => set({ ...initial, layout: get().layout }),
 
   refreshProject: async () => {
     const id = get().projectId;
@@ -291,5 +311,21 @@ export const useWorkspace = create<WorkspaceState>((set, get) => ({
   },
 
   setPreview: (p) => set({ preview: { ...get().preview, ...p } }),
+  onPreviewState: (st) => {
+    const cur = get().preview;
+    const next = applyPreviewState(cur, st, get().projectId);
+    if (next === cur) return;
+    // A different server run means a fresh page: drop the old page's runtime error.
+    const runtimeError = get().runtimeError && get().runtimeError?.runId === next.runId ? get().runtimeError : null;
+    set({ preview: { ...next, nonce: cur.runId === next.runId ? cur.nonce : cur.nonce + 1 }, runtimeError });
+  },
+  setLayout: (layout) => {
+    try {
+      localStorage.setItem('genius.layout', layout);
+    } catch {
+      /* layout preference is optional */
+    }
+    set({ layout });
+  },
   set: (p) => set(p),
 }));

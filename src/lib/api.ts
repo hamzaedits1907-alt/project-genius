@@ -79,9 +79,16 @@ export const api = {
   activeRuns: (projectId?: string) => call<T.RunInfo[]>('active_runs', { projectId: projectId ?? null }),
   stopRun: (runId: string) => call<void>('stop_run', { runId }),
   needsInstall: (projectId: string) => call<boolean>('needs_install', { projectId }),
-  startPreview: (projectId: string) => call<string>('start_preview', { projectId }),
+  depStatus: (projectId: string) => call<T.DepStatus>('dep_status', { projectId }),
+  /** Returns at once; progress arrives as genius://preview events. Never starts a second server. */
+  startPreview: (projectId: string) => call<T.PreviewState>('start_preview', { projectId }),
+  restartPreview: (projectId: string) => call<T.PreviewState>('restart_preview', { projectId }),
   stopPreview: (projectId: string) => call<void>('stop_preview', { projectId }),
+  previewState: (projectId: string) => call<T.PreviewState>('preview_state', { projectId }),
   previewStatus: (projectId: string) => call<string | null>('preview_status', { projectId }),
+  startAutoFix: (projectId: string, runtimeError: string | null) => call<T.TaskInfo>('start_auto_fix', { projectId, runtimeError }),
+  startCreateApp: (name: string | null, description: string, reviewPlan: boolean) =>
+    call<{ project: T.Project; task: T.TaskInfo }>('start_create_app', { name, description, reviewPlan }),
 
   // activity, export
   listActivity: (projectId: string | null, limit = 1500) => call<T.ActivityEvent[]>('list_activity', { projectId, limit }),

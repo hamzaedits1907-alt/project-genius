@@ -72,6 +72,13 @@ pub const CLIENT_SCRIPT: &str = r#"(() => {
   document.addEventListener('keydown', (e) => {
     if (active && e.key === 'Escape') { stop(); window.parent.postMessage({ type: 'genius:pick-cancelled' }, '*'); }
   }, true);
+  // Report uncaught errors of the previewed app to Genius (shown with a "Fix automatically" action).
+  const report = (message, stack) => {
+    try { window.parent.postMessage({ type: 'genius:runtime-error', message: String(message || 'Unknown error').slice(0, 2000), stack: String(stack || '').slice(0, 4000), page: location.pathname }, '*'); } catch {}
+  };
+  window.addEventListener('error', (e) => report(e.message, e.error && e.error.stack));
+  window.addEventListener('unhandledrejection', (e) => report(e.reason && e.reason.message || e.reason, e.reason && e.reason.stack));
+  window.parent.postMessage({ type: 'genius:loaded', page: location.pathname }, '*');
 })();"#;
 
 fn wrapper_config(user_config: &str) -> String {
@@ -82,9 +89,18 @@ import userConfig from '../../{user_config}';
 
 const CLIENT = {client};
 
+const TOKEN = process.env.GENIUS_PREVIEW_TOKEN || '';
+
 const geniusInspector = {{
   name: 'genius-preview-inspector',
   apply: 'serve',
+  // Identity: lets Genius verify that the server on this port is the run it started.
+  configureServer(server) {{
+    server.middlewares.use((_req, res, next) => {{
+      if (TOKEN) res.setHeader('x-genius-preview', TOKEN);
+      next();
+    }});
+  }},
   transformIndexHtml() {{
     return [{{ tag: 'script', children: CLIENT, injectTo: 'body' }}];
   }},
@@ -132,5 +148,7 @@ mod tests {
         assert!(text.contains("import userConfig from '../../vite.config.ts'"));
         assert!(text.contains("apply: 'serve'"));
         assert!(text.contains("genius:picked"));
+        assert!(text.contains("x-genius-preview") && text.contains("GENIUS_PREVIEW_TOKEN"), "identity header");
+        assert!(text.contains("genius:runtime-error"));
     }
 }

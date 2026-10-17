@@ -9,9 +9,10 @@ import CodeEditor from '../../components/CodeEditor';
 import { Badge, Button, Callout, Empty, Segmented, Spinner, StatusBadge } from '../../components/ui';
 
 /** Review a changeset: exact per-file diffs, then apply/reject (proposed) or revert/restore (applied). */
-export default function ReviewView({ changesetId }: { changesetId: string }) {
+export default function ReviewView({ changesetId, onOpen }: { changesetId: string; onOpen?: (id: string) => void }) {
   const toast = useApp((s) => s.toast);
-  const openTab = useWorkspace((s) => s.openTab);
+  const openTabRaw = useWorkspace((s) => s.openTab);
+  const openTab = (tab: string) => (onOpen && tab.startsWith('review:') ? onOpen(tab.slice(7)) : openTabRaw(tab));
   const historyVersion = useWorkspace((s) => s.historyVersion);
   const [data, setData] = useState<{ changeset: Changeset; files: FileChange[] } | null>(null);
   const [err, setErr] = useState<string | null>(null);

@@ -11,7 +11,7 @@ import { useApp } from '../../store/app';
 import { useWorkspace } from '../../store/workspace';
 import { Badge, Button, Dot, Empty, Spinner, StatusBadge } from '../../components/ui';
 
-const KIND_ICON: Record<EventKind, React.ReactNode> = {
+export const KIND_ICON: Record<EventKind, React.ReactNode> = {
   task: <ListChecks size={14} />,
   ai: <Bot size={14} />,
   plan: <ClipboardList size={14} />,
@@ -73,7 +73,7 @@ const FILTERS: { id: ActivityFilter; label: string }[] = [
   { id: 'approvals', label: 'Approvals' },
 ];
 
-function ActivityFeed() {
+export function ActivityFeed() {
   const activity = useWorkspace((s) => s.activity);
   const [filter, setFilter] = useState<ActivityFilter>('all');
   const [selected, setSelected] = useState<string | null>(null);

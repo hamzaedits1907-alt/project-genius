@@ -1,13 +1,14 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { open as openDialog } from '@tauri-apps/plugin-dialog';
-import { Bot, ChevronDown, ChevronRight, Crosshair, FileDiff, FileText, ImageIcon, Info, MessageSquarePlus, Paperclip, Send, ShieldCheck, Square, Trash2, X } from 'lucide-react';
+import { Bot, Check, ChevronDown, ChevronRight, Crosshair, FileDiff, FileText, ImageIcon, Info, MessageSquarePlus, Paperclip, Send, ShieldCheck, Square, Trash2, Undo2, X } from 'lucide-react';
 import { api, errorMessage } from '../../lib/api';
 import { bytes, clockTime } from '../../lib/logic';
 import { fileToBase64, reportSummary, stepLabel } from '../../lib/agent';
 import type { AgentMode, AgentReport, AgentStep, Attachment, Changeset, Conversation, MessageRow, TaskInfo } from '../../lib/types';
 import { useApp } from '../../store/app';
 import { describePicked, useWorkspace } from '../../store/workspace';
-import { Badge, Button, Empty, Kbd, Segmented, Spinner } from '../../components/ui';
+import { Badge, Button, Empty, Kbd, Modal, Segmented, Spinner } from '../../components/ui';
+import ReviewView from './ReviewView';
 import CapabilitiesDialog from './CapabilitiesDialog';
 
 const KIND_LABEL: Record<string, { label: string; tone: 'ok' | 'bad' | 'warn' | 'accent' | 'idle' }> = {
@@ -152,15 +153,22 @@ export default function AssistantPanel() {
       </div>
       <div className="scroll grow chat" aria-live="polite">
         {messages.length === 0 && !agentTask && (
-          <Empty icon={<Bot size={20} />} title="Talk to Genius about this project">
-            Ask for a feature (“add a sidebar”), a fix (“the sidebar is broken on mobile”), or a question (“how is routing set up?”). Genius inspects the real code with tools, proposes a reviewable diff, and reports exactly what it read, changed and verified.
+          <Empty icon={<Bot size={20} />} title="Tell Genius what to change">
+            Genius reads your project's real code, makes a targeted change you can look at and undo, then checks it and refreshes the preview.
+            <div className="examples" style={{ justifyContent: 'center', marginTop: 10 }}>
+              {['Add a sidebar', 'Make the cards smaller', 'Use a dark theme', 'Fix the mobile layout'].map((ex) => (
+                <button key={ex} onClick={() => setRequest(ex)}>
+                  {ex}
+                </button>
+              ))}
+            </div>
           </Empty>
         )}
         {messages.map((m) => (
           <Message key={m.id} m={m} />
         ))}
         {tasks
-          .filter((t) => t.kind === 'agent' || t.kind === 'change' || t.kind === 'diagnose' || t.kind === 'verify')
+          .filter((t) => ['agent', 'change', 'diagnose', 'repair', 'verify', 'generate', 'plan'].includes(t.kind))
           .map((t) => (
             <TaskCard key={t.id} task={t} />
           ))}
@@ -217,7 +225,7 @@ export default function AssistantPanel() {
         )}
         <textarea
           className="textarea"
-          placeholder={busyTask ? `Waiting for “${busyTask.title}”…` : picked ? 'What should change about the selected element?' : 'Message Genius about this project…'}
+          placeholder={busyTask ? `Waiting for “${busyTask.title}”…` : picked ? 'What should change about the selected element?' : `What should change in ${project.name}? (e.g. “Add a sidebar”)`}
           value={request}
           onChange={(e) => setRequest(e.target.value)}
           onKeyDown={(e) => {
@@ -250,12 +258,20 @@ export default function AssistantPanel() {
           <span className="faint tiny">
             <Kbd>Ctrl</Kbd>+<Kbd>Enter</Kbd>
           </span>
-          {agentTask ? (
-            <Button size="sm" variant="danger" icon={<Square size={12} />} onClick={() => void api.cancelTask(agentTask.id).catch((e) => toast('bad', errorMessage(e)))}>
+          {busyTask && busyTask.kind !== 'verify' ? (
+            <Button size="sm" variant="danger" icon={<Square size={12} />} onClick={() => void api.cancelTask(busyTask.id).catch((e) => toast('bad', errorMessage(e)))}>
               Stop
             </Button>
           ) : (
-            <Button size="sm" variant="primary" icon={<Send size={13} />} loading={sending} disabled={!request.trim() || !!busyTask || !settings?.model || !convId} onClick={() => void send()}>
+            <Button
+              size="sm"
+              variant="primary"
+              icon={<Send size={13} />}
+              loading={sending}
+              disabled={!request.trim() || !!busyTask || !settings?.model || !convId}
+              title={!settings?.model ? 'Choose an AI model in Settings first' : busyTask ? `Wait for “${busyTask.title}” to finish or stop it` : !request.trim() ? 'Type what you want to change' : undefined}
+              onClick={() => void send()}
+            >
               Send
             </Button>
           )}
@@ -294,7 +310,7 @@ function Message({ m }: { m: MessageRow }) {
           ))}
         </div>
       )}
-      {typeof meta.changesetId === 'string' && <ProposalStatus changesetId={meta.changesetId} />}
+      {typeof meta.changesetId === 'string' && <ProposalStatus changesetId={meta.changesetId} warnings={meta.warnings as string[] | undefined} />}
       {review && (review.findings || review.error) && (
         <details className="report">
           <summary>
@@ -309,11 +325,27 @@ function Message({ m }: { m: MessageRow }) {
 }
 
 /** Live status of a proposal from the changeset record (not from the message text). */
-function ProposalStatus({ changesetId }: { changesetId: string }) {
+function ProposalStatus({ changesetId, warnings }: { changesetId: string; warnings?: string[] }) {
   const openTab = useWorkspace((s) => s.openTab);
+  const layout = useWorkspace((s) => s.layout);
   const historyVersion = useWorkspace((s) => s.historyVersion);
   const project = useWorkspace((s) => s.project);
+  const toast = useApp((s) => s.toast);
   const [cs, setCs] = useState<Changeset | null>(null);
+  const [busy, setBusy] = useState<string | null>(null);
+  const [review, setReview] = useState<string | null>(null);
+  const openReview = (id: string) => (layout === 'advanced' ? openTab(`review:${id}`) : setReview(id));
+  const act = async (what: string, fn: () => Promise<unknown>) => {
+    setBusy(what);
+    try {
+      await fn();
+      setCs((await api.getChangeset(changesetId)).changeset);
+    } catch (e) {
+      toast('bad', errorMessage(e));
+    } finally {
+      setBusy(null);
+    }
+  };
   useEffect(() => {
     api
       .getChangeset(changesetId)
@@ -345,9 +377,40 @@ function ProposalStatus({ changesetId }: { changesetId: string }) {
           )}
         </div>
       )}
-      <Button size="sm" onClick={() => openTab(`review:${changesetId}`)}>
-        {cs.status === 'proposed' ? 'Review diff' : 'View diff'}
-      </Button>
+      <div className="row" style={{ flexWrap: 'wrap' }}>
+        {cs.status === 'proposed' && (
+          <>
+            <Button size="sm" variant="ok" icon={<Check size={12} />} loading={busy === 'apply'} disabled={!!busy} onClick={() => void act('apply', () => api.applyChangeset(cs.id))}>
+              Apply
+            </Button>
+            <Button size="sm" variant="ghost" icon={<X size={12} />} disabled={!!busy} onClick={() => void act('reject', () => api.rejectChangeset(cs.id))}>
+              Reject
+            </Button>
+          </>
+        )}
+        {cs.status === 'applied' && (
+          <Button size="sm" variant="ghost" icon={<Undo2 size={12} />} loading={busy === 'undo'} disabled={!!busy} title="Prepare an undo of this change (you see it before anything changes)" onClick={() => void act('undo', async () => openReview((await api.proposeRevert(cs.id, false)).id))}>
+            Undo
+          </Button>
+        )}
+        <Button size="sm" variant="ghost" onClick={() => openReview(changesetId)}>
+          {cs.status === 'proposed' ? 'See what changes' : 'View diff'}
+        </Button>
+      </div>
+      {warnings && warnings.length > 0 && (
+        <ul className="small warn-text" style={{ margin: 0, paddingLeft: 18 }}>
+          {warnings.map((w) => (
+            <li key={w}>{w}</li>
+          ))}
+        </ul>
+      )}
+      {review && (
+        <Modal title="Changes" wide onClose={() => setReview(null)}>
+          <div style={{ height: '70vh', display: 'flex', flexDirection: 'column' }}>
+            <ReviewView changesetId={review} onOpen={setReview} />
+          </div>
+        </Modal>
+      )}
     </div>
   );
 }
@@ -396,7 +459,7 @@ function TaskCard({ task }: { task: TaskInfo }) {
   const openTab = useWorkspace((s) => s.openTab);
   const toast = useApp((s) => s.toast);
   const [showRaw, setShowRaw] = useState(false);
-  const events = activity.filter((e) => e.taskId === task.id && (e.kind === 'ai' || e.kind === 'approval' || e.kind === 'build' || e.kind === 'test' || e.kind === 'install' || (e.kind === 'task' && e.title.includes('subagent'))));
+  const events = activity.filter((e) => e.taskId === task.id && (e.kind === 'ai' || e.kind === 'approval' || e.kind === 'build' || e.kind === 'test' || e.kind === 'install' || e.kind === 'preview' || e.kind === 'diagnosis' || e.kind === 'changeset' || (e.kind === 'task' && e.title.includes('subagent'))));
   const writing = Object.values(drafts).filter((d) => d.taskId === task.id);
   const current = writing.find((d) => d.status === 'streaming');
   const lastAi = events.filter((e) => e.kind === 'ai').slice(-1)[0];

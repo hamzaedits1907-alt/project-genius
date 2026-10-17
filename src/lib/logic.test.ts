@@ -76,3 +76,39 @@ describe('helpers', () => {
     expect(languageFor('Makefile')).toBe('text');
   });
 });
+
+import { applyPreviewState, canShowFrame, idlePreview, summarizeActivity } from './logic';
+import type { PreviewState } from './types';
+
+describe('preview state', () => {
+  const st = (patch: Partial<PreviewState>): PreviewState => ({ ...idlePreview('p'), ...patch });
+  it('ignores other projects and older server generations', () => {
+    const cur = st({ status: 'ready', generation: 3, runId: 'r3', url: 'http://127.0.0.1:1/' });
+    expect(applyPreviewState(cur, st({ projectId: 'q', status: 'failed', generation: 9 }), 'p')).toBe(cur);
+    expect(applyPreviewState(cur, st({ status: 'idle', generation: 2 }), 'p')).toBe(cur);
+    const next = st({ status: 'checking', generation: 4 });
+    expect(applyPreviewState(cur, next, 'p')).toBe(next);
+    expect(applyPreviewState(cur, next, null)).toBe(cur);
+  });
+  it('shows the page only for a live verified server (or a compile error the user may inspect)', () => {
+    expect(canShowFrame(st({ status: 'ready', url: 'u', runId: 'r' }))).toBe(true);
+    expect(canShowFrame(st({ status: 'ready', url: 'u', runId: null }))).toBe(false);
+    expect(canShowFrame(st({ status: 'compiling', url: 'u', runId: 'r' }))).toBe(false);
+    expect(canShowFrame(st({ status: 'failed', url: 'u', runId: 'r', problem: { stage: 'compile', summary: '', details: '', file: null, runId: 'r', fixable: true } }))).toBe(true);
+    expect(canShowFrame(st({ status: 'failed', url: 'u', runId: 'r', problem: { stage: 'start', summary: '', details: '', file: null, runId: 'r', fixable: true } }))).toBe(false);
+  });
+});
+
+describe('activity summary', () => {
+  it('groups file operations and model traffic but keeps real statuses', () => {
+    const items = summarizeActivity([
+      ev('r1', '1', { kind: 'file_read', status: 'completed', detail: { path: 'src/App.tsx' } }),
+      ev('r2', '2', { kind: 'file_read', status: 'completed', detail: { path: 'src/main.tsx' } }),
+      ev('a1', '3', { kind: 'ai', status: 'completed' }),
+      ev('a2', '4', { kind: 'ai', status: 'running' }),
+      ev('b1', '5', { kind: 'build', status: 'failed', title: 'Production build: npm run build' }),
+    ]);
+    expect(items.map((i) => i.title)).toEqual(['Read 2 files: App.tsx, main.tsx', 'Thinking…', 'Production build: npm run build']);
+    expect(items[2].status).toBe('failed');
+  });
+});

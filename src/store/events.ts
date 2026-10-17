@@ -60,10 +60,10 @@ export async function subscribeAll(): Promise<UnlistenFn> {
       ws().set({ drafts, tabs, active, gitVersion: ws().gitVersion + 1 });
     }),
     listen<PreviewEvent>('genius://preview', ({ payload }) => {
-      if (payload.projectId !== ws().projectId) return;
-      const nonce = ws().preview.nonce + 1;
-      ws().setPreview({ status: payload.status, url: payload.url ?? (payload.status === 'ready' ? ws().preview.url : undefined), error: payload.error, nonce });
-      if (payload.status === 'ready') ws().set({ rightTab: 'preview' });
+      if (payload.projectId !== ws().projectId || !payload.state) return;
+      const wasReady = ws().preview.status === 'ready';
+      ws().onPreviewState(payload.state);
+      if (payload.state.status === 'ready' && !wasReady) ws().set({ rightTab: 'preview' });
     }),
     listen<{ code: string; url: string }>('genius://github-device-code', ({ payload }) => app().setDeviceCode(payload)),
     listen<AuthStatus>('genius://github-status', () => app().setDeviceCode(null)),

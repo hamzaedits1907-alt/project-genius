@@ -75,13 +75,20 @@ try:
         check(d, f"settings-{tab}")
     btn(d, "Home").click(); check(d, "home2")
     d.find_element(By.CSS_SELECTOR, ".project-card").click()
-    time.sleep(2); check(d, "workspace")
+    time.sleep(2); check(d, "workspace-simple")
+    # simple layout (default), its tabs and the More menu
+    for tab in ["Activity", "Changes"]:
+        d.find_element(By.XPATH, f"//*[@role='tab' and contains(normalize-space(.), {json.dumps(tab)})]").click(); check(d, f"simple-{tab}")
+    d.find_element(By.XPATH, "//button[starts-with(normalize-space(.), 'More')]").click(); check(d, "more-menu")
+    d.find_element(By.CSS_SELECTOR, ".menu-backdrop").click()
+    btn(d, "Show code & tools").click(); time.sleep(1); check(d, "workspace-advanced")
     for label in ["Search", "Source control", "History & recovery", "Project memory", "Imported files", "Integrations", "Files"]:
         btn(d, label).click(); check(d, f"rail-{label}")
     for tab in ["Terminal", "Readiness", "Activity", "Preview", "Assistant"]:
         d.find_element(By.XPATH, f"//*[@role='tab' and contains(normalize-space(.), {json.dumps(tab)})]").click(); check(d, f"tab-{tab}")
     btn(d, "Home").click(); check(d, "leave-workspace")
     btn(d, "Open workspace").click(); time.sleep(1); check(d, "reenter-workspace")
+    btn(d, "Simple view").click(); check(d, "back-to-simple")
     btn(d, "Settings").click(); check(d, "settings-from-workspace")
     d.quit()
 finally:

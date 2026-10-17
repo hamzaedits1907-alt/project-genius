@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-restart-preview"
+description = "Enables the restart_preview command without any pre-configured scope."
+commands.allow = ["restart_preview"]
+
+[[permission]]
+identifier = "deny-restart-preview"
+description = "Denies the restart_preview command without any pre-configured scope."
+commands.deny = ["restart_preview"]

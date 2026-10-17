@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-dep-status"
+description = "Enables the dep_status command without any pre-configured scope."
+commands.allow = ["dep_status"]
+
+[[permission]]
+identifier = "deny-dep-status"
+description = "Denies the dep_status command without any pre-configured scope."
+commands.deny = ["dep_status"]

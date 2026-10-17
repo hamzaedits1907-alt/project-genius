@@ -15,7 +15,16 @@
 - **Git & GitHub.** Status, diffs, staging, commits (secret-scanned), branches, fetch/pull/push (never forced), conflict resolution, and one-click *Publish to GitHub* with verified push.
 - **Secure by design.** Your NVIDIA key lives in the OS credential store and never reaches the UI, logs, projects, or the preview.
 
-## New in this release
+## New in this release: effortless build → preview → fix
+
+- **Describe it, see it.** Type what you want on Home and press *Create*: Genius plans, writes the code, installs dependencies, runs the checks and opens the running site — one step, no npm commands.
+- **Preview that tells the truth.** *Preview* checks the project, installs dependencies when the files say so, starts the dev server and only reports *ready* after a real HTTP answer carrying that run's identity and a compiled module graph. Refresh, Restart, Stop and Open in browser are always at hand.
+- **Fix automatically.** When installing, compiling, building or the running page fails, one click collects the real error, has the AI propose the smallest fix, validates it, applies it (undoable), reinstalls if needed and re-runs the checks — at most 3 attempts, and it says exactly what is still wrong if it can't.
+- **Safe AI edits.** Proposals are validated before they touch your files: strict `package.json` (duplicate keys, missing scripts, lifecycle hooks), undeclared imports, missing or deleted files, abbreviated "rest unchanged" content. The model is told why and gets to correct itself.
+- **A simple workspace.** Ask Genius + Preview + Changes + Activity by default; files, editor, terminal, Git, history, memory and integrations under *Show code & tools* and *More*.
+- **Windows fix.** Project folders are no longer handed to `npm.cmd` as `\\?\C:\…` verbatim paths (which `cmd.exe` rejects); npm is launched as `node.exe npm-cli.js` when available.
+
+## Earlier release
 
 - **Talk to Genius about your project.** Every project has persistent conversations. Follow-ups ("add a sidebar", "the sidebar is broken on mobile — fix it") run a bounded agent that inspects the real code with tools, proposes a targeted diff, and reports exactly what it read, ran and has *not* verified.
 - **Your files as context.** Attach or import TXT/MD/CSV/JSON/code/PDF/DOCX/images/ZIP; import a ZIP as a new project with safe extraction.

@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { Check, FolderOpen, KeyRound, Plus, Sparkles, Trash2, Wrench, X, FileArchive } from 'lucide-react';
+import { ArrowRight, Check, FolderOpen, GitBranch, KeyRound, Pencil, PlugZap, Plus, Sparkles, Trash2, Wrench, X, FileArchive } from 'lucide-react';
 import { open as openDialog } from '@tauri-apps/plugin-dialog';
 import { Github } from '../components/icons';
 import { api, errorMessage } from '../lib/api';
@@ -7,6 +7,13 @@ import { timeAgo } from '../lib/logic';
 import type { Project, RepoInfo, ToolStatus } from '../lib/types';
 import { useApp } from '../store/app';
 import { Badge, Button, Callout, Empty, Modal, Spinner, StatusBadge } from '../components/ui';
+
+const IDEAS = [
+  'A modern personal dashboard with notes, a weather widget and quick links.',
+  'A recipe book where I can add recipes, tag them and filter by tag.',
+  'A habit tracker with daily check-ins, streaks and a calendar view.',
+  'A landing page for my bakery with a menu, opening hours and a contact form.',
+];
 
 function stageLabel(p: Project): { text: string; tone: 'ok' | 'warn' | 'accent' | 'idle' } {
   switch (p.status.stage) {
@@ -62,56 +69,134 @@ export default function Home() {
   };
 
   const missingTools = tools?.filter((t) => !t.found) ?? [];
+  const has = (n: string) => !!tools?.find((t) => t.name === n && t.found);
+  const [conn, setConn] = useState<'idle' | 'testing' | 'ok' | 'bad'>('idle');
+  const [connMsg, setConnMsg] = useState('');
+  const testConn = async () => {
+    setConn('testing');
+    try {
+      await api.testConnection();
+      setConn('ok');
+      setConnMsg('Connection verified with a real request.');
+    } catch (e) {
+      setConn('bad');
+      setConnMsg(errorMessage(e));
+    }
+  };
   const setup = [
-    { done: !!keyStatus?.stored, label: keyStatus?.stored ? 'NVIDIA API key saved' : 'Save your NVIDIA API key', action: () => navigate({ name: 'settings', tab: 'ai' }), icon: <KeyRound size={14} /> },
-    { done: !!settings?.model, label: settings?.model ? `Model: ${settings.model}` : 'Choose a model', action: () => navigate({ name: 'settings', tab: 'ai' }), icon: <Sparkles size={14} /> },
+    { done: !!keyStatus?.stored, required: true, label: keyStatus?.stored ? 'NVIDIA API key saved' : 'Save your NVIDIA API key', hint: 'Settings → AI provider. Stored in your system credential store.', action: () => navigate({ name: 'settings', tab: 'ai' }), icon: <KeyRound size={14} /> },
+    { done: !!settings?.model, required: true, label: settings?.model ? `Model: ${settings.model}` : 'Choose an AI model', hint: 'Settings → AI provider → Refresh models.', action: () => navigate({ name: 'settings', tab: 'ai' }), icon: <Sparkles size={14} /> },
     {
-      done: tools ? missingTools.filter((t) => t.name === 'node' || t.name === 'npm').length === 0 : false,
-      label: tools ? (missingTools.some((t) => t.name === 'node' || t.name === 'npm') ? 'Node.js / npm not found' : 'Node.js and npm available') : 'Checking tools…',
+      done: tools ? has('node') && has('npm') : false,
+      required: true,
+      label: tools ? (has('node') && has('npm') ? 'Node.js and npm available' : 'Install Node.js (includes npm)') : 'Checking Node.js…',
+      hint: missingTools.find((t) => t.name === 'node' || t.name === 'npm')?.hint ?? 'Needed to install and run your app. Get it from nodejs.org, then restart Genius.',
       action: () => navigate({ name: 'settings', tab: 'workspace' }),
       icon: <Wrench size={14} />,
     },
+    { done: tools ? has('git') : false, required: false, label: tools ? (has('git') ? 'Git available' : 'Git not found (optional: history on GitHub)') : 'Checking Git…', hint: missingTools.find((t) => t.name === 'git')?.hint ?? '', action: () => navigate({ name: 'settings', tab: 'workspace' }), icon: <GitBranch size={14} /> },
   ];
-  const setupDone = setup.every((s) => s.done);
+  const ready = setup.filter((x) => x.required).every((x) => x.done);
+  const [idea, setIdea] = useState('');
+  const [reviewPlan, setReviewPlan] = useState(false);
+  const [creating, setCreating] = useState(false);
+  const [renaming, setRenaming] = useState<Project | null>(null);
+  const create = async () => {
+    setCreating(true);
+    try {
+      const r = await api.startCreateApp(null, idea, reviewPlan);
+      navigate({ name: 'project', id: r.project.id });
+    } catch (e) {
+      toast('bad', errorMessage(e));
+    } finally {
+      setCreating(false);
+    }
+  };
+  const missingReason = setup.find((x) => x.required && !x.done)?.label;
 
   return (
     <div className="page">
       <div className="page-inner">
         <div className="hero">
-          <div>
+          <div style={{ width: '100%' }}>
             <h1>What do you want to build?</h1>
-            <p className="lead">Describe an app. Genius plans it, writes real source code, runs it, and helps you fix and ship it.</p>
-            <div className="row" style={{ marginTop: 16 }}>
-              <Button variant="primary" size="lg" icon={<Plus size={16} />} onClick={() => navigate({ name: 'create' })}>
-                New application
+            <p className="lead">Describe it in your own words. Genius creates the project, writes the code, installs what it needs, checks it, and shows the running website. Then just tell it what to change.</p>
+            <div className="card pad col" style={{ gap: 10, marginTop: 14 }}>
+              <textarea
+                className="textarea"
+                rows={3}
+                aria-label="Describe your app"
+                placeholder="e.g. Create a modern personal dashboard with notes, a weather widget, and quick links."
+                value={idea}
+                onChange={(e) => setIdea(e.target.value)}
+                onKeyDown={(e) => {
+                  if ((e.ctrlKey || e.metaKey) && e.key === 'Enter' && idea.trim().length >= 10 && ready) void create();
+                }}
+              />
+              <div className="examples" aria-label="Ideas">
+                {IDEAS.map((ex) => (
+                  <button key={ex} onClick={() => setIdea(ex)}>
+                    {ex.split(' with')[0].split(' where')[0].slice(0, 44)}…
+                  </button>
+                ))}
+              </div>
+              <div className="row wrap">
+                <label className="checkbox small">
+                  <input type="checkbox" checked={reviewPlan} onChange={(e) => setReviewPlan(e.target.checked)} /> Let me review the plan before code is written
+                </label>
+                <span className="spacer" />
+                <Button
+                  variant="primary"
+                  size="lg"
+                  icon={<ArrowRight size={16} />}
+                  loading={creating}
+                  disabled={!ready || idea.trim().length < 10}
+                  title={!ready ? `Finish setup first: ${missingReason}` : idea.trim().length < 10 ? 'Describe the app in at least a sentence' : undefined}
+                  onClick={() => void create()}
+                >
+                  Create
+                </Button>
+              </div>
+              {!ready && <div className="small warn-text">Before Genius can build: {missingReason}. See the checkup below.</div>}
+            </div>
+            <div className="row wrap" style={{ marginTop: 12 }}>
+              <Button icon={<Plus size={15} />} onClick={() => navigate({ name: 'create' })}>
+                Detailed form
               </Button>
-              <Button size="lg" icon={<FolderOpen size={16} />} onClick={() => void importFolder()}>
+              <Button icon={<FolderOpen size={15} />} onClick={() => void importFolder()}>
                 Open folder
               </Button>
-              <Button size="lg" icon={<FileArchive size={16} />} onClick={() => void importZip()}>
+              <Button icon={<FileArchive size={15} />} onClick={() => void importZip()}>
                 Import ZIP
               </Button>
-              <Button size="lg" icon={<Github size={16} />} onClick={() => setCloning(true)}>
+              <Button icon={<Github size={15} />} onClick={() => setCloning(true)}>
                 Clone from GitHub
               </Button>
             </div>
           </div>
         </div>
 
-        {!setupDone && (
-          <div className="card pad" style={{ marginTop: 16 }}>
-            <div style={{ fontWeight: 650, marginBottom: 8 }}>Finish setup</div>
-            <div className="col" style={{ gap: 6 }}>
-              {setup.map((s) => (
-                <button key={s.label} className="row btn ghost" style={{ justifyContent: 'flex-start', height: 30 }} onClick={s.action}>
-                  {s.done ? <Check size={15} color="var(--ok)" /> : <X size={15} color="var(--warn)" />}
-                  {s.icon}
-                  <span>{s.label}</span>
-                </button>
-              ))}
+        <div className="card pad" style={{ marginTop: 16 }}>
+          <div className="row" style={{ marginBottom: 8 }}>
+            <div style={{ fontWeight: 650 }} className="grow">
+              Checkup {ready ? <Badge tone="ok">ready to build</Badge> : <Badge tone="warn">action needed</Badge>}
             </div>
+            <Button size="sm" variant="ghost" icon={<PlugZap size={13} />} loading={conn === 'testing'} disabled={!keyStatus?.stored || !settings?.model} title={!keyStatus?.stored || !settings?.model ? 'Save a key and choose a model first' : 'Send a small real request to the AI provider'} onClick={() => void testConn()}>
+              Test AI connection
+            </Button>
           </div>
-        )}
+          {conn !== 'idle' && conn !== 'testing' && <div className={`small ${conn === 'ok' ? 'ok-text' : 'bad-text'}`} style={{ marginBottom: 6 }}>{connMsg}</div>}
+          <div className="col" style={{ gap: 4 }}>
+            {setup.map((x) => (
+              <button key={x.label} className="row btn ghost" style={{ justifyContent: 'flex-start', height: 'auto', minHeight: 30, textAlign: 'left' }} onClick={x.action} title={x.hint}>
+                {x.done ? <Check size={15} color="var(--ok)" /> : <X size={15} color={x.required ? 'var(--warn)' : 'var(--text-3)'} />}
+                {x.icon}
+                <span className="grow">{x.label}</span>
+                {!x.done && x.hint && <span className="tiny faint ellipsis" style={{ maxWidth: 360 }}>{x.hint}</span>}
+              </button>
+            ))}
+          </div>
+        </div>
 
         <div className="section-title">
           <h2>Recent projects</h2>
@@ -123,8 +208,8 @@ export default function Home() {
           </div>
         ) : projects.length === 0 ? (
           <div className="card" style={{ marginTop: 14 }}>
-            <Empty icon={<Sparkles size={20} />} title="No projects yet" action={<Button variant="primary" onClick={() => navigate({ name: 'create' })}>Create your first app</Button>}>
-              Projects you create or open appear here, with their real build status.
+            <Empty icon={<Sparkles size={20} />} title="No projects yet">
+              Describe your first app above and press Create. Projects you create or open appear here.
             </Empty>
           </div>
         ) : (
@@ -135,6 +220,17 @@ export default function Home() {
                 <div key={p.id} className="project-card" role="button" tabIndex={0} onClick={() => navigate({ name: 'project', id: p.id })} onKeyDown={(e) => e.key === 'Enter' && navigate({ name: 'project', id: p.id })}>
                   <div className="row">
                     <h3 className="grow ellipsis">{p.name}</h3>
+                    <button
+                      className="icon-btn"
+                      aria-label={`Rename ${p.name}`}
+                      title="Rename project"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setRenaming(p);
+                      }}
+                    >
+                      <Pencil size={13} />
+                    </button>
                     <button
                       className="icon-btn"
                       aria-label={`Delete ${p.name}`}
@@ -176,7 +272,51 @@ export default function Home() {
         />
       )}
       {cloning && <CloneDialog onClose={() => setCloning(false)} />}
+      {renaming && (
+        <RenameDialog
+          project={renaming}
+          onClose={() => setRenaming(null)}
+          onDone={() => {
+            setRenaming(null);
+            void load();
+          }}
+        />
+      )}
     </div>
+  );
+}
+
+function RenameDialog({ project, onClose, onDone }: { project: Project; onClose: () => void; onDone: () => void }) {
+  const toast = useApp((s) => s.toast);
+  const [name, setName] = useState(project.name);
+  const [busy, setBusy] = useState(false);
+  const save = async () => {
+    setBusy(true);
+    try {
+      await api.updateProjectMeta(project.id, name, project.description, project.notes);
+      onDone();
+    } catch (e) {
+      toast('bad', errorMessage(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <Modal
+      title="Rename project"
+      onClose={onClose}
+      footer={
+        <>
+          <Button onClick={onClose}>Cancel</Button>
+          <Button variant="primary" loading={busy} disabled={!name.trim() || name.trim() === project.name} onClick={() => void save()}>
+            Rename
+          </Button>
+        </>
+      }
+    >
+      <input className="input" aria-label="Project name" maxLength={80} value={name} onChange={(e) => setName(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && name.trim() && void save()} />
+      <div className="tiny faint">Only the name shown in Genius changes; the folder stays where it is.</div>
+    </Modal>
   );
 }
 

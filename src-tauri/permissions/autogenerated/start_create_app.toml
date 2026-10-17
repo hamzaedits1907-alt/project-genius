@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-start-create-app"
+description = "Enables the start_create_app command without any pre-configured scope."
+commands.allow = ["start_create_app"]
+
+[[permission]]
+identifier = "deny-start-create-app"
+description = "Denies the start_create_app command without any pre-configured scope."
+commands.deny = ["start_create_app"]

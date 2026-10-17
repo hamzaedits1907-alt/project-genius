@@ -119,6 +119,14 @@ pub fn repair_messages(command: &str, exit_code: Option<i32>, diagnostics: &str,
     vec![ChatMessage::system(system), ChatMessage::user(user)]
 }
 
+/// Tell the model exactly why Genius refused its proposed files.
+pub fn validation_feedback(blockers: &[String]) -> ChatMessage {
+    ChatMessage::user(format!(
+        "Genius validated your proposed files and BLOCKED them, because applying them would break the project:\n- {}\n\nCorrect every problem. Output the complete corrected files (and any missing files) using the same block format. If you change package.json, output the whole file with every existing script and dependency kept, no duplicate keys, and the new packages added to \"dependencies\".",
+        blockers.join("\n- ")
+    ))
+}
+
 pub fn commit_message_messages(diff: &str, files: &[String]) -> Vec<ChatMessage> {
     vec![
         ChatMessage::system(
