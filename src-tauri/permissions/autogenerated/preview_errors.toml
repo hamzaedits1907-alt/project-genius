@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-preview-errors"
+description = "Enables the preview_errors command without any pre-configured scope."
+commands.allow = ["preview_errors"]
+
+[[permission]]
+identifier = "deny-preview-errors"
+description = "Denies the preview_errors command without any pre-configured scope."
+commands.deny = ["preview_errors"]

@@ -110,7 +110,7 @@ async fn continuous_conversation_inspects_then_proposes_targeted_changes() {
         if last.contains("USER MESSAGE:\nMake the sidebar darker") {
             // Follow-up: the earlier request and the proposal's real status are in context.
             assert!(all.contains("Add a sidebar"), "conversation history is included");
-            assert!(all.contains("is now 'proposed'"), "proposal status comes from Genius records");
+            assert!(all.contains("files changed in this turn (proposed): src/App.tsx, src/components/Sidebar.tsx"), "proposal status comes from Genius records");
             return "<final>Should the darker sidebar use your existing dark palette (#111) or a new colour?</final>".into();
         }
         panic!("unexpected turn: {last}");
@@ -135,8 +135,7 @@ async fn continuous_conversation_inspects_then_proposes_targeted_changes() {
     let steps = g.agent_steps(r["taskId"].as_str().unwrap()).unwrap();
     let tools: Vec<(&str, &str, bool)> = steps.iter().map(|s| (s.agent.as_str(), s.tool.as_str(), s.ok)).collect();
     assert_eq!(tools, vec![("main", "search", true), ("main", "read_file", true)]);
-    let reviewer_ev = g.bus.list(Some(&pid), 3000).unwrap().into_iter().find(|e| e.title.starts_with("reviewer subagent")).expect("reviewer ran");
-    assert_eq!(reviewer_ev.status, EventStatus::Completed);
+    assert!(!g.bus.list(Some(&pid), 3000).unwrap().iter().any(|e| e.title.starts_with("reviewer subagent")), "small proposals skip the reviewer");
 
     // Conversation persisted with distinct kinds and an evidence-based report.
     let msgs = g.db.list_conversation_messages(&conv.id, 50).unwrap();
@@ -145,7 +144,6 @@ async fn continuous_conversation_inspects_then_proposes_targeted_changes() {
     assert_eq!(report["filesRead"], json!(["src/App.tsx"]));
     assert_eq!(report["changeset"]["status"], "proposed");
     assert!(report["notVerified"].as_array().unwrap().iter().any(|n| n.as_str().unwrap().contains("No build or test")));
-    assert!(msgs[1].meta["review"]["findings"].as_str().unwrap().contains("No blocking issues"));
     assert_eq!(g.db.get_conversation(&conv.id).unwrap().title, "Add a sidebar", "titled from the first message");
 
     // Follow-up in the same conversation.
@@ -197,7 +195,8 @@ async fn tools_are_sandboxed_validated_and_deduplicated() {
     let oks: Vec<(String, bool)> = steps.iter().map(|s| (s.tool.clone(), s.ok)).collect();
     assert_eq!(
         oks,
-        vec![("read_file".into(), false), ("read_file".into(), false), ("run_shell".into(), false), ("read_file".into(), false), ("project_facts".into(), true), ("project_facts".into(), false)]
+        // unknown argument fields are ignored (a rejected call costs a model round-trip)
+        vec![("read_file".into(), false), ("read_file".into(), false), ("run_shell".into(), false), ("read_file".into(), true), ("project_facts".into(), true), ("project_facts".into(), false)]
     );
     assert!(steps[0].summary.contains("excluded") || steps[0].summary.contains("secret"), "{}", steps[0].summary);
     // Honest report: the model claimed tests passed, but nothing ran.
@@ -228,10 +227,15 @@ async fn loop_is_bounded_and_plan_mode_never_proposes_files() {
     })
     .await;
     let conv = g.db.create_conversation(&pid, "New conversation").unwrap();
-    let r = run(&g, &pid, &conv.id, "Explore forever", AgentMode::Build).await;
-    assert_eq!(r["status"], json!(EventStatus::Completed));
-    assert_eq!(g.agent_steps(r["taskId"].as_str().unwrap()).unwrap().len(), 32, "bounded at 32 steps");
-    assert_eq!(*calls.lock().unwrap(), 33, "32 tool turns + 1 forced final");
+    let t = g.start_agent(&pid, AgentRequest { conversation_id: conv.id.clone(), message: "Explore forever".into(), effort: Some("fast".into()), ..Default::default() }).unwrap();
+    for _ in 0..400 {
+        if g.active_tasks(Some(&pid)).is_empty() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert_eq!(g.agent_steps(&t.id).unwrap().len(), 24, "bounded at 24 turns on fast effort");
+    assert_eq!(*calls.lock().unwrap(), 25, "24 tool turns + 1 forced final");
 
     let r = run(&g, &pid, &conv.id, "Plan it", AgentMode::Plan).await;
     assert_eq!(r["detail"]["result"]["kind"], "plan");
@@ -284,11 +288,11 @@ async fn large_builds_stage_files_track_progress_and_ask_questions() {
             return format!("Writing the tokens and the menu page.\n{}{}<tool>{{\"name\":\"write_files\",\"args\":{{}}}}</tool>", file_block("src/index.css", ":root { --accent: #c2410c; }\n"), file_block("src/pages/Menu.tsx", "// renders <tool> text safely\nexport default function Menu() {\n  return <h1>Menu</h1>;\n}\n"));
         }
         if last.starts_with("<tool_result name=\"write_files\"") {
-            assert!(last.contains("src/index.css (1 lines)") && last.contains("src/pages/Menu.tsx (4 lines)"), "{last}");
+            assert!(last.contains("saved 2 file(s): src/index.css (file block), src/pages/Menu.tsx (file block)"), "{last}");
             return "<tool>{\"name\":\"read_file\",\"args\":{\"path\":\"src/pages/Menu.tsx\"}}</tool>".into();
         }
         if last.starts_with("<tool_result name=\"read_file\"") {
-            assert!(last.contains("STAGED"), "staged files are readable: {last}");
+            assert!(last.contains("includes your edits from this task") && last.contains("<h1>Menu</h1>"), "staged files are readable: {last}");
             return "<tool>{\"name\":\"web_search\",\"args\":{\"query\":\"restaurant website ideas\"}}</tool>".into();
         }
         if last.starts_with("<tool_result name=\"web_search\"") {
@@ -355,4 +359,99 @@ async fn output_cut_off_mid_file_is_staged_and_continued() {
     let mut paths: Vec<&str> = files.iter().map(|f| f.path.as_str()).collect();
     paths.sort();
     assert_eq!(paths, vec!["src/Hero.tsx", "src/tokens.css"], "complete file from the cut-off turn is kept");
+}
+
+/// Reproduces the failure seen in a real session (write_files called without file blocks, the
+/// app crashing after the change) and drives the new loop: several calls per turn, code-fence
+/// fallback, edit_file, autopilot checkpoints, a failing type check handed back and fixed,
+/// a message steered in mid-run, then rewinding the conversation restores the files.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn autopilot_edits_verifies_fixes_and_rewinds() {
+    let genius: Arc<std::sync::OnceLock<Arc<Genius>>> = Arc::new(std::sync::OnceLock::new());
+    let gh = genius.clone();
+    let (_tmp, g, pid, log, _server) = setup(move |_system, last, msgs| {
+        let all: String = msgs.iter().map(|m| m["content"].as_str().unwrap_or("")).collect::<Vec<_>>().join("\n");
+        if last.contains("USER MESSAGE:\nAdd a stats widget") {
+            assert!(last.contains("<<<CURRENT: src/App.tsx>>>"), "small projects arrive as a snapshot");
+            // The user sends a follow-up while Genius works.
+            let g = gh.get().unwrap();
+            let task = g.active_tasks(None).into_iter().find(|t| t.kind == "agent").unwrap();
+            g.steer_agent(&task.id, "Also call the widget Stats").unwrap();
+            let fence = "**src/widget.css**\n```css\n.widget { padding: 8px; }\n```\n";
+            return format!(
+                "Adding the widget.\n{fence}<tool>{{\"name\":\"write_files\",\"args\":{{}}}}</tool>\n<tool>{{\"name\": \"write_file\", \"args\": {{\"path\": \"src/Widget.tsx\", \"content\": \"import './widget.css';\nexport default function Widget() {{\n  return <div className=\\\"widget\\\">Stats</div>;\n}}\n\"}}}}</tool>\n<tool_call>{{\"name\": \"edit_file\", \"arguments\": {{\"path\": \"src/App.tsx\", \"old_string\": \"<h1>Dashboard</h1>\", \"new_string\": \"<h1>Dashboard</h1><Widget />BROKEN\"}}}}</tool_call>"
+            );
+        }
+        if last.contains("NEW MESSAGE FROM THE USER") {
+            // Injected right after the results of the first turn's three calls.
+            assert!(last.contains("Also call the widget Stats"));
+            let results = msgs[msgs.len() - 2]["content"].as_str().unwrap();
+            assert!(results.contains("src/widget.css (1 lines, from a code fence)"), "{results}");
+            assert!(results.contains("<tool_result name=\"edit_file\" ok=\"true\">"), "{results}");
+            assert!(results.contains("[Genius] Applied to the project (checkpoint): src/App.tsx"), "{results}");
+            return "It's already called Stats.\n<final>Added the Stats widget.</final>".into();
+        }
+        if last.starts_with("AUTOPILOT CHECK FAILED") {
+            assert!(last.contains("TS2304") && last.contains("BROKEN"), "real check output: {last}");
+            return "Fixing the stray text.\n<tool>{\"name\":\"edit_file\",\"args\":{\"path\":\"src/App.tsx\",\"edits\":[{\"old\":\"<Widget />BROKEN\",\"new\":\"<Widget />\"},{\"old\":\"import './App.css';\",\"new\":\"import './App.css';\\nimport Widget from './Widget';\"}]}}</tool>".into();
+        }
+        if last.contains("<tool_result name=\"edit_file\"") {
+            return "<final>Added the Stats widget and fixed the type error.</final>".into();
+        }
+        panic!("unexpected turn: {last}\n---\n{all}");
+    })
+    .await;
+    let _ = genius.set(g.clone());
+    let ws = g.workspace(&pid).unwrap();
+    ws.write_text("package.json", r#"{"name":"dash","scripts":{"typecheck":"node check.js"}}"#).unwrap();
+    ws.write_text("check.js", "const s = require('fs').readFileSync('src/App.tsx', 'utf8');\nif (s.includes('BROKEN')) { console.error(\"src/App.tsx(4,60): error TS2304: Cannot find name 'BROKEN'.\"); process.exit(2); }\n").unwrap();
+    std::fs::create_dir_all(ws.root().join("node_modules")).unwrap();
+    std::thread::sleep(Duration::from_millis(20));
+    std::fs::write(ws.root().join("node_modules/.package-lock.json"), "{}").unwrap();
+    let mut s = g.settings().unwrap();
+    s.approvals.apply_ai_edits = genius_core::settings::Policy::Auto;
+    g.save_settings(&s).unwrap();
+    // The modified typecheck script needs the user's approval: approve it like the user would.
+    let ga = g.clone();
+    let approver = tokio::spawn(async move {
+        loop {
+            for a in ga.approvals.pending(None) {
+                ga.approvals.respond(&a.id, true).unwrap();
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    });
+
+    let conv = g.db.create_conversation(&pid, "New conversation").unwrap();
+    let r = run(&g, &pid, &conv.id, "Add a stats widget", AgentMode::Build).await;
+    approver.abort();
+    assert_eq!(r["detail"]["result"]["kind"], "proposal", "{r}");
+    assert_eq!(r["detail"]["result"]["applied"], true);
+    let app = ws.read_text("src/App.tsx").unwrap();
+    assert!(app.contains("import Widget from './Widget';") && app.contains("<Widget />") && !app.contains("BROKEN"), "{app}");
+    assert_eq!(ws.read_text("src/widget.css").unwrap(), ".widget { padding: 8px; }\n");
+    assert!(ws.exists("src/Widget.tsx"));
+
+    let msgs = g.db.list_conversation_messages(&conv.id, 20).unwrap();
+    assert_eq!(msgs.iter().map(|m| (m.role.as_str(), m.content.as_str())).collect::<Vec<_>>()[..2], [("user", "Add a stats widget"), ("user", "Also call the widget Stats")], "steered message is part of the conversation");
+    let answer = msgs.last().unwrap();
+    assert_eq!(answer.content, "Added the Stats widget and fixed the type error.");
+    let checks = answer.meta["report"]["autopilot"]["checks"].as_array().unwrap();
+    assert_eq!(checks.iter().map(|c| c["ok"].clone()).collect::<Vec<_>>(), vec![json!(false), json!(true)], "failed check handed back, then passed");
+    assert_eq!(answer.meta["changesetIds"].as_array().unwrap().len(), 2, "one checkpoint per editing turn");
+    let steps = g.agent_steps(r["taskId"].as_str().unwrap()).unwrap();
+    let tools: Vec<(&str, bool, i64)> = steps.iter().map(|s| (s.tool.as_str(), s.ok, s.result["turn"].as_i64().unwrap())).collect();
+    assert_eq!(tools, vec![("write_files", true, 1), ("write_file", true, 1), ("edit_file", true, 1), ("run_check", false, 2), ("edit_file", true, 3), ("run_check", true, 4)]);
+    assert_eq!(steps[1].args["content"].as_str().unwrap().lines().count(), 4, "short content kept in step args");
+
+    // Rewind to the first message: files return to their original state.
+    let first = msgs[0].id.clone();
+    let rw = g.rewind_conversation(&conv.id, &first, true).unwrap();
+    assert_eq!(rw["revertedChangesets"], 2);
+    assert_eq!(ws.read_text("src/App.tsx").unwrap(), APP);
+    assert!(!ws.exists("src/Widget.tsx") && !ws.exists("src/widget.css"));
+    assert!(g.db.list_conversation_messages(&conv.id, 20).unwrap().is_empty());
+    for body in log.lock().unwrap().iter() {
+        assert!(!body.to_string().contains("SECRET_VALUE_123"));
+    }
 }

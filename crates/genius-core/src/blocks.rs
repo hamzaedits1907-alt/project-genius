@@ -39,7 +39,7 @@ struct OpenBlock {
     held_fence: Option<String>,
 }
 
-fn parse_marker(line: &str) -> Option<(&'static str, String)> {
+pub(crate) fn parse_marker(line: &str) -> Option<(&'static str, String)> {
     let t = line.trim();
     if !(t.starts_with("<<<") && t.ends_with(">>>")) {
         return None;
@@ -184,6 +184,121 @@ pub fn collect(events: &[BlockEvent]) -> ParsedOutput {
     o
 }
 
+/// Files a model wrote as Markdown code fences labelled with a path instead of file blocks:
+/// a path in the fence info (```` ```tsx src/App.tsx ````, `title="…"`), on the line just
+/// above the fence (`**src/App.tsx**`, `### src/App.tsx:`), or as a first-line comment.
+/// Fences that look like excerpts ("// ... rest unchanged") are reported in `skipped`
+/// rather than returned, because applying them would truncate the file.
+#[derive(Debug, Default, PartialEq)]
+pub struct FencedOutput {
+    pub files: Vec<(String, String)>,
+    pub skipped: Vec<String>,
+}
+
+pub fn fenced_files(text: &str) -> FencedOutput {
+    let mut out = FencedOutput::default();
+    let lines: Vec<&str> = text.lines().collect();
+    let mut i = 0;
+    while i < lines.len() {
+        let t = lines[i].trim_start();
+        if !t.starts_with("```") {
+            i += 1;
+            continue;
+        }
+        let fence_len = t.chars().take_while(|c| *c == '`').count();
+        let info = t[fence_len..].trim();
+        let end = (i + 1..lines.len()).find(|&j| {
+            let l = lines[j].trim();
+            l.len() >= fence_len && l.chars().all(|c| c == '`')
+        });
+        let Some(end) = end else { break };
+        let mut body: Vec<&str> = lines[i + 1..end].to_vec();
+        let mut path = path_in_info(info).or_else(|| (1..=2).filter(|d| i >= *d).map(|d| lines[i - d]).find(|l| !l.trim().is_empty()).and_then(path_in_heading));
+        if path.is_none() {
+            if let Some(p) = body.first().and_then(|l| path_in_comment(l)) {
+                path = Some(p);
+                if path.as_deref().is_some_and(|p| p.ends_with(".json")) {
+                    body.remove(0);
+                }
+            }
+        }
+        if let Some(p) = path {
+            let content = format!("{}\n", body.join("\n"));
+            if looks_like_excerpt(&content) {
+                out.skipped.push(p);
+            } else {
+                out.files.retain(|(q, _)| q != &p);
+                out.files.push((p, content));
+            }
+        }
+        i = end + 1;
+    }
+    out
+}
+
+fn is_path(s: &str) -> bool {
+    static RE: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| regex::Regex::new(r"^(\./)?[A-Za-z0-9_@.\-\[\]]+(/[A-Za-z0-9_@.\-\[\]]+)*\.[A-Za-z0-9]{1,8}$").unwrap());
+    let s = s.strip_prefix("./").unwrap_or(s);
+    RE.is_match(s) && !s.contains("..") && !s.starts_with('.')
+}
+
+fn clean_path(s: &str) -> Option<String> {
+    let s = s.trim().trim_matches(|c: char| matches!(c, '`' | '"' | '\'' | '*' | ':' | '(' | ')')).trim();
+    is_path(s).then(|| s.trim_start_matches("./").to_string())
+}
+
+fn path_in_info(info: &str) -> Option<String> {
+    for part in info.split_whitespace() {
+        let v = part.split_once('=').map(|(k, v)| if ["title", "file", "filename", "path", "name"].contains(&k) { v } else { "" }).unwrap_or(part);
+        let v = v.split_once(':').map(|(lang, rest)| if lang.chars().all(|c| c.is_ascii_alphanumeric()) && !rest.is_empty() { rest } else { v }).unwrap_or(v);
+        if let Some(p) = clean_path(v) {
+            return Some(p);
+        }
+    }
+    None
+}
+
+fn path_in_heading(line: &str) -> Option<String> {
+    let mut l = line.trim().trim_start_matches(['#', '-', '>', ' ']).trim();
+    for prefix in ["File:", "file:", "Path:", "path:", "Filename:", "Create", "Update", "Updated", "New file:"] {
+        if let Some(rest) = l.strip_prefix(prefix) {
+            l = rest.trim();
+        }
+    }
+    let l = l.trim_end_matches(':').trim();
+    // the heading must be essentially just the path (optionally with a short parenthetical)
+    let head = l.split(" (").next().unwrap_or(l).trim();
+    if head.split_whitespace().count() != 1 {
+        return None;
+    }
+    clean_path(head)
+}
+
+fn path_in_comment(line: &str) -> Option<String> {
+    let t = line.trim();
+    let inner = t
+        .strip_prefix("//")
+        .or_else(|| t.strip_prefix("/*").map(|r| r.trim_end_matches("*/")))
+        .or_else(|| t.strip_prefix("<!--").map(|r| r.trim_end_matches("-->")))
+        .or_else(|| t.strip_prefix('#'))?;
+    let inner = inner.trim();
+    let inner = inner.strip_prefix("File:").or_else(|| inner.strip_prefix("file:")).unwrap_or(inner).trim();
+    if inner.split_whitespace().count() != 1 || !inner.contains('/') && !inner.contains('.') {
+        return None;
+    }
+    clean_path(inner)
+}
+
+/// True when a fenced "file" is evidently an excerpt rather than complete content.
+pub fn looks_like_excerpt(content: &str) -> bool {
+    content.lines().any(|l| {
+        let t = l.trim().to_lowercase();
+        let comment = t.starts_with("//") || t.starts_with("/*") || t.starts_with("{/*") || t.starts_with('#') || t.starts_with("<!--");
+        t == "..." || t == "…" || (comment && (t.contains("...") || t.contains('…')) && (t.contains("rest") || t.contains("existing") || t.contains("unchanged") || t.contains("same") || t.contains("other") || t.len() < 12))
+            || (comment && (t.contains("rest of the") || t.contains("remains unchanged") || t.contains("existing code") || t.contains("keep the same")))
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -240,5 +355,26 @@ mod tests {
         let s = "<<<FILE: a.ts>>>\n1\n<<<END FILE>>>\n<<<FILE: a.ts>>>\n2\n<<<END FILE>>>\n";
         let o = collect(&parse_all(s));
         assert_eq!(o.files, vec![("a.ts".to_string(), "2\n".to_string())]);
+    }
+
+    #[test]
+    fn fenced_files_with_path_labels() {
+        let s = "Here you go.\n\n**src/App.tsx**\n```tsx\nexport default function App() { return null; }\n```\n\n```css src/index.css\n:root { color: red; }\n```\n\n```json\n// package.json\n{\"a\": 1}\n```\n\n```bash\nnpm run dev\n```\n\n### `src/lib/x.ts`:\n```ts\n// src/lib/x.ts\nexport const x = 1;\n```\n";
+        let o = fenced_files(s);
+        let paths: Vec<&str> = o.files.iter().map(|f| f.0.as_str()).collect();
+        assert_eq!(paths, vec!["src/App.tsx", "src/index.css", "package.json", "src/lib/x.ts"]);
+        assert_eq!(o.files[2].1, "{\"a\": 1}\n", "path comment removed from JSON");
+        assert!(o.files[3].1.starts_with("// src/lib/x.ts"), "comments kept in code");
+    }
+
+    #[test]
+    fn fenced_excerpts_and_prose_are_not_files() {
+        let o = fenced_files("Update src/App.tsx like this:\n```tsx src/App.tsx\nimport x;\n// ... rest of the file unchanged\n```\n");
+        assert!(o.files.is_empty());
+        assert_eq!(o.skipped, vec!["src/App.tsx"]);
+        let o = fenced_files("Run this in the terminal now:\n```\nnpm i\n```\n");
+        assert_eq!(o, FencedOutput::default());
+        assert!(fenced_files("```ts ../etc/passwd.ts\nx\n```\n").files.is_empty());
+        assert!(fenced_files("```tsx\nunclosed").files.is_empty());
     }
 }

@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-deploy-status"
+description = "Enables the deploy_status command without any pre-configured scope."
+commands.allow = ["deploy_status"]
+
+[[permission]]
+identifier = "deny-deploy-status"
+description = "Denies the deploy_status command without any pre-configured scope."
+commands.deny = ["deploy_status"]

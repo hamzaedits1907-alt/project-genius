@@ -449,7 +449,7 @@ impl Genius {
         self.bus.push(channels::FS_CHANGED, json!({ "projectId": project_id, "paths": cs.files.iter().map(|f| f.path.clone()).collect::<Vec<_>>() }));
     }
 
-    fn apply_changeset_inner(&self, project_id: &str, task_id: Option<&str>, id: &str) -> Result<Changeset> {
+    pub(crate) fn apply_changeset_inner(&self, project_id: &str, task_id: Option<&str>, id: &str) -> Result<Changeset> {
         let ws = self.workspace(project_id)?;
         let store = ChangeStore::new(&self.db);
         let mut ev = self.bus.start(Some(project_id), task_id, EventKind::Changeset, EventStatus::Running, "Applying changes", json!({ "changesetId": id }));

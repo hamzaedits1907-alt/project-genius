@@ -583,6 +583,16 @@ impl Db {
         Ok(())
     }
 
+    /// Delete the given messages of a conversation (used when rewinding).
+    pub fn delete_messages(&self, conversation_id: &str, ids: &[String]) -> Result<usize> {
+        let conn = self.conn();
+        let mut n = 0;
+        for id in ids {
+            n += conn.execute("DELETE FROM messages WHERE id = ?1 AND conversation_id = ?2", params![id, conversation_id])?;
+        }
+        Ok(n)
+    }
+
     // ---------- agent steps (provenance of every tool call) ----------
 
     pub fn insert_agent_step(&self, s: &AgentStepRow) -> Result<()> {

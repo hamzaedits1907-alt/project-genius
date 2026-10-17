@@ -737,3 +737,23 @@ pub async fn install_update(app: AppHandle) -> Result<String> {
     }
     Ok(outcome.message)
 }
+
+#[tauri::command]
+pub fn list_commands() -> Vec<genius_core::slash::SlashCommand> {
+    genius_core::slash::list()
+}
+
+#[tauri::command]
+pub fn steer_agent(g: G, task_id: String, message: String) -> Result<()> {
+    g.steer_agent(&task_id, &message)
+}
+
+#[tauri::command]
+pub fn rewind_conversation(g: G, conversation_id: String, message_id: String, revert_files: bool) -> Result<serde_json::Value> {
+    g.rewind_conversation(&conversation_id, &message_id, revert_files)
+}
+
+#[tauri::command]
+pub async fn compact_conversation(g: G<'_>, conversation_id: String) -> Result<serde_json::Value> {
+    g.compact_conversation(&conversation_id, &tokio_util::sync::CancellationToken::new()).await
+}
