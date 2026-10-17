@@ -67,13 +67,22 @@ Details in [docs/TESTING.md](docs/TESTING.md).
 
 ## Updates & releases
 
-Genius checks [GitHub Releases](https://github.com/hamzaedits1907-alt/project-genius/releases) for a newer version when it starts (turn this off in **Settings** with *Check for updates automatically*). When an update is available it downloads the installer for your platform from GitHub, verifies its SHA-256 checksum when the release publishes one, and launches it: the Windows installer or macOS disk image opens and Genius closes; an AppImage is replaced in place and Genius restarts; a `.deb` opens in your software installer. Downloads are only accepted from GitHub hosts.
+Genius checks [GitHub Releases](https://github.com/hamzaedits1907-alt/project-genius/releases) when it starts and every 6 hours (turn this off in **Settings → Updates & about**). When a new version exists it shows what's new and, on **Update now**, downloads the installer for your platform, verifies its published SHA-256 checksum and installs it:
 
-To publish a release:
+| Platform | What happens |
+|---|---|
+| Windows | the setup `.exe` runs and Genius closes (unsigned: SmartScreen → *More info → Run anyway*) |
+| macOS | the `.dmg` opens; drag Genius into Applications (not notarized: if needed `xattr -cr /Applications/Genius.app`) |
+| Linux AppImage | the AppImage replaces itself and restarts — fully automatic |
+| Linux .deb | the package opens in your software installer |
 
-1. Bump the version in `Cargo.toml` (workspace), `src-tauri/tauri.conf.json` and `package.json`.
-2. Commit, then tag and push: `git tag v0.2.0 && git push origin v0.2.0`.
-3. The [Release workflow](.github/workflows/release.yml) builds installers for Windows, macOS (Apple silicon and Intel) and Linux and creates the GitHub release with them attached. Installed copies pick it up on their next start.
+Downloads are only accepted from GitHub. If the repository is private, the updater uses your GitHub CLI login (Settings → GitHub) or `GH_TOKEN`.
+
+**Publishing a release** (one command):
+
+1. Add a section for the new version at the top of [CHANGELOG.md](CHANGELOG.md) — it becomes the release notes shown in the app.
+2. Run `scripts/release.sh 0.2.1`. It bumps every version field, commits, tags `v0.2.1` and pushes.
+3. The [Release workflow](.github/workflows/release.yml) builds Windows, macOS (Apple silicon + Intel) and Linux installers, publishes the release and its `.sha256` checksums. Installed copies update themselves.
 
 ## Layout
 

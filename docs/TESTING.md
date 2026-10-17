@@ -30,7 +30,7 @@ Requires Node/npm and npm registry access; skipped with a message otherwise (`GE
 
 Drives the **real desktop app** through WebDriver (`tauri-driver` + `WebKitWebDriver`) under Xvfb, with `tests/ui/mock_nvidia.py` standing in for NVIDIA:
 
-settings (base URL, key, refresh models, embedding model hidden, select, test connection) → new project → plan rendered → generate → **approval dialog for npm install** → real install/build/dev server → preview shows the generated app and **responds to input** → element picker returns the clicked element → change request → diff review → apply → verification build succeeds → preview hot-reloads with the change → terminal output → history → Git init, identity, stage, commit → readiness → **restart the app** → project and build status persisted. Screenshots are written for every step.
+first-run quick setup on Home (key saved, model chosen automatically) → **simple mode**: one prompt → plan → code → **approval dialog for npm install** → real install/build → the dev server starts by itself and the preview shows the generated app and **responds to input** → Genius asks a question and a **one-click answer** is sent → element picker → change request → **Apply from the chat** → verification build succeeds → preview hot-reloads → Code view → switch to **advanced mode** → terminal output → history → Git init, identity, stage, commit → readiness → update check against GitHub Releases → **restart the app** → project, conversation and mode persisted. Screenshots are written for every step.
 
 ```bash
 sudo apt install xvfb webkit2gtk-driver && cargo install tauri-driver && pip install selenium
@@ -39,6 +39,15 @@ python3 tests/ui/e2e_ui.py /tmp/genius-shots
 ```
 
 Note: WebKitWebDriver cannot focus inputs inside a cross-origin iframe, so the test interacts with the previewed app by dispatching DOM events inside the frame (the app's real React handlers run).
+
+### Updater, end to end with real releases — `tests/ui/update_e2e.py`
+
+Downloads the **previous release's real AppImage** from GitHub, runs it under Xvfb through WebDriver, lets it discover the latest release by itself, clicks **Update now**, then checks that the AppImage on disk was replaced by a file whose SHA-256 matches the checksum published with the release, that the app relaunched itself, and that the relaunched app reports the new version and shows its "Welcome to Genius x.y.z" screen.
+
+```bash
+python3 tests/ui/update_e2e.py /tmp/update-shots          # previous release → latest
+python3 tests/ui/update_e2e.py /tmp/update-shots v0.2.0   # a specific old release → latest
+```
 
 ## 4. Frontend — `npm run typecheck && npm run lint && npm test && npm run build`
 

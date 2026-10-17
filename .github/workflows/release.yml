@@ -1,5 +1,8 @@
 name: Release
 
+# Push a tag like v0.2.1 (matching the version in src-tauri/tauri.conf.json) to build installers
+# for Windows, macOS and Linux and publish them as a GitHub release. Installed copies of Genius
+# find the release through the in-app updater, which verifies the .sha256 files made below.
 on:
   push:
     tags:
@@ -10,7 +13,36 @@ permissions:
   contents: write
 
 jobs:
+  prepare:
+    runs-on: ubuntu-22.04
+    outputs:
+      version: ${{ steps.meta.outputs.version }}
+      notes: ${{ steps.meta.outputs.notes }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: meta
+        name: Read version and release notes
+        run: |
+          version=$(jq -r .version src-tauri/tauri.conf.json)
+          if [[ "$GITHUB_REF_TYPE" == "tag" && "$GITHUB_REF_NAME" != "v$version" ]]; then
+            echo "::error::Tag $GITHUB_REF_NAME does not match the app version v$version in src-tauri/tauri.conf.json"
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          # The CHANGELOG.md section for this version becomes the release notes shown in the app.
+          notes=$(awk -v v="$version" '
+            $0 ~ "^## \\[?v?"v"\\]?" { on=1; next }
+            on && /^## / { exit }
+            on { print }' CHANGELOG.md)
+          [[ -z "${notes//[[:space:]]/}" ]] && notes="Genius $version"
+          {
+            echo "notes<<GENIUS_NOTES_EOF"
+            echo "$notes"
+            echo "GENIUS_NOTES_EOF"
+          } >> "$GITHUB_OUTPUT"
+
   build:
+    needs: prepare
     name: Build (${{ matrix.platform }} ${{ matrix.args }})
     strategy:
       fail-fast: false
@@ -32,7 +64,8 @@ jobs:
         if: matrix.platform == 'ubuntu-22.04'
         run: |
           sudo apt-get update
-          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf libsecret-1-dev libssl-dev libdbus-1-dev pkg-config
+          sudo apt-get install -y libwebkit2gtk-4.1-dev build-essential curl wget file xdg-utils libxdo-dev libssl-dev \
+            libayatana-appindicator3-dev librsvg2-dev patchelf libsecret-1-dev libdbus-1-dev pkg-config
 
       - uses: actions/setup-node@v4
         with:
@@ -55,9 +88,27 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
-          tagName: ${{ github.ref_name }}
-          releaseName: 'Genius ${{ github.ref_name }}'
-          releaseBody: 'See the assets below to download and install Genius. Existing installs update themselves from inside the app.'
+          tagName: v__VERSION__
+          releaseName: 'Genius v__VERSION__'
+          releaseBody: ${{ needs.prepare.outputs.notes }}
           releaseDraft: false
           prerelease: false
           args: ${{ matrix.args }}
+
+  checksums:
+    needs: [prepare, build]
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Publish SHA-256 checksums for every installer
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: v${{ needs.prepare.outputs.version }}
+        run: |
+          mkdir assets && cd assets
+          gh release download "$TAG" -R "$GITHUB_REPOSITORY"
+          for f in *; do
+            case "$f" in *.sha256|*.sig|*.json) continue ;; esac
+            sha256sum "$f" | awk -v n="$f" '{ print $1 "  " n }' > "$f.sha256"
+          done
+          ls -la
+          gh release upload "$TAG" *.sha256 -R "$GITHUB_REPOSITORY" --clobber

@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
 """Drive the real Genius desktop app through WebDriver (tauri-driver + WebKitWebDriver).
 
-Covers the MVP workflow through the actual UI: settings → key → model picker → test
-connection → describe app → plan → generate (with approval dialog) → live preview
-(interacting with the running app inside the iframe) → change request → diff review →
-apply → history → Git init/commit → restart and reopen.
+Covers the main workflow through the actual UI: first-run quick setup on Home (key → model
+picked automatically) → one prompt in simple mode → plan → code → install approval → the
+preview starts by itself (interacting with the running app inside the iframe) → Genius asks
+a question with clickable answers → element picker → change request → inline Apply in chat
+→ verified build → hot reload → Advanced mode (terminal, history, Git init/commit,
+readiness) → update check against GitHub Releases → restart and reopen.
 
 Only the NVIDIA API is replaced by tests/ui/mock_nvidia.py. Requires: Xvfb, tauri-driver,
 WebKitWebDriver, selenium, Node/npm, and a debug build (npx tauri build --debug --no-bundle).
@@ -122,49 +124,39 @@ def set_input(el, value):
 ok = False
 try:
     d = session()
-    wait(d, "//h1[contains(., 'What do you want to build?')]")
+    wait(d, "//h1[contains(., 'What should we build today?')]")
+    text_present(d, "Connect Genius to its AI brain")
     shot(d, "home-first-run")
 
-    # ---- Settings: endpoint, key, models, test connection
+    # ---- Point Genius at the mock NVIDIA endpoint (test-only), then quick setup on Home
     click(d, "//button[@aria-label='Settings']")
     wait(d, "//h2[.='NVIDIA API']")
     base = wait(d, "//label[.='API base URL']/following-sibling::input")
     set_input(base, f"http://127.0.0.1:{PORT}/v1")
     click(d, btn("Save generation settings"))
     text_present(d, "Settings saved")
+    click(d, "//button[@aria-label='Home']")
     set_input(wait(d, "//input[@aria-label='NVIDIA API key']"), "nvapi-ui-test-key-0123456789")
-    click(d, btn("Save key"))
-    text_present(d, "Saved nvapi-")
-    click(d, btn("Refresh models"))
-    wait(d, "//*[@role='option'][.//span[.='mock/coder-1']]")
-    assert not d.find_elements(By.XPATH, "//*[@role='option'][.//span[.='mock/embed-1']]"), "embedding model hidden by default"
-    click(d, "//*[@role='option'][.//span[.='mock/coder-1']]")
-    text_present(d, "Selected: mock/coder-1")
-    click(d, btn("Test connection"))
-    text_present(d, "Connected. 3 models available.", 30)
-    shot(d, "settings-connected")
-    log("settings OK")
+    click(d, btn("Connect"))
+    text_present(d, "All set! Genius will use mock/", 60)
+    wait(d, "//button[@aria-label='Build it']")
+    assert not d.find_elements(By.XPATH, "//*[contains(., 'Connect Genius to its AI brain')]/ancestor::div[contains(@class,'quick-setup')]"), "setup card gone"
+    shot(d, "home-ready")
+    log("quick setup OK (key saved, model picked automatically)")
 
-    # ---- Create project → plan
-    click(d, "//button[@aria-label='New project']")
-    set_input(wait(d, "//input[@id='pname']"), "Genius Todo")
-    set_input(wait(d, "//textarea[@id='pdesc']"), "A small todo list where I can add tasks and check them off.")
-    click(d, btn("Create plan"))
-    wait(d, "//h2[.='Genius Todo']", 60)
-    text_present(d, "Add tasks")
-    shot(d, "plan-review")
-    log("plan OK")
-
-    # ---- Generate: approval for npm install, then real build and preview
-    click(d, "//button[contains(., 'Generate application')]")
-    wait(d, "//*[@role='dialog'][@aria-label='Approval required']", 90)
+    # ---- Simple mode: one prompt → plan → code → install approval → running app
+    set_input(wait(d, "//textarea[@aria-label='Describe your app']"), "A small todo list where I can add tasks and check them off.")
+    click(d, "//button[@aria-label='Build it']")
+    wait(d, "//*[contains(@class,'chat-name')]", 30)
+    assert not d.find_elements(By.XPATH, "//button[@aria-label='Source control']"), "simple mode hides the IDE"
+    wait(d, "//*[@role='dialog'][@aria-label='Approval required']", 180)
     text_present(d, "npm install --no-audit --no-fund")
-    shot(d, "approval-install")
+    shot(d, "simple-approval-install")
     click(d, "//*[@role='dialog']//button[.='Approve']")
-    log("install approved; waiting for real install + build + dev server…")
+    log("install approved; waiting for generation, real install and the auto-started preview…")
     frame = wait(d, "//iframe[@title='Application preview']", 300)
     time.sleep(2)
-    shot(d, "preview-running")
+    shot(d, "simple-preview-running")
     d.switch_to.frame(frame)
     wait(d, "//h1[.='Genius Todo']", 60)
     # WebKitWebDriver cannot focus elements inside a cross-origin iframe, so interact via
@@ -179,10 +171,19 @@ try:
     d.execute_script("[...document.querySelectorAll('button')].find(b => b.textContent === 'Add task').click()")
     wait(d, "//li[contains(., 'Write the report')]")
     d.switch_to.default_content()
-    shot(d, "preview-interacted")
-    log("generated app runs and responds inside the preview")
+    shot(d, "simple-preview-interacted")
+    log("one prompt produced a running app that responds inside the preview")
 
-    # ---- Element picker: select the heading inside the running app
+    # ---- Genius asks a question with one-click answers
+    set_input(wait(d, "//textarea[@aria-label='Change request']"), "Surprise me")
+    click(d, "//button[@aria-label='Send']")
+    text_present(d, "Which style do you prefer?", 60)
+    shot(d, "ask-question")
+    click(d, btn("Bold & colorful"))
+    text_present(d, "bold and colorful", 60)
+    log("question with clickable answers OK")
+
+    # ---- Element picker → change request → inline Apply in chat → verified build → hot reload
     click(d, "//button[@aria-label='Select an element to change']")
     frame = wait(d, "//iframe[@title='Application preview']")
     d.switch_to.frame(frame)
@@ -190,39 +191,38 @@ try:
     d.execute_script("document.querySelector('h1').click()")
     d.switch_to.default_content()
     text_present(d, "Selected in preview:", 15)
-    shot(d, "element-picked")
-    log("element picker returned the clicked element")
-
-    # ---- Change request → review diff → apply → verified build
-    click(d, "//button[@role='tab'][contains(., 'Assistant')]")
     set_input(wait(d, "//textarea[@aria-label='Change request']"), "Add a footer that says Made with Genius")
-    time.sleep(0.8)  # let the context preview compute
-    click(d, btn("Send"))
-    wait(d, "//button[starts-with(normalize-space(.), 'Apply 1 file')]", 90)
-    time.sleep(0.5)
-    shot(d, "review-proposed")
-    # The conversation records the agent's real tool use and an honest report.
+    click(d, "//button[@aria-label='Send']")
+    apply = "//div[contains(@class,'proposal')]//button[normalize-space(.)='Apply']"
+    wait(d, apply, 90)
     text_present(d, "Proposed changes")
     text_present(d, "What Genius did")
-    text_present(d, "Files read: src/App.tsx")
-    click(d, "//button[starts-with(normalize-space(.), 'Apply 1 file')]")
-    wait(d, "//*[contains(@class,'ev')]//*[contains(., 'Production build')]", 30)
-    WebDriverWait(d, 240).until(lambda drv: drv.find_elements(By.XPATH, "//header//span[contains(@class,'badge')][contains(., 'build succeeded')]") and not drv.find_elements(By.XPATH, "//header//span[contains(@class,'badge run')]"))
-    click(d, "//button[@role='tab'][contains(., 'Preview')]")
+    shot(d, "simple-proposal")
+    click(d, apply)
+    # The automatic verification build of the applied change succeeds (shown on the proposal).
+    wait(d, "//div[contains(@class,'proposal')]//*[contains(@class,'badge')][contains(., 'build succeeded')]", 240)
+    WebDriverWait(d, 60).until(lambda drv: drv.find_elements(By.XPATH, "//header//span[contains(@class,'pill ok')][contains(., 'Ready')]"))
     frame = wait(d, "//iframe[@title='Application preview']")
     d.switch_to.frame(frame)
     wait(d, "//footer[contains(., 'Made with Genius')]", 60)
     d.switch_to.default_content()
-    shot(d, "preview-after-change")
-    log("change applied, build verified, preview hot-reloaded")
+    shot(d, "simple-after-change")
+    log("change applied from the chat, build verified, preview hot-reloaded")
 
-    # ---- Terminal + history
+    # ---- Code view in simple mode
+    click(d, "//button[@role='tab'][contains(., 'Code')]")
+    wait(d, "//*[contains(@class,'tree-row')][contains(., 'App.tsx')]")
+    shot(d, "simple-code")
+
+    # ---- Switch to Advanced: the full IDE
+    click(d, "//*[@role='radio'][normalize-space(.)='Advanced']")
+    wait(d, "//button[@aria-label='Source control']")
     click(d, "//button[@role='tab'][contains(., 'Terminal')]")
     text_present(d, "npm run build")
-    shot(d, "terminal")
+    shot(d, "advanced-terminal")
     click(d, "//button[@aria-label='History & recovery']")
     text_present(d, "AI generation")
-    shot(d, "history")
+    shot(d, "advanced-history")
 
     # ---- Git: init, identity, stage, commit
     click(d, "//button[@aria-label='Source control']")
@@ -235,27 +235,37 @@ try:
     click(d, "//button[starts-with(normalize-space(.), 'Commit')]")
     text_present(d, "Initial version of Genius Todo", 30)
     text_present(d, "Working tree clean")
-    shot(d, "git-committed")
+    shot(d, "advanced-git-committed")
     log("git commit OK")
 
-    # ---- Readiness report
     click(d, "//button[@role='tab'][contains(., 'Readiness')]")
     text_present(d, "Changes committed")
-    shot(d, "readiness")
+    shot(d, "advanced-readiness")
+
+    # ---- Settings: updates (real GitHub check) and interface mode
+    click(d, "//button[@aria-label='Settings']")
+    click(d, "//nav//button[contains(., 'Updates & about')]")
+    text_present(d, "Version 0.")
+    click(d, btn("Check for updates"))
+    WebDriverWait(d, 40).until(lambda drv: drv.find_elements(By.XPATH, "//*[contains(@class,'badge')][contains(., 'Up to date') or contains(., 'available')]") or drv.find_elements(By.XPATH, "//*[contains(@class,'toast')]"))
+    time.sleep(1)
+    shot(d, "settings-updates")
+    log("update check answered: " + d.execute_script("return [...document.querySelectorAll('.toast, .badge')].map(x=>x.textContent).join(' | ')")[:300])
 
     d.quit()
     time.sleep(2)
 
-    # ---- Restart: project persisted
+    # ---- Restart: project, conversation and the chosen mode persist
     d = session()
-    wait(d, "//h3[.='Genius Todo']", 30)
+    wait(d, "//h3[.='Todo List Tasks' or contains(.,'Todo')]", 30)
     text_present(d, "build succeeded")
     shot(d, "home-after-restart")
     click(d, "//*[contains(@class,'project-card')]")
     text_present(d, "Add a footer that says Made with Genius", 30)
     text_present(d, "Added a footer below the list")
+    wait(d, "//button[@aria-label='Source control']")
     shot(d, "conversation-after-restart")
-    log("conversation history persisted across restart")
+    log("conversation history and advanced mode persisted across restart")
     d.quit()
     ok = True
     log("ALL UI STEPS PASSED")

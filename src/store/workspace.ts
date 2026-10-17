@@ -291,7 +291,14 @@ export const useWorkspace = create<WorkspaceState>((set, get) => ({
           api.startGenerate(pid).catch((e) => useApp.getState().toast('bad', `Could not start building: ${errorMessage(e)}`));
         } else set({ stage: 'plan' });
       }
-      if (ev.detail.taskKind === 'generate' && ev.status === 'completed') set({ stage: 'preview' });
+      if (ev.detail.taskKind === 'generate' && ev.status === 'completed') {
+        set({ stage: 'preview' });
+        // Simple mode: show the freshly built app right away.
+        const pid = ev.projectId;
+        if (pid && useApp.getState().settings?.uiMode !== 'advanced' && get().preview.status === 'stopped') {
+          runApp(pid).catch((e) => useApp.getState().toast('bad', `Could not start the app: ${errorMessage(e)}`));
+        }
+      }
       if (ev.status !== 'running') {
         void s.refreshProject();
         set({ gitVersion: get().gitVersion + 1, historyVersion: get().historyVersion + 1 });
@@ -336,3 +343,30 @@ export const useWorkspace = create<WorkspaceState>((set, get) => ({
   setPreview: (p) => set({ preview: { ...get().preview, ...p } }),
   set: (p) => set(p),
 }));
+
+/**
+ * Start the live preview, installing dependencies first when needed (simple mode has no
+ * separate Install button). Install still goes through the normal approval policy.
+ */
+export async function runApp(projectId: string): Promise<void> {
+  const ws = useWorkspace.getState();
+  try {
+    if (await api.needsInstall(projectId)) {
+      ws.setPreview({ status: 'starting', error: undefined });
+      useApp.getState().toast('info', 'Installing dependencies first — this can take a minute.');
+      const task = await api.startOperation(projectId, 'install');
+      for (let i = 0; i < 900; i++) {
+        await new Promise((r) => setTimeout(r, 1000));
+        if (useWorkspace.getState().projectId !== projectId) return;
+        const active = await api.activeTasks(projectId);
+        if (!active.some((t) => t.id === task.id)) break;
+      }
+      if (await api.needsInstall(projectId)) throw new Error('Installing dependencies did not finish. Check the terminal output (Advanced mode) for details.');
+    }
+    useWorkspace.getState().setPreview({ status: 'starting', error: undefined });
+    await api.startPreview(projectId);
+  } catch (e) {
+    useWorkspace.getState().setPreview({ status: 'failed', error: errorMessage(e) });
+    throw e;
+  }
+}

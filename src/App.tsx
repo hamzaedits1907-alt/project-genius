@@ -99,6 +99,14 @@ export default function App() {
     void refreshApprovals();
   }, [loadSettings, refreshApprovals]);
 
+  // Long sessions: look for new releases every 6 hours as well.
+  useEffect(() => {
+    const t = setInterval(() => {
+      if (useApp.getState().settings?.autoCheckUpdates) void useApp.getState().checkUpdate(false);
+    }, 6 * 60 * 60 * 1000);
+    return () => clearInterval(t);
+  }, []);
+
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       const mod = e.ctrlKey || e.metaKey;

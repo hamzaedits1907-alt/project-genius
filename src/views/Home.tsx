@@ -1,10 +1,11 @@
 import { useEffect, useState } from 'react';
 import { ArrowUp, Check, FolderOpen, KeyRound, Plus, SlidersHorizontal, Sparkles, Trash2, Wrench, X, FileArchive } from 'lucide-react';
 import { open as openDialog } from '@tauri-apps/plugin-dialog';
+import { openUrl } from '@tauri-apps/plugin-opener';
 import { Github } from '../components/icons';
 import { api, errorMessage } from '../lib/api';
 import { timeAgo } from '../lib/logic';
-import type { Project, RepoInfo, ToolStatus } from '../lib/types';
+import type { ModelInfo, Project, RepoInfo, ToolStatus } from '../lib/types';
 import { useApp } from '../store/app';
 import { Badge, Button, Callout, Empty, Modal, Spinner, StatusBadge } from '../components/ui';
 import { GeniusAvatar } from '../components/GeniusAvatar';
@@ -176,7 +177,8 @@ export default function Home() {
           </div>
         </div>
 
-        {!setupDone && (
+        {!ready && <QuickSetup />}
+        {ready && !setupDone && (
           <div className="card pad" style={{ marginTop: 16 }}>
             <div style={{ fontWeight: 650, marginBottom: 8 }}>Finish setup</div>
             <div className="col" style={{ gap: 6 }}>
@@ -370,5 +372,103 @@ function CloneDialog({ onClose }: { onClose: () => void }) {
         </>
       )}
     </Modal>
+  );
+}
+
+/** Models that work well for planning and writing code, best first (matched by substring). */
+const PREFERRED_MODELS = ['qwen3-coder', 'qwen2.5-coder-32b', 'deepseek-v3', 'deepseek-r1', 'llama-3.3-70b', 'llama-3.1-405b', 'nemotron-super', 'llama-3.1-70b', 'mixtral-8x22b'];
+
+export function recommendModel(models: ModelInfo[]): string | null {
+  const usable = models.filter((m) => m.inferredCategory === 'chat' || m.inferredCategory === 'code');
+  for (const want of PREFERRED_MODELS) {
+    const hit = usable.find((m) => m.id.toLowerCase().includes(want));
+    if (hit) return hit.id;
+  }
+  return usable[0]?.id ?? null;
+}
+
+/** First-run setup right on Home: paste a key, Genius picks a good model. */
+function QuickSetup() {
+  const navigate = useApp((s) => s.navigate);
+  const keyStatus = useApp((s) => s.keyStatus);
+  const setKeyStatus = useApp((s) => s.setKeyStatus);
+  const setSettings = useApp((s) => s.setSettings);
+  const toast = useApp((s) => s.toast);
+  const [key, setKey] = useState('');
+  const [busy, setBusy] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  const pickModel = async () => {
+    setBusy('Finding the best model for you…');
+    const list = await api.listModels(true);
+    const best = recommendModel(list.models);
+    if (!best) throw new Error('No chat models are available for this key. Choose one in Settings → AI provider.');
+    setSettings(await api.selectModel(best));
+    toast('ok', `All set! Genius will use ${best}. You can change it any time in Settings.`);
+  };
+
+  const connect = async () => {
+    setError(null);
+    try {
+      if (!keyStatus?.stored) {
+        setBusy('Saving your key securely…');
+        setKeyStatus(await api.saveApiKey(key.trim()));
+        setKey('');
+      }
+      await pickModel();
+    } catch (e) {
+      setError(errorMessage(e));
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  return (
+    <div className="card pad quick-setup">
+      <div className="row" style={{ gap: 12, alignItems: 'flex-start' }}>
+        <KeyRound size={18} color="var(--accent-2)" style={{ marginTop: 2 }} />
+        <div className="grow col" style={{ gap: 10 }}>
+          <div>
+            <div style={{ fontWeight: 650 }}>{keyStatus?.stored ? 'One more step: pick a model' : 'Connect Genius to its AI brain'}</div>
+            <div className="muted small">
+              {keyStatus?.stored ? (
+                'Your key is saved. Genius will pick a strong coding model for you.'
+              ) : (
+                <>
+                  Paste a free NVIDIA API key from{' '}
+                  <a href="#" onClick={(e) => (e.preventDefault(), void openUrl('https://build.nvidia.com/'))}>
+                    build.nvidia.com
+                  </a>
+                  . It's stored in your system's secure credential store, never in a file.
+                </>
+              )}
+            </div>
+          </div>
+          <div className="row">
+            {!keyStatus?.stored && (
+              <input
+                className="input mono grow"
+                type="password"
+                autoComplete="off"
+                spellCheck={false}
+                placeholder="nvapi-…"
+                aria-label="NVIDIA API key"
+                value={key}
+                onChange={(e) => setKey(e.target.value)}
+                onKeyDown={(e) => e.key === 'Enter' && key.trim() && void connect()}
+              />
+            )}
+            <Button variant="primary" loading={!!busy} disabled={!keyStatus?.stored && !key.trim()} onClick={() => void connect()}>
+              {keyStatus?.stored ? 'Pick a model for me' : 'Connect'}
+            </Button>
+            <Button variant="ghost" onClick={() => navigate({ name: 'settings', tab: 'ai' })}>
+              Advanced…
+            </Button>
+          </div>
+          {busy && <div className="small muted">{busy}</div>}
+          {error && <Callout tone="bad">{error}</Callout>}
+        </div>
+      </div>
+    </div>
   );
 }

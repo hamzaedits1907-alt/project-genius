@@ -59,12 +59,20 @@ def block(path, content):
 
 
 def answer(system, user, last=""):
-    if "You are Genius, an AI software engineer" in system:
-        # Agent tool protocol: inspect the file first, then propose the change.
+    if "You are the main Genius agent" in system or "You are Genius, an AI software engineer" in system:
+        # Agent tool protocol (narration + checklist + inspect, then propose), and a question.
+        if "USER MESSAGE:\nSurprise me" in last:
+            return ('<final>Happy to! Before I start, one quick question.\n'
+                    '<ask>{"question": "Which style do you prefer?", "options": ["Minimal & calm", "Bold & colorful"], "multi": false}</ask></final>')
+        if "USER MESSAGE:\nBold & colorful" in last:
+            return "<final>Great choice — **bold and colorful** it is. Tell me when to start.</final>"
+        if last.startswith('<tool_result name="todo"'):
+            return 'Now I will read the app to see where the list ends.\n<tool>{"name": "read_file", "args": {"path": "src/App.tsx"}}</tool>'
         if last.startswith('<tool_result name="read_file"'):
             assert "Genius Todo" in last, "the agent received the real file"
             return "<final>Added a footer below the list.\n" + block("src/App.tsx", APP_FOOTER) + "</final>"
-        return 'I will read the app first.\n<tool>{"name": "read_file", "args": {"path": "src/App.tsx"}}</tool>'
+        return ('Let me plan this small change first.\n<tool>{"name": "todo", "args": {"items": ['
+                '{"text": "Read App.tsx", "status": "active"}, {"text": "Add the footer", "status": "pending"}]}}</tool>')
     if "planning engine" in system:
         return json.dumps({
             "name": "Genius Todo", "purpose": "A small todo list.",

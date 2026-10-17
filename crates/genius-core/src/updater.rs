@@ -4,6 +4,12 @@
 //! installer asset for the running platform. [`download_and_install`] streams that asset
 //! into a temp directory, verifies its SHA-256 when the release publishes one, and launches
 //! the platform installer. Downloads are restricted to GitHub-owned hosts.
+//!
+//! Private repositories: GitHub answers 404 to anonymous requests, so when a GitHub token is
+//! available (`GENIUS_UPDATE_TOKEN`, `GH_TOKEN`/`GITHUB_TOKEN`, or the GitHub CLI login Genius
+//! already uses) checks and downloads go through the authenticated API. The token is only ever
+//! sent to `api.github.com`; reqwest drops it on the redirect to the asset storage host. A
+//! rejected token (401) falls back to anonymous access so a stale token never blocks updates.
 
 use std::cmp::Ordering;
 use std::path::{Path, PathBuf};
@@ -24,7 +30,7 @@ const USER_AGENT: &str = concat!("Genius-Updater/", env!("CARGO_PKG_VERSION"));
 const ALLOWED_DOWNLOAD_HOSTS: &[&str] =
     &["github.com", "objects.githubusercontent.com", "release-assets.githubusercontent.com"];
 /// Hosts allowed for the *initial* asset URL handed to [`download_and_install`].
-const ALLOWED_ASSET_HOSTS: &[&str] = &["github.com", "objects.githubusercontent.com"];
+const ALLOWED_ASSET_HOSTS: &[&str] = &["github.com", "objects.githubusercontent.com", "api.github.com"];
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -33,6 +39,11 @@ pub struct UpdateAsset {
     pub size: u64,
     pub url: String,
     pub sha256_url: Option<String>,
+    /// Authenticated API download URLs (needed for private repositories).
+    #[serde(default)]
+    pub api_url: Option<String>,
+    #[serde(default)]
+    pub sha256_api_url: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -94,6 +105,9 @@ pub struct GhAsset {
     #[serde(default)]
     pub size: u64,
     pub browser_download_url: String,
+    /// API URL of the asset (`/repos/{repo}/releases/assets/{id}`).
+    #[serde(default)]
+    pub url: String,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -234,11 +248,16 @@ pub fn select_asset(assets: &[GhAsset], os: &str, arch: &str, appimage: bool) ->
         if let Some((i, _)) = best {
             let a = &assets[i];
             let sha_name = format!("{}.sha256", a.name).to_lowercase();
-            let sha256_url = assets
-                .iter()
-                .find(|s| s.name.to_lowercase() == sha_name)
-                .map(|s| s.browser_download_url.clone());
-            return Some(UpdateAsset { name: a.name.clone(), size: a.size, url: a.browser_download_url.clone(), sha256_url });
+            let sha = assets.iter().find(|s| s.name.to_lowercase() == sha_name);
+            let api = |u: &str| (!u.is_empty()).then(|| u.to_string());
+            return Some(UpdateAsset {
+                name: a.name.clone(),
+                size: a.size,
+                url: a.browser_download_url.clone(),
+                sha256_url: sha.map(|s| s.browser_download_url.clone()),
+                api_url: api(&a.url),
+                sha256_api_url: sha.and_then(|s| api(&s.url)),
+            });
         }
     }
     None
@@ -267,27 +286,71 @@ fn net_err(e: reqwest::Error) -> GeniusError {
     GeniusError::Integration(format!("Could not reach GitHub to check for updates: {e}"))
 }
 
-/// Check GitHub Releases for a version newer than `current_version`.
-pub async fn check(current_version: &str) -> Result<UpdateInfo> {
-    check_at(API_BASE, current_version).await
+/// A GitHub token for update requests, if one is available. Order: `GENIUS_UPDATE_TOKEN`,
+/// `GH_TOKEN`, `GITHUB_TOKEN`, then `gh auth token` (the login used by Settings → GitHub).
+pub async fn auth_token() -> Option<String> {
+    for var in ["GENIUS_UPDATE_TOKEN", "GH_TOKEN", "GITHUB_TOKEN"] {
+        if let Ok(v) = std::env::var(var) {
+            if !v.trim().is_empty() {
+                return Some(v.trim().to_string());
+            }
+        }
+    }
+    let gh = crate::process::find_executable("gh")?;
+    let mut cmd = tokio::process::Command::new(gh);
+    cmd.args(["auth", "token", "--hostname", "github.com"]).stdin(std::process::Stdio::null()).kill_on_drop(true);
+    #[cfg(windows)]
+    cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+    let out = tokio::time::timeout(Duration::from_secs(8), cmd.output()).await.ok()?.ok()?;
+    let token = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    (out.status.success() && !token.is_empty() && !token.chars().any(char::is_whitespace)).then(|| {
+        crate::redact::register_secret(&token);
+        token
+    })
 }
 
-/// [`check`] against an arbitrary API base URL (used by tests).
+/// Check GitHub Releases for a version newer than `current_version`.
+pub async fn check(current_version: &str) -> Result<UpdateInfo> {
+    let token = auth_token().await;
+    check_with(API_BASE, current_version, token.as_deref()).await
+}
+
+/// [`check`] against an arbitrary API base URL without credentials (used by tests).
 pub async fn check_at(api_base: &str, current_version: &str) -> Result<UpdateInfo> {
+    check_with(api_base, current_version, None).await
+}
+
+/// [`check`] against `api_base` with an optional token.
+pub async fn check_with(api_base: &str, current_version: &str, token: Option<&str>) -> Result<UpdateInfo> {
     let client = http_client()?;
     let url = format!("{}/repos/{}/releases/latest", api_base.trim_end_matches('/'), REPO);
-    let resp = client
-        .get(&url)
-        .header(reqwest::header::ACCEPT, "application/vnd.github+json")
-        .header("X-GitHub-Api-Version", "2022-11-28")
-        .timeout(Duration::from_secs(30))
-        .send()
-        .await
-        .map_err(net_err)?;
+    let get = |token: Option<&str>| {
+        let mut req = client
+            .get(&url)
+            .header(reqwest::header::ACCEPT, "application/vnd.github+json")
+            .header("X-GitHub-Api-Version", "2022-11-28")
+            .timeout(Duration::from_secs(30));
+        if let Some(t) = token {
+            req = req.bearer_auth(t);
+        }
+        req.send()
+    };
+    let mut resp = get(token).await.map_err(net_err)?;
+    let mut used_token = token.is_some();
+    if used_token && resp.status() == reqwest::StatusCode::UNAUTHORIZED {
+        // An expired or revoked token must not block updates of a public repository.
+        resp = get(None).await.map_err(net_err)?;
+        used_token = false;
+    }
 
     let current = normalize_version(current_version).to_string();
     let status = resp.status();
     if status == reqwest::StatusCode::NOT_FOUND {
+        let detail = if used_token {
+            "No releases have been published yet — you're on the latest version."
+        } else {
+            "No releases found. If the Genius repository is private, connect GitHub in Settings → GitHub (or make the repository public) so Genius can see its releases."
+        };
         return Ok(UpdateInfo {
             current_version: current,
             latest_version: None,
@@ -296,7 +359,7 @@ pub async fn check_at(api_base: &str, current_version: &str) -> Result<UpdateInf
             published_at: None,
             release_url: None,
             asset: None,
-            detail: Some("No releases have been published yet — you're on the latest version.".into()),
+            detail: Some(detail.into()),
         });
     }
     if status == reqwest::StatusCode::FORBIDDEN || status == reqwest::StatusCode::TOO_MANY_REQUESTS {
@@ -340,6 +403,10 @@ fn build_info(current: &str, release: GhRelease, os: &str, arch: &str, appimage:
 // ---------------------------------------------------------------- download & install
 
 fn is_allowed_url(url: &reqwest::Url, hosts: &[&str]) -> bool {
+    // Unit tests serve releases from a local mock server; release builds never allow this.
+    if cfg!(test) && url.scheme() == "http" && url.host_str() == Some("127.0.0.1") {
+        return true;
+    }
     url.scheme() == "https"
         && url.port().is_none()
         && url.username().is_empty()
@@ -390,20 +457,57 @@ pub async fn download_and_install<F>(asset: &UpdateAsset, progress: F) -> Result
 where
     F: Fn(Progress) + Send + Sync,
 {
-    let path = download(asset, &progress).await?;
+    let token = auth_token().await;
+    let path = download_with(asset, token.as_deref(), &progress).await?;
     progress(Progress { downloaded: asset.size, total: Some(asset.size), stage: Stage::Installing });
     let outcome = install(&path)?;
     progress(Progress { downloaded: asset.size, total: Some(asset.size), stage: Stage::Done });
     Ok(outcome)
 }
 
-/// Download (and verify) an asset into [`download_dir`]. Returns the local file path.
+/// GET an update file: through the authenticated API URL when a token is available (the
+/// only way to read private-repository assets), otherwise — or if the token is rejected —
+/// from the public download URL.
+async fn fetch(client: &reqwest::Client, public: &str, api: Option<&str>, token: Option<&str>, timeout: Option<Duration>) -> Result<reqwest::Response> {
+    let send = |req: reqwest::RequestBuilder| async move {
+        let req = match timeout {
+            Some(t) => req.timeout(t),
+            None => req,
+        };
+        req.send().await.map_err(|e| GeniusError::Integration(format!("Update download failed: {e}")))
+    };
+    if let (Some(api), Some(token)) = (api, token) {
+        let url = validate_download_url(api)?;
+        let resp = send(client.get(url).header(reqwest::header::ACCEPT, "application/octet-stream").bearer_auth(token)).await?;
+        if resp.status() != reqwest::StatusCode::UNAUTHORIZED {
+            return check_status(resp);
+        }
+    }
+    check_status(send(client.get(validate_download_url(public)?)).await?)
+}
+
+fn check_status(resp: reqwest::Response) -> Result<reqwest::Response> {
+    if resp.status().is_success() {
+        Ok(resp)
+    } else {
+        Err(GeniusError::Integration(format!("Update download failed: HTTP {}", resp.status().as_u16())))
+    }
+}
+
+/// Download (and verify) an asset into [`download_dir`] without credentials.
 pub async fn download<F>(asset: &UpdateAsset, progress: &F) -> Result<PathBuf>
 where
     F: Fn(Progress) + Send + Sync,
 {
-    let url = validate_download_url(&asset.url)?;
-    let sha_url = asset.sha256_url.as_deref().map(validate_download_url).transpose()?;
+    download_with(asset, None, progress).await
+}
+
+/// Download (and verify) an asset into [`download_dir`]. Returns the local file path.
+pub async fn download_with<F>(asset: &UpdateAsset, token: Option<&str>, progress: &F) -> Result<PathBuf>
+where
+    F: Fn(Progress) + Send + Sync,
+{
+    validate_download_url(&asset.url)?;
     let name = safe_file_name(&asset.name)?;
     let client = http_client()?;
 
@@ -412,10 +516,7 @@ where
     let dest = dir.join(name);
     let partial = dir.join(format!("{name}.part"));
 
-    let resp = client.get(url).send().await.map_err(|e| GeniusError::Integration(format!("Update download failed: {e}")))?;
-    if !resp.status().is_success() {
-        return Err(GeniusError::Integration(format!("Update download failed: HTTP {}", resp.status().as_u16())));
-    }
+    let resp = fetch(&client, &asset.url, asset.api_url.as_deref(), token, None).await?;
     let total = resp.content_length().or((asset.size > 0).then_some(asset.size));
     progress(Progress { downloaded: 0, total, stage: Stage::Downloading });
 
@@ -439,21 +540,18 @@ where
     drop(file);
     progress(Progress { downloaded, total, stage: Stage::Downloading });
 
-    if let Some(t) = total {
-        if downloaded != t {
+    // The release lists the asset size; a mismatch means a truncated or substituted file.
+    if let Some(t) = total.into_iter().chain((asset.size > 0).then_some(asset.size)).find(|t| *t != downloaded) {
+        {
             let _ = tokio::fs::remove_file(&partial).await;
             return Err(GeniusError::Integration(format!("Update download was incomplete ({downloaded} of {t} bytes).")));
         }
     }
 
     progress(Progress { downloaded, total, stage: Stage::Verifying });
-    if let Some(sha_url) = sha_url {
-        let text = client
-            .get(sha_url)
-            .timeout(Duration::from_secs(30))
-            .send()
+    if let Some(sha_url) = asset.sha256_url.as_deref() {
+        let text = fetch(&client, sha_url, asset.sha256_api_url.as_deref(), token, Some(Duration::from_secs(30)))
             .await
-            .and_then(|r| r.error_for_status())
             .map_err(|e| GeniusError::Integration(format!("Could not fetch the update checksum: {e}")))?
             .text()
             .await
@@ -547,6 +645,7 @@ mod tests {
             name: name.into(),
             size: 10,
             browser_download_url: format!("https://github.com/{REPO}/releases/download/v0.2.0/{name}"),
+            url: format!("https://api.github.com/repos/{REPO}/releases/assets/{}", name.len()),
         }
     }
 
@@ -716,5 +815,70 @@ mod tests {
             use std::os::unix::fs::PermissionsExt;
             assert_eq!(std::fs::metadata(&dst).unwrap().permissions().mode() & 0o777, 0o755);
         }
+    }
+
+    #[tokio::test]
+    async fn token_is_used_and_a_rejected_token_falls_back_to_anonymous() {
+        use wiremock::matchers::{header, method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+        let server = MockServer::start().await;
+        let p = format!("/repos/{REPO}/releases/latest");
+        let release = serde_json::json!({ "tag_name": "v9.0.0", "assets": [] });
+        Mock::given(method("GET")).and(path(p.clone())).and(header("authorization", "Bearer good"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(release.clone())).mount(&server).await;
+        Mock::given(method("GET")).and(path(p.clone())).and(header("authorization", "Bearer stale"))
+            .respond_with(ResponseTemplate::new(401)).mount(&server).await;
+        // Anonymous requests see nothing, like a private repository.
+        Mock::given(method("GET")).and(path(p)).respond_with(ResponseTemplate::new(404)).mount(&server).await;
+
+        let info = check_with(&server.uri(), "0.2.0", Some("good")).await.unwrap();
+        assert!(info.available, "{info:?}");
+        let info = check_with(&server.uri(), "0.2.0", Some("stale")).await.unwrap();
+        assert!(!info.available);
+        assert!(info.detail.unwrap().contains("private"), "anonymous 404 explains private repositories");
+    }
+
+    #[tokio::test]
+    async fn download_verifies_checksum_and_uses_the_api_with_a_token() {
+        use wiremock::matchers::{header, method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+        let server = MockServer::start().await;
+        let body = b"#!/bin/sh\necho genius 9.0.0\n".to_vec();
+        let sum = to_hex(&Sha256::digest(&body));
+        Mock::given(method("GET")).and(path("/dl/Genius_9.0.0_amd64.AppImage"))
+            .respond_with(ResponseTemplate::new(200).set_body_bytes(body.clone())).mount(&server).await;
+        Mock::given(method("GET")).and(path("/dl/Genius_9.0.0_amd64.AppImage.sha256"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(format!("{sum}  Genius_9.0.0_amd64.AppImage\n"))).mount(&server).await;
+        Mock::given(method("GET")).and(path("/dl/bad.sha256"))
+            .respond_with(ResponseTemplate::new(200).set_body_string("0".repeat(64))).mount(&server).await;
+        // Private-repo path: the API URL (with token) redirects to storage.
+        Mock::given(method("GET")).and(path("/api/assets/1")).and(header("authorization", "Bearer t"))
+            .and(header("accept", "application/octet-stream"))
+            .respond_with(ResponseTemplate::new(302).insert_header("location", format!("{}/dl/Genius_9.0.0_amd64.AppImage", server.uri()))).mount(&server).await;
+        Mock::given(method("GET")).and(path("/api/assets/2")).and(header("authorization", "Bearer t"))
+            .respond_with(ResponseTemplate::new(302).insert_header("location", format!("{}/dl/Genius_9.0.0_amd64.AppImage.sha256", server.uri()))).mount(&server).await;
+
+        let asset = UpdateAsset {
+            name: "Genius_9.0.0_amd64.AppImage".into(),
+            size: body.len() as u64,
+            url: format!("{}/dl/Genius_9.0.0_amd64.AppImage", server.uri()),
+            sha256_url: Some(format!("{}/dl/Genius_9.0.0_amd64.AppImage.sha256", server.uri())),
+            api_url: Some(format!("{}/api/assets/1", server.uri())),
+            sha256_api_url: Some(format!("{}/api/assets/2", server.uri())),
+        };
+        let stages = std::sync::Mutex::new(Vec::new());
+        let got = download_with(&asset, None, &|p: Progress| stages.lock().unwrap().push(p.stage)).await.unwrap();
+        assert_eq!(std::fs::read(&got).unwrap(), body);
+        assert!(stages.lock().unwrap().contains(&Stage::Verifying));
+
+        let got = download_with(&asset, Some("t"), &|_| {}).await.unwrap();
+        assert_eq!(std::fs::read(&got).unwrap(), body, "authenticated API download works");
+
+        let bad = UpdateAsset { sha256_url: Some(format!("{}/dl/bad.sha256", server.uri())), sha256_api_url: None, api_url: None, ..asset.clone() };
+        let e = download_with(&bad, None, &|_| {}).await.unwrap_err().to_string();
+        assert!(e.contains("checksum"), "{e}");
+
+        let short = UpdateAsset { size: body.len() as u64 + 5, sha256_url: None, sha256_api_url: None, api_url: None, ..asset };
+        assert!(download_with(&short, None, &|_| {}).await.is_err(), "incomplete downloads are rejected");
     }
 }

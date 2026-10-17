@@ -704,10 +704,33 @@ pub async fn install_update(app: AppHandle) -> Result<String> {
             });
         }
         PostInstall::Restart => {
+            // The AppImage file was replaced: launch the new file (the running binary lives in
+            // the old image's mount), then quit. Fall back to Tauri's restart if that fails.
             let app = app.clone();
+            let target = std::path::PathBuf::from(&outcome.path);
             std::thread::spawn(move || {
                 std::thread::sleep(std::time::Duration::from_millis(800));
-                app.restart();
+                let mut cmd = std::process::Command::new(&target);
+                // Drop the old image's runtime variables so they can't point into its mount.
+                let appdir = std::env::var("APPDIR").unwrap_or_default();
+                for var in ["APPDIR", "APPIMAGE", "ARGV0", "OWD"] {
+                    cmd.env_remove(var);
+                }
+                for var in ["LD_LIBRARY_PATH", "PATH", "XDG_DATA_DIRS", "GSETTINGS_SCHEMA_DIR", "GDK_PIXBUF_MODULE_FILE", "GIO_MODULE_DIR", "GTK_PATH", "PYTHONHOME"] {
+                    if let Ok(v) = std::env::var(var) {
+                        if !appdir.is_empty() && v.contains(&appdir) {
+                            let kept: Vec<&str> = v.split(':').filter(|p| !p.starts_with(&appdir)).collect();
+                            if kept.is_empty() { cmd.env_remove(var); } else { cmd.env(var, kept.join(":")); }
+                        }
+                    }
+                }
+                match cmd.spawn() {
+                    Ok(_) => app.exit(0),
+                    Err(e) => {
+                        log::warn!("could not relaunch {}: {e}", target.display());
+                        app.restart();
+                    }
+                }
             });
         }
         PostInstall::Nothing => {}

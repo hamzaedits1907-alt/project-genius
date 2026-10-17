@@ -178,7 +178,8 @@ export default function AssistantPanel({ variant = 'advanced' }: { variant?: 'si
 
   const conv = conversations.find((c) => c.id === convId);
   const chatTasks = tasks.filter((t) => CHAT_TASKS.includes(t.kind));
-  const status = busyTask ? busyTask.title.replace(/^Genius: /, 'Working on: ') : lastMsg?.kind === 'error' ? 'Something went wrong — tell me what to try next' : settings?.model ? 'Ready when you are' : 'Choose a model in Settings to start';
+  const anyTask = busyTask ?? tasks[0];
+  const status = anyTask ? anyTask.title.replace(/^Genius: /, 'Working on: ') : lastMsg?.kind === 'error' ? 'Something went wrong — tell me what to try next' : settings?.model ? 'Ready when you are' : 'Choose a model in Settings to start';
   const canSend = !!request.trim() && !busyTask && !!settings?.model && !!convId;
 
   return (
@@ -188,7 +189,7 @@ export default function AssistantPanel({ variant = 'advanced' }: { variant?: 'si
         <div className="grow" style={{ minWidth: 0 }}>
           <div className="chat-name">{name}</div>
           <div className="chat-status ellipsis" title={status}>
-            {busyTask && <span className="dot run" />} {status}
+            {anyTask && <span className="dot run" />} {status}
           </div>
         </div>
         <select className="input sm conv-select" aria-label="Conversation" value={convId ?? ''} onChange={(e) => setConvId(e.target.value)} disabled={!!agentTask}>
@@ -392,7 +393,7 @@ function Message({ m, name, isLast, busy, onAnswer }: { m: MessageRow; name: str
             </div>
           </details>
         )}
-        {report && <Report report={report} />}
+        {report && (report.steps > 0 || report.warnings.length > 0 || !!report.error) && <Report report={report} />}
       </div>
     </div>
   );

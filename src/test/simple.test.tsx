@@ -10,7 +10,7 @@ import { useWorkspace } from '../store/workspace';
 import { project } from './ipc';
 import { parseBlocks } from '../components/Markdown';
 import { askOf, latestNote, latestTodo } from '../lib/agent';
-import { nameFromIdea } from '../views/Home';
+import { nameFromIdea, recommendModel } from '../views/Home';
 import type { AgentStep } from '../lib/types';
 
 vi.mock('react-resizable-panels', async () => {
@@ -111,6 +111,13 @@ describe('helpers', () => {
     expect(latestNote(steps)).toBe('Checking the header first.');
     expect(askOf({ ask: { question: 'Q?', options: ['a', 1, 'b'] } })).toEqual({ question: 'Q?', options: ['a', 'b'], multi: false });
     expect(askOf({})).toBeNull();
+  });
+
+  it('recommends a strong chat/code model', () => {
+    const m = (id: string, inferredCategory = 'chat') => ({ id, owner: null, created: null, inferredCategory });
+    expect(recommendModel([m('nvidia/nv-embed', 'embedding'), m('meta/llama-3.1-8b-instruct'), m('meta/llama-3.3-70b-instruct')])).toBe('meta/llama-3.3-70b-instruct');
+    expect(recommendModel([m('x/small'), m('qwen/qwen3-coder-480b-a35b-instruct', 'code')])).toBe('qwen/qwen3-coder-480b-a35b-instruct');
+    expect(recommendModel([m('nvidia/nv-embed', 'embedding')])).toBeNull();
   });
 
   it('derives a project name from an idea', () => {

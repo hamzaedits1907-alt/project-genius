@@ -4,7 +4,7 @@ import { Brain, ClipboardList, Code2, FileStack, Plug, Download, FolderTree, Git
 import { api, errorMessage } from '../../lib/api';
 import type { Operation } from '../../lib/types';
 import { useApp } from '../../store/app';
-import { useWorkspace } from '../../store/workspace';
+import { runApp, useWorkspace } from '../../store/workspace';
 import { Badge, Button, IconButton, Segmented, Spinner, StatusBadge } from '../../components/ui';
 import PlanView from './PlanView';
 import FileExplorer from './FileExplorer';
@@ -100,9 +100,8 @@ export default function Workspace({ projectId }: { projectId: string }) {
       if (preview.status === 'ready' || preview.status === 'starting') {
         await api.stopPreview(project.id);
       } else {
-        setWs({ rightTab: 'preview' });
-        useWorkspace.getState().setPreview({ status: 'starting', error: undefined });
-        await api.startPreview(project.id);
+        setWs({ rightTab: 'preview', stage: 'preview' });
+        await runApp(project.id);
       }
     } catch (e) {
       useWorkspace.getState().setPreview({ status: 'failed', error: errorMessage(e) });
