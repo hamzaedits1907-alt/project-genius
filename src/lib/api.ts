@@ -27,6 +27,8 @@ export const api = {
   probeModel: (model: string) => call<T.ProbeResult>('probe_model', { model }),
   selectModel: (model: string) => call<T.Settings>('select_model', { model }),
   detectTools: () => call<T.ToolStatus[]>('detect_tools'),
+  /** Rewrites a rough idea (3–4000 characters) into a detailed, buildable brief in the same language. */
+  enhancePrompt: (text: string) => call<string>('enhance_prompt', { text }),
   appInfo: () => call<T.AppInfo>('app_info'),
 
   // updates (GitHub Releases)

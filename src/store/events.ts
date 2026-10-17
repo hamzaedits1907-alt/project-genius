@@ -1,8 +1,19 @@
 // Subscribes once to every backend channel and routes payloads into the stores.
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 import type { ActivityEvent, AgentStep, AiDelta, AuthStatus, FileStreamEvent, PreviewEvent, ProcessOutput, ProcessState } from '../lib/types';
+import { api } from '../lib/api';
+import { noticeFor, notificationsEnabled, notifyIfAway, windowFocused } from '../lib/notify';
 import { useApp } from './app';
 import { useWorkspace } from './workspace';
+
+/** Long AI work finished or needs the user while Genius is in the background: tell them. */
+async function announce(ev: ActivityEvent) {
+  if (!notificationsEnabled() || windowFocused() || !noticeFor(ev, '')) return;
+  const open = useWorkspace.getState().project;
+  const pid = ev.projectId;
+  const name = !pid ? '' : open?.id === pid ? open.name : await api.getProject(pid).then((p) => p.name).catch(() => '');
+  await notifyIfAway(ev, name, pid ? () => useApp.getState().navigate({ name: 'project', id: pid }) : undefined);
+}
 
 export async function subscribeAll(): Promise<UnlistenFn> {
   const ws = () => useWorkspace.getState();
@@ -20,6 +31,7 @@ export async function subscribeAll(): Promise<UnlistenFn> {
     listen<ActivityEvent>('genius://activity', ({ payload }) => {
       ws().onActivity(payload);
       if (payload.kind === 'approval') void app().refreshApprovals();
+      void announce(payload);
     }),
     listen<AiDelta>('genius://ai-delta', ({ payload }) => {
       if (payload.projectId === ws().projectId) ws().onAiDelta(payload.taskId, payload.text);

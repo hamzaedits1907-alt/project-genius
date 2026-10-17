@@ -351,6 +351,12 @@ pub async fn suggest_commit_message(g: G<'_>, project_id: String) -> Result<Stri
     g.suggest_commit_message(&project_id).await
 }
 
+/// Rewrites a rough idea into a detailed, buildable brief (Home "Improve my prompt").
+#[tauri::command]
+pub async fn enhance_prompt(g: G<'_>, text: String) -> Result<String> {
+    g.enhance_prompt(&text, &CancellationToken::new()).await
+}
+
 #[tauri::command]
 pub async fn git_log(g: G<'_>, project_id: String, limit: usize) -> Result<Vec<Commit>> {
     g.git_log(&project_id, limit).await

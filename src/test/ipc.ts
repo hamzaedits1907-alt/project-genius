@@ -64,6 +64,7 @@ export const defaults: Record<string, Handler> = {
   install_update: () => 'Genius is already up to date.',
   list_models: () => ({ models: [], fetchedAt: null, source: 'cache', stale: true, baseUrl: settings.baseUrl, probes: {} }),
   detect_tools: () => [],
+  enhance_prompt: (_c, a) => `A polished web app for: ${String(a.text).trim()}.\nPages/sections: home, details\nKey features: search, favourites\nData: saved in localStorage (sample data labelled as sample)`,
   list_projects: () => [project],
   get_project: () => project,
   open_project: () => project,

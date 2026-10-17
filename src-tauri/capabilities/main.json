@@ -84,6 +84,7 @@
     "allow-staged-findings",
     "allow-git-commit",
     "allow-suggest-commit-message",
+    "allow-enhance-prompt",
     "allow-git-log",
     "allow-git-commit-detail",
     "allow-git-branches",

@@ -128,6 +128,7 @@ pub fn run() {
             commands::staged_findings,
             commands::git_commit,
             commands::suggest_commit_message,
+            commands::enhance_prompt,
             commands::git_log,
             commands::git_commit_detail,
             commands::git_branches,

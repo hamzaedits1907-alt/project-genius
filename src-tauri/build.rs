@@ -63,6 +63,7 @@ fn main() {
         "staged_findings",
         "git_commit",
         "suggest_commit_message",
+        "enhance_prompt",
         "git_log",
         "git_commit_detail",
         "git_branches",
