@@ -43,18 +43,22 @@ export function parseBlocks(text: string): Block[] {
       i++;
       continue;
     }
-    const listKind = /^\s*[-*+]\s+/.test(line) ? 'ul' : /^\s*\d+[.)]\s+/.test(line) ? 'ol' : null;
+    const listKind = /^\s*[-*+•]\s+/.test(line) ? 'ul' : /^\s*\d+[.)]\s+/.test(line) ? 'ol' : null;
     if (listKind) {
       const items: string[] = [];
-      const re = listKind === 'ul' ? /^\s*[-*+]\s+(.*)$/ : /^\s*\d+[.)]\s+(.*)$/;
+      const re = listKind === 'ul' ? /^\s*[-*+•]\s+(.*)$/ : /^\s*\d+[.)]\s+(.*)$/;
       while (i < lines.length && lines[i].trim()) {
         const m = lines[i].match(re);
-        if (m) items.push(m[1]);
-        else if (items.length && /^\s{2,}\S/.test(lines[i])) items[items.length - 1] += ' ' + lines[i].trim();
+        const last = items.length - 1;
+        if (m) items.push(m[1].trim());
+        // Continuation lines, and the text of a bare marker ("1. " then the item on the next line).
+        else if (items.length && (/^\s{2,}\S/.test(lines[i]) || (!items[last] && !/^\s*(```|#{1,4}\s)/.test(lines[i])))) items[last] = `${items[last]} ${lines[i].trim()}`.trim();
         else break;
         i++;
       }
-      out.push({ kind: listKind, items });
+      // Never render empty bullets (models sometimes emit "- " or "1. " placeholders).
+      const filled = items.filter((it) => it && !/^[-*+•.\s]*$/.test(it));
+      if (filled.length) out.push({ kind: listKind, items: filled });
       continue;
     }
     if (/^\s*>/.test(line)) {
@@ -64,7 +68,7 @@ export function parseBlocks(text: string): Block[] {
       continue;
     }
     const body: string[] = [];
-    while (i < lines.length && lines[i].trim() && !/^\s*```/.test(lines[i]) && !/^#{1,4}\s/.test(lines[i]) && !/^\s*([-*+]|\d+[.)])\s+/.test(lines[i])) body.push(lines[i++]);
+    while (i < lines.length && lines[i].trim() && !/^\s*```/.test(lines[i]) && !/^#{1,4}\s/.test(lines[i]) && !/^\s*([-*+•]|\d+[.)])\s+/.test(lines[i])) body.push(lines[i++]);
     if (!body.length) body.push(lines[i++]);
     out.push({ kind: 'p', body: body.join('\n') });
   }

@@ -40,7 +40,7 @@ describe('project conversation', () => {
     await act(async () => void fireEvent.click(screen.getByRole('button', { name: /Send/ })));
     await flush();
     const call = calls.find((c) => c.cmd === 'start_agent');
-    expect(call?.args).toEqual({ projectId: 'p1', request: { conversationId: 'c1', message: 'Make the cards smaller', mode: 'plan', attachmentIds: [], pinned: [] } });
+    expect(call?.args).toEqual({ projectId: 'p1', request: { conversationId: 'c1', message: 'Make the cards smaller', mode: 'plan', attachmentIds: [], pinned: [], effort: 'max', autopilot: false } });
   });
 
   it('creates a new conversation without losing the old one', async () => {
@@ -48,7 +48,7 @@ describe('project conversation', () => {
     await flush();
     await act(async () => void fireEvent.click(screen.getByRole('button', { name: 'New conversation' })));
     await flush();
-    const options = screen.getAllByRole('option').map((o) => o.textContent);
+    const options = Array.from((screen.getByLabelText('Conversation') as HTMLSelectElement).options).map((o) => o.textContent);
     expect(options).toEqual(['New conversation (0)', 'Project conversation (2)']);
   });
 
@@ -64,7 +64,9 @@ describe('project conversation', () => {
     });
     render(<AssistantPanel />);
     await flush();
-    expect(screen.getByText(/Read src\/Sidebar.tsx — Read src\/Sidebar.tsx \(20 lines\)/)).toBeInTheDocument();
+    // The summary already names the operation, so it is not repeated ("Read x — Read x (20 lines)").
+    expect(screen.getByText('Read src/Sidebar.tsx (20 lines)')).toBeInTheDocument();
+    expect(screen.getByText('Read .env — read_file failed: excluded')).toBeInTheDocument();
     expect(screen.getByText('reviewer')).toBeInTheDocument();
     await act(async () => void fireEvent.click(screen.getAllByRole('button', { name: /Stop/ })[0]));
     expect(calls.some((c) => c.cmd === 'cancel_task' && c.args.taskId === 't9')).toBe(true);

@@ -28,6 +28,25 @@ export function describePicked(p: PickedElement): string {
   return `Selected element in the running app (page ${p.page}): <${p.tag}> at "${p.selector}"${p.text ? ` with text "${p.text}"` : ''}${attrs ? ` [${attrs}]` : ''}.\nHTML: ${p.html}`;
 }
 
+/** Live model reasoning for one task (in memory only, never persisted). */
+export interface ThinkingState {
+  text: string;
+  startedAt: number;
+  lastAt: number;
+}
+
+/** A message typed while Genius was busy: sent to the running agent, or later as a new message. */
+export interface QueuedMessage {
+  id: string;
+  /** Agent task it was sent to (null: waiting for Genius to be free). */
+  taskId: string | null;
+  conversationId: string;
+  text: string;
+  status: 'queued' | 'delivered' | 'undelivered';
+}
+
+const MAX_THINKING = 40_000;
+
 export interface OpenFile {
   content: string; // editor buffer
   saved: string; // content on disk at last load/save
@@ -61,6 +80,15 @@ interface WorkspaceState {
   /** Live agent tool calls by task id (real operations pushed by the backend). */
   agentSteps: Record<string, AgentStep[]>;
   onAgentStep: (step: AgentStep) => void;
+  /** Streamed reasoning by task id. */
+  thinking: Record<string, ThinkingState>;
+  onAiThinking: (taskId: string, text: string) => void;
+  /** Messages typed while a task ran (steering queue). */
+  queue: QueuedMessage[];
+  enqueue: (m: QueuedMessage) => void;
+  updateQueued: (id: string, patch: Partial<QueuedMessage>) => void;
+  removeQueued: (ids: string[]) => void;
+  onAgentSteered: (taskId: string, message: string) => void;
 
   open: (projectId: string) => Promise<void>;
   close: () => void;
@@ -138,6 +166,8 @@ const initial = {
   rightTab: 'assistant' as const,
   stage: 'preview' as 'preview' | 'plan' | 'code',
   agentSteps: {} as Record<string, AgentStep[]>,
+  thinking: {} as Record<string, ThinkingState>,
+  queue: [] as QueuedMessage[],
 };
 
 export const useWorkspace = create<WorkspaceState>((set, get) => ({
@@ -148,6 +178,24 @@ export const useWorkspace = create<WorkspaceState>((set, get) => ({
     const cur = get().agentSteps[step.taskId] ?? [];
     if (cur.some((x) => x.id === step.id)) return;
     set({ agentSteps: { ...get().agentSteps, [step.taskId]: [...cur, step] } });
+  },
+
+  onAiThinking: (taskId, text) => {
+    const now = Date.now();
+    const cur = get().thinking[taskId];
+    const next = ((cur?.text ?? '') + text).slice(-MAX_THINKING);
+    set({ thinking: { ...get().thinking, [taskId]: { text: next, startedAt: cur?.startedAt ?? now, lastAt: now } } });
+  },
+
+  enqueue: (m) => set({ queue: [...get().queue, m] }),
+  updateQueued: (id, patch) => set({ queue: get().queue.map((q) => (q.id === id ? { ...q, ...patch } : q)) }),
+  removeQueued: (ids) => set({ queue: get().queue.filter((q) => !ids.includes(q.id)) }),
+  onAgentSteered: (taskId, message) => {
+    // Mark the oldest matching queued message delivered (fall back to the oldest for this task).
+    const queue = get().queue;
+    const pending = queue.filter((q) => q.taskId === taskId && q.status === 'queued');
+    const hit = pending.find((q) => q.text.trim() === message.trim()) ?? pending[0];
+    if (hit) set({ queue: queue.map((q) => (q.id === hit.id ? { ...q, status: 'delivered' } : q)) });
   },
 
   open: async (projectId) => {
