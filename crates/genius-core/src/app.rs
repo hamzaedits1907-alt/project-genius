@@ -775,7 +775,7 @@ impl Genius {
         self.db.patch_project_status(project_id, &json!({ "stage": "generated" }))?;
 
         // 4. Verify for real: install → build → preview (+ Build Doctor on failure).
-        let verify = self.verify_pipeline(project_id, task_id, cancel, true).await;
+        let verify = self.verify_pipeline_opts(project_id, task_id, cancel, true, fresh).await;
         let verify = match verify {
             Ok(v) => v,
             Err(GeniusError::Cancelled) => return Err(GeniusError::Cancelled),
@@ -957,6 +957,11 @@ impl Genius {
     /// Install (if needed) → build → (Build Doctor on failure) → preview.
     /// Every step is a real process with a real exit code; nothing is assumed.
     pub async fn verify_pipeline(&self, project_id: &str, task_id: &str, cancel: &CancellationToken, start_preview: bool) -> Result<Value> {
+        self.verify_pipeline_opts(project_id, task_id, cancel, start_preview, false).await
+    }
+
+    /// `autopilot_repairs`: repairs are applied without review (the first build of a new app).
+    pub async fn verify_pipeline_opts(&self, project_id: &str, task_id: &str, cancel: &CancellationToken, start_preview: bool, autopilot_repairs: bool) -> Result<Value> {
         let mut report = json!({});
         if self.needs_install(project_id)? {
             let out = self.run_operation(project_id, Some(task_id), Operation::Install, "Dependencies are missing or package.json changed", false, cancel).await?;
@@ -975,7 +980,7 @@ impl Genius {
             let attempts = self.repair_history.lock().unwrap().get(project_id).map(|v| v.len()).unwrap_or(0) as u32;
             let max = self.settings()?.max_repair_attempts;
             if attempts < max {
-                match self.diagnose(project_id, task_id, Some(&build.id), cancel).await {
+                match Box::pin(self.diagnose_opts(project_id, task_id, Some(&build.id), cancel, autopilot_repairs)).await {
                     Ok(v) => report["doctor"] = v,
                     Err(GeniusError::Cancelled) => return Err(GeniusError::Cancelled),
                     Err(e) => report["doctor"] = json!({ "error": { "kind": e.kind(), "message": e.to_string() } }),
@@ -1007,6 +1012,10 @@ impl Genius {
 
     /// Diagnose a real failed run and propose a targeted repair.
     pub async fn diagnose(&self, project_id: &str, task_id: &str, run_id: Option<&str>, cancel: &CancellationToken) -> Result<Value> {
+        self.diagnose_opts(project_id, task_id, run_id, cancel, false).await
+    }
+
+    async fn diagnose_opts(&self, project_id: &str, task_id: &str, run_id: Option<&str>, cancel: &CancellationToken, autopilot: bool) -> Result<Value> {
         let runs = self.db.list_runs(project_id, 50)?;
         let run = match run_id {
             Some(id) => runs.into_iter().find(|r| r.id == id),
@@ -1039,18 +1048,36 @@ impl Genius {
                 return Err(e);
             }
         };
-        let parsed = collect(&events);
+        let mut parsed = collect(&events);
+        if parsed.files.is_empty() && parsed.deletes.is_empty() {
+            let raw: String = events.iter().filter_map(|e| match e { BlockEvent::Text { line } => Some(format!("{line}\n")), _ => None }).collect();
+            let fenced = crate::blocks::fenced_files(&raw);
+            if fenced.skipped.is_empty() {
+                parsed.files = fenced.files;
+            }
+        }
         let root_cause = parsed.explanation.lines().find(|l| l.to_lowercase().starts_with("root cause")).map(|l| l.trim().to_string()).unwrap_or_else(|| parsed.explanation.lines().next().unwrap_or("").to_string());
         let (changes, rejected) = self.safe_changes(&ws, &parsed.files, &parsed.deletes)?;
         if changes.is_empty() {
-            ev.update(EventStatus::Failed, json!({ "rootCause": root_cause, "note": "No applicable fix was proposed." }));
-            return Ok(json!({ "rootCause": root_cause, "changesetId": null, "explanation": parsed.explanation, "rejectedPaths": rejected }));
+            // The one-shot fix produced nothing usable: hand the failure to the full agent, which
+            // can inspect the project with tools and verify its own fix.
+            ev.update(EventStatus::Completed, json!({ "rootCause": root_cause, "note": "No direct fix; handing over to the Genius agent." }));
+            let conv = self.db.current_conversation(project_id)?;
+            let req = crate::agent::AgentRequest {
+                conversation_id: conv.id,
+                message: format!("Build Doctor: `{}` failed (exit {}). Find the root cause and fix it, then verify with run_check.\n\nErrors:\n{diag_text}", run.command, run.exit_code.map(|c| c.to_string()).unwrap_or_else(|| "none".into())),
+                effort: Some("max".into()),
+                autopilot: Some(autopilot || s.approvals.apply_ai_edits == Policy::Auto),
+                ..Default::default()
+            };
+            let res = Box::pin(self.run_agent(project_id, task_id, &req, cancel)).await?;
+            return Ok(json!({ "rootCause": root_cause, "agent": res, "rejectedPaths": rejected }));
         }
         self.repair_history.lock().unwrap().entry(project_id.to_string()).or_default().push(format!("{root_cause} (files: {})", changes.iter().map(|c| c.path.as_str()).collect::<Vec<_>>().join(", ")));
         let cs = ChangeStore::new(&self.db).create(project_id, Some(task_id), "repair", &format!("Fix: {}", run.command), &parsed.explanation, &changes)?;
         ev.update(EventStatus::Completed, json!({ "rootCause": root_cause, "changesetId": cs.id }));
         self.db.add_message(project_id, Some(task_id), "assistant", &format!("Build Doctor — {}\n\n{}", run.command, parsed.explanation))?;
-        let policy = s.approvals.apply_ai_edits;
+        let policy = if autopilot { Policy::Auto } else { s.approvals.apply_ai_edits };
         let res = Box::pin(self.finish_proposal(project_id, task_id, &cs, policy, cancel, json!({ "rootCause": root_cause, "rejectedPaths": rejected }))).await?;
         Ok(res)
     }
