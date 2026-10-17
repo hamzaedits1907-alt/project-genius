@@ -32,3 +32,37 @@ jobs:
       - run: npm run typecheck
       - run: npm run lint
       - run: npm test
+      - run: npm run build
+
+  windows-desktop:
+    # The real Windows desktop app: core tests on Windows, then the NSIS/MSI installers,
+    # uploaded as a workflow artifact (no release is created here).
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: swatinem/rust-cache@v2
+      - run: npm ci
+      - name: Core unit tests (Windows)
+        run: cargo test -p genius-core --lib
+      - name: Tauri shell tests (command ACL)
+        run: cargo test -p genius
+      - name: Build Windows installers
+        run: npx tauri build
+      - name: List installers
+        shell: bash
+        run: |
+          ls -la target/release/bundle/nsis target/release/bundle/msi
+          test -n "$(ls target/release/bundle/nsis/*-setup.exe)"
+          test -n "$(ls target/release/bundle/msi/*.msi)"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: genius-windows-installers-${{ github.sha }}
+          path: |
+            target/release/bundle/nsis/*-setup.exe
+            target/release/bundle/msi/*.msi
+          if-no-files-found: error

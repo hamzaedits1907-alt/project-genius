@@ -91,7 +91,8 @@ jobs:
           tagName: v__VERSION__
           releaseName: 'Genius v__VERSION__'
           releaseBody: ${{ needs.prepare.outputs.notes }}
-          releaseDraft: false
+          # Draft until every platform built and the checksums job verified the assets.
+          releaseDraft: true
           prerelease: false
           args: ${{ matrix.args }}
 
@@ -99,16 +100,21 @@ jobs:
     needs: [prepare, build]
     runs-on: ubuntu-22.04
     steps:
-      - name: Publish SHA-256 checksums for every installer
+      - name: Verify installers, publish checksums, then publish the release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAG: v${{ needs.prepare.outputs.version }}
         run: |
           mkdir assets && cd assets
           gh release download "$TAG" -R "$GITHUB_REPOSITORY"
+          ls -la
+          # Every platform must have produced its installer before anyone can update to it.
+          for pattern in '*-setup.exe' '*.msi' '*_aarch64.dmg' '*_x64.dmg' '*.AppImage' '*.deb'; do
+            compgen -G "$pattern" > /dev/null || { echo "::error::missing installer matching $pattern"; exit 1; }
+          done
           for f in *; do
             case "$f" in *.sha256|*.sig|*.json) continue ;; esac
             sha256sum "$f" | awk -v n="$f" '{ print $1 "  " n }' > "$f.sha256"
           done
-          ls -la
           gh release upload "$TAG" *.sha256 -R "$GITHUB_REPOSITORY" --clobber
+          gh release edit "$TAG" -R "$GITHUB_REPOSITORY" --draft=false --latest
