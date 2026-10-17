@@ -20,6 +20,7 @@ pub mod git;
 pub mod github;
 pub mod inspector;
 pub mod integrations;
+pub mod model_stats;
 pub mod nvidia;
 pub mod process;
 pub mod pages;

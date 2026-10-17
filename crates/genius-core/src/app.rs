@@ -6,7 +6,6 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tokio_util::sync::CancellationToken;
@@ -127,15 +126,19 @@ pub fn effort_budget(effort: Effort, role: ModelRole, s: &Settings) -> (u32, boo
 }
 
 /// Why a failed call should move on to the next model (None: the error is not model-specific).
-/// Manual mode only falls back when the chosen model is unavailable.
+/// Manual mode only falls back when the chosen model is unavailable or cannot take the request
+/// (context window too small).
 fn fallback_reason(e: &GeniusError, manual: bool) -> Option<String> {
     let GeniusError::Provider(p) = e else { return None };
     match p {
         ProviderError::ModelUnavailable { status, .. } => Some(format!("it is not available to this key (HTTP {status})")),
+        ProviderError::BadRequest { message, .. } if crate::model_stats::is_context_overflow(message) => Some("the request does not fit its context window".into()),
         _ if manual => None,
         ProviderError::RateLimited { .. } => Some("it is rate limited right now".into()),
         ProviderError::Server { status, .. } => Some(format!("its server returned an error (HTTP {status})")),
         ProviderError::Timeout(_) => Some("it timed out".into()),
+        ProviderError::BadRequest { status, .. } => Some(format!("it rejected the request (HTTP {status})")),
+        ProviderError::Malformed(_) => Some("it sent a broken reply".into()),
         _ => None,
     }
 }
@@ -152,8 +155,12 @@ pub struct Genius {
     pub(crate) runtime_errors: crate::runtime_errors::Store,
     /// Models that answered "unavailable" this session; routing skips them.
     pub(crate) failed_models: Mutex<HashSet<String>>,
-    /// The model list was fetched (or tried) once for routing because there was no cache.
-    pub(crate) models_fetch_tried: AtomicBool,
+    /// When the model list was last fetched (or tried) for routing because there was no cache.
+    pub(crate) models_fetch_at: Mutex<Option<Instant>>,
+    /// Observed per-model performance (persisted; see [`crate::model_stats`]).
+    pub(crate) model_stats: crate::model_stats::StatsCache,
+    /// Effort chosen for a running task by [`Genius::plan_work`] (routing and output budget).
+    pub(crate) task_effort: Mutex<HashMap<String, Effort>>,
     /// Optional request parameters each model rejected (shared by every client).
     param_memory: ParamMemory,
     /// Token usage per task (in memory, bounded).
@@ -190,7 +197,9 @@ impl Genius {
             repair_history: Arc::new(Mutex::new(HashMap::new())),
             runtime_errors: Default::default(),
             failed_models: Mutex::new(HashSet::new()),
-            models_fetch_tried: AtomicBool::new(false),
+            models_fetch_at: Mutex::new(None),
+            model_stats: Default::default(),
+            task_effort: Mutex::new(HashMap::new()),
             param_memory: ParamMemory::default(),
             usage: Mutex::new(HashMap::new()),
             data_dir: data_dir.to_path_buf(),
@@ -267,6 +276,7 @@ impl Genius {
             Ok(v) => {
                 if let Some(p) = v.get("probe") {
                     if let Ok(p) = serde_json::from_value::<ProbeResult>(p.clone()) {
+                        self.record_probe(&p);
                         self.store_probe(p)?;
                     }
                 }
@@ -319,11 +329,13 @@ impl Genius {
         let mut ev = self.bus.start(None, None, EventKind::Ai, EventStatus::Running, format!("Verifying model {model}"), json!({ "model": model }));
         match client.probe_model(model, &CancellationToken::new()).await {
             Ok(p) => {
+                self.record_probe(&p);
                 self.store_probe(p.clone())?;
                 ev.update(EventStatus::Completed, serde_json::to_value(&p)?);
                 Ok(p)
             }
             Err(e) => {
+                self.record_provider_error(model, &e, None);
                 let e = GeniusError::from(e);
                 ev.update(EventStatus::Failed, json!({ "error": { "kind": e.kind(), "message": e.to_string() } }));
                 Err(e)
@@ -647,6 +659,7 @@ impl Genius {
                 }
             }
             me.tasks.lock().unwrap().remove(&info2.id);
+            me.end_work(&info2.id);
             me.bus.prune(&info2.project_id);
         });
         Ok(info)
@@ -668,8 +681,10 @@ impl Genius {
     pub(crate) async fn ai_call_opts(&self, project_id: &str, task_id: &str, purpose: &str, messages: &[ChatMessage], stream_files: bool, cancel: &CancellationToken, opts: &CallOptions) -> Result<(ChatResult, Vec<BlockEvent>)> {
         let (mut client, s) = self.client()?;
         let role = opts.role.unwrap_or(ModelRole::Agent);
-        let effort = opts.effort.unwrap_or(s.effort);
-        let chain = self.resolve_models(role, effort).await?;
+        // Explicit per-call effort, else the effort chosen for this task (plan_work), else settings.
+        let effort = opts.effort.or_else(|| self.task_effort(task_id)).unwrap_or(s.effort);
+        let request_chars: usize = messages.iter().map(|m| m.content.len()).sum();
+        let chain = self.resolve_models_for(role, effort, request_chars).await?;
         let manual = !s.is_auto();
         let (budget, think) = effort_budget(effort, role, &s);
         let thinking = opts.thinking.unwrap_or(think);
@@ -722,6 +737,10 @@ impl Genius {
                     }
                     match (fallback_reason(&e, manual), next) {
                         (Some(why), Some(_)) => {
+                            if manual && i == 0 {
+                                // The user's chosen model cannot be used: say so plainly, then continue automatically.
+                                self.bus.record(Some(project_id), self.tid(task_id), EventKind::Ai, EventStatus::Completed, format!("Your selected model {model} cannot be used because {why}; continuing with the best available model. Choose another model in Settings → AI provider, or switch to Auto."), json!({ "model": model, "reason": why, "manual": true }));
+                            }
                             self.note_switch(project_id, task_id, model, next, &why);
                             last_err = Some(e);
                         }
@@ -735,6 +754,25 @@ impl Genius {
 
     fn tid<'a>(&self, task_id: &'a str) -> Option<&'a str> {
         (!task_id.is_empty()).then_some(task_id)
+    }
+
+    /// Effort [`plan_work`](Self::plan_work) chose for a running task.
+    pub(crate) fn task_effort(&self, task_id: &str) -> Option<Effort> {
+        if task_id.is_empty() {
+            return None;
+        }
+        self.task_effort.lock().unwrap().get(task_id).copied()
+    }
+
+    /// Classify a failed call and remember it in the model stats.
+    pub(crate) fn record_provider_error(&self, model: &str, e: &ProviderError, prompt_chars: Option<usize>) {
+        if let Some(o) = crate::model_stats::outcome_for_error(e) {
+            let limit = match e {
+                ProviderError::BadRequest { message, .. } => crate::model_stats::context_limit_from_message(message),
+                _ => None,
+            };
+            self.record_model_observation(model, o, prompt_chars, limit);
+        }
     }
 
     fn note_switch(&self, project_id: &str, task_id: &str, from: &str, to: Option<&String>, why: &str) {
@@ -812,9 +850,11 @@ impl Genius {
                 let mut last_err = None;
                 for model in &chain {
                     let mut ev = self.bus.start(Some(project_id), self.tid(task_id), EventKind::Ai, EventStatus::Running, format!("Looking at image {n} of {total} ({model})"), json!({ "model": model, "purpose": "Vision handoff", "images": 1 }));
+                    let ev_started = Instant::now();
                     match client.chat(model, &ask, &opts, cancel, |_| {}).await {
                         Ok(r) if !r.content.trim().is_empty() => {
                             ev.update(EventStatus::Completed, json!({ "outputChars": r.content.len(), "usage": r.usage }));
+                            self.record_model_outcome(model, crate::model_stats::Outcome::Success { latency_ms: ev_started.elapsed().as_millis() as u64 });
                             used = model.clone();
                             desc = Some(r.content);
                             break;
@@ -828,6 +868,7 @@ impl Genius {
                             if matches!(e, ProviderError::ModelUnavailable { .. }) {
                                 self.mark_model_failed(model);
                             }
+                            self.record_provider_error(model, &e, None);
                             ev.update(EventStatus::Failed, json!({ "error": { "kind": e.kind(), "message": e.to_string() } }));
                             last_err = Some(e);
                         }
@@ -855,6 +896,15 @@ impl Genius {
         let (mut last_flush, mut last_tflush) = (Instant::now(), Instant::now());
         let bus = self.bus.clone();
         let (pid, tid) = (project_id.to_string(), task_id.to_string());
+        // Time to the first token (content or reasoning): the latency the router learns from.
+        let started = Instant::now();
+        let first_token = std::sync::atomic::AtomicU64::new(0); // 0: no token yet
+        let mark_first = || {
+            use std::sync::atomic::Ordering::Relaxed;
+            if first_token.load(Relaxed) == 0 {
+                first_token.store((started.elapsed().as_millis() as u64).max(1), Relaxed);
+            }
+        };
         let push_file = |bus: &EventBus, e: &BlockEvent| {
             let mut v = serde_json::to_value(e).unwrap_or(Value::Null);
             v["taskId"] = json!(tid);
@@ -868,6 +918,7 @@ impl Genius {
                 opts,
                 cancel,
                 |delta| {
+                    mark_first();
                     buf.push_str(delta);
                     if live && (buf.len() > 256 || last_flush.elapsed() > Duration::from_millis(60)) {
                         bus.push(channels::AI_DELTA, json!({ "taskId": tid, "projectId": pid, "text": std::mem::take(&mut buf) }));
@@ -881,6 +932,7 @@ impl Genius {
                     }
                 },
                 |thought| {
+                    mark_first();
                     tbuf.push_str(thought);
                     if live && (tbuf.len() > 256 || last_tflush.elapsed() > Duration::from_millis(80)) {
                         bus.push(channels::AI_THINKING, json!({ "taskId": tid, "projectId": pid, "text": std::mem::take(&mut tbuf) }));
@@ -906,10 +958,20 @@ impl Genius {
                     events = crate::blocks::parse_all(&r.content);
                 }
                 let tokens = r.usage.as_ref().map(usage_tokens).map(|(p, c, t)| json!({ "prompt": p, "completion": c, "total": t }));
+                if r.content.trim().is_empty() && r.reasoning.trim().is_empty() {
+                    self.record_model_observation(model, crate::model_stats::Outcome::Failed, Some(prompt_chars), None);
+                } else {
+                    let latency_ms = match first_token.load(std::sync::atomic::Ordering::Relaxed) {
+                        0 => started.elapsed().as_millis() as u64,
+                        t => t,
+                    };
+                    self.record_model_observation(model, crate::model_stats::Outcome::Success { latency_ms }, Some(prompt_chars), None);
+                }
                 ev.update(EventStatus::Completed, json!({ "finishReason": r.finish_reason, "outputChars": r.content.len(), "streamed": r.streamed, "usage": r.usage, "tokens": tokens, "reasoningChars": r.reasoning.chars().count(), "reasoningHidden": r.had_reasoning }));
                 Ok((r, events))
             }
             Err(e) => {
+                self.record_provider_error(model, &e, Some(prompt_chars));
                 let e = GeniusError::from(e);
                 ev.update(if matches!(e, GeniusError::Cancelled) { EventStatus::Cancelled } else { EventStatus::Failed }, json!({ "error": { "kind": e.kind(), "message": e.to_string() } }));
                 Err(e)

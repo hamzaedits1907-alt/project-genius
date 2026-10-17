@@ -871,7 +871,9 @@ impl Genius {
             Some((text, forced)) => (text, forced.unwrap_or(req.mode)),
             None => (req.message.clone(), req.mode),
         };
-        let effort = self.effort_for(req);
+        // Auto/Max work plan (router.rs `plan_work`): effort from complexity unless fixed; planning + final review for complex Max work.
+        let work = self.plan_work(project_id, task_id, &message, req.effort.as_deref());
+        let effort = Effort::parse(work.effort.as_str()).unwrap_or_else(|| self.effort_for(req));
         let settings = self.settings()?;
         let mut run = Run::new(project_id, task_id, Some(conv_id), Role::Main, mode, effort);
         run.autopilot = mode == AgentMode::Build && req.autopilot.unwrap_or(settings.approvals.apply_ai_edits == crate::settings::Policy::Auto);
@@ -879,6 +881,13 @@ impl Genius {
         let mut messages = self.agent_prompt(project_id, conv_id, Role::Main, mode, effort, run.autopilot, &message)?;
         let req = AgentRequest { message, mode, ..req.clone() };
         messages.push(self.user_turn(project_id, &req, &attachments)?);
+        if work.planning && mode == AgentMode::Build {
+            match self.run_subagent(&mut run, Role::Architect, &format!("Plan the implementation of this request: {}", clip(&req.message, 6000)), cancel).await {
+                Ok(plan) => messages.push(ChatMessage::user(format!("ARCHITECT PLAN (from a read-only subagent; follow it unless the code shows it is wrong):\n{plan}"))),
+                Err(GeniusError::Cancelled) => return Err(GeniusError::Cancelled),
+                Err(_) => {} // planning is best effort
+            }
+        }
 
         let result = self.agent_loop(&mut run, &mut messages, cancel).await;
         let final_text = match result {
@@ -945,7 +954,7 @@ impl Genius {
         // Review: on max effort a Reviewer subagent checks large proposals before the user sees them.
         let total_lines: usize = changes.iter().map(|c| crate::changes::line_stats(c.before.as_deref(), c.after.as_deref())).map(|(a, r)| a + r).sum();
         let mut review = Value::Null;
-        if effort == Effort::Max && (changes.len() >= 3 || total_lines >= 150) {
+        if effort == Effort::Max && (work.final_review || changes.len() >= 3 || total_lines >= 150) {
             let diff: String = changes.iter().map(|c| crate::changes::unified_diff(&c.path, c.before.as_deref(), c.after.as_deref())).collect::<Vec<_>>().join("\n");
             let task = format!("Review this proposed change for the request: {}\n\nDIFF:\n{}", req.message.trim(), clip(&diff, 24_000));
             match self.run_subagent(&mut run, Role::Reviewer, &task, cancel).await {
@@ -984,7 +993,7 @@ impl Genius {
             compact(messages, budget);
             let purpose = format!("{} agent · step {}", run.role.as_str(), turn + 1);
             let (res, _) = self.ai_call(run.project_id, run.task_id, &purpose, messages, run.role == Role::Main, cancel).await?;
-            let model = self.settings()?.model.unwrap_or_default();
+            let model = res.model.clone();
             run.note_usage(&res, &model);
             let text = res.content.clone();
             let parsed = parse_turn(&text);
