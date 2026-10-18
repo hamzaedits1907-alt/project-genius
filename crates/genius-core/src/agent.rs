@@ -1421,7 +1421,11 @@ impl Genius {
             };
             if outcome.ok {
                 run.proto_streak = 0;
-            } else if outcome.data.get("duplicate").is_none() {
+                if WRITE_TOOLS.contains(&name.as_str()) {
+                    // The project changed: earlier failures may succeed now.
+                    run.failed_calls.clear();
+                }
+            } else if outcome.data.get("duplicate").is_none() && outcome.data.get("blocked").is_none() {
                 let n = bump(&mut run.failed_calls, &format!("{name}:{args}"));
                 outcome.text.push_str(&format!("\nNEXT: {}", failure_hint(&name)));
                 if n >= 2 {
@@ -1634,6 +1638,9 @@ impl Genius {
         } else if run.seen.get(&key).is_some_and(|n| *n >= 1) && TOOLS.iter().any(|t| t.name == name && t.read_only) && !["capabilities", "preview_errors", "last_run_output"].contains(&name) {
             // Repeating an identical read-only call adds no information.
             Ok(ToolOutcome { ok: false, summary: format!("{name} repeated (skipped)"), text: "You already called this tool with identical arguments and nothing changed since; its result is earlier in the conversation. Use it, or try something different.".into(), data: json!({ "duplicate": true }) })
+        } else if run.failed_calls.get(&key).is_some_and(|n| *n >= 2) {
+            // Retrying a call that failed twice with nothing changed in between cannot succeed.
+            Ok(ToolOutcome { ok: false, summary: format!("{name} blocked: identical call failed twice"), text: format!("BLOCKED: this exact {name} call has already failed twice and nothing has changed since. Do not send it again. Read the earlier error, fix the cause (different arguments, read the file first, or another tool), or explain the blocker in <final>."), data: json!({ "blocked": true }) })
         } else {
             self.dispatch_tool(run, name, args, cancel).await
         };
