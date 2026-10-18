@@ -192,6 +192,30 @@ fn is_loopback_host(host: &str) -> bool {
     matches!(host.to_ascii_lowercase().as_str(), "127.0.0.1" | "localhost" | "[::1]" | "::1")
 }
 
+/// Canonical form of `path` even when it does not exist yet: the nearest existing ancestor is
+/// resolved (symlinks, and Windows' `\\?\` prefix) and the missing tail is appended, so existing
+/// and not-yet-existing paths compare consistently.
+fn canon_lenient(path: &Path) -> std::path::PathBuf {
+    if let Ok(c) = path.canonicalize() {
+        return c;
+    }
+    let mut tail: Vec<std::ffi::OsString> = Vec::new();
+    let mut cur = path.to_path_buf();
+    while let Some(name) = cur.file_name().map(|n| n.to_os_string()) {
+        tail.push(name);
+        if !cur.pop() {
+            break;
+        }
+        if let Ok(mut c) = cur.canonicalize() {
+            for n in tail.iter().rev() {
+                c.push(n);
+            }
+            return c;
+        }
+    }
+    path.to_path_buf()
+}
+
 impl UrlPolicy {
     /// Allow the origin of `dev_url` (an http URL on a loopback host with a port).
     pub fn for_origin(dev_url: &str) -> Result<UrlPolicy> {
@@ -205,11 +229,11 @@ impl UrlPolicy {
 
     /// A policy that only allows `file:` URLs inside `root` (a project's `dist`).
     pub fn for_files(root: &Path) -> UrlPolicy {
-        UrlPolicy { port: 0, file_root: Some(root.canonicalize().unwrap_or_else(|_| root.to_path_buf())) }
+        UrlPolicy { port: 0, file_root: Some(canon_lenient(root)) }
     }
 
     pub fn with_file_root(mut self, root: &Path) -> UrlPolicy {
-        self.file_root = Some(root.canonicalize().unwrap_or_else(|_| root.to_path_buf()));
+        self.file_root = Some(canon_lenient(root));
         self
     }
 
@@ -220,7 +244,7 @@ impl UrlPolicy {
             "http" | "ws" => self.port != 0 && u.username().is_empty() && u.password().is_none() && u.host_str().is_some_and(is_loopback_host) && u.port() == Some(self.port),
             "file" => match (&self.file_root, u.to_file_path()) {
                 (Some(root), Ok(p)) => {
-                    let p = p.canonicalize().unwrap_or(p);
+                    let p = canon_lenient(&p);
                     !p.components().any(|c| matches!(c, std::path::Component::ParentDir)) && p.starts_with(root)
                 }
                 _ => false,

@@ -1,3 +1,4 @@
+#![allow(clippy::collapsible_if, clippy::useless_format)]
 //! Genius Chat / Genius Research integration tests. The NVIDIA API is replaced by a scripted
 //! mock (wiremock) that plays the model's side of the tool protocol, and web pages are served by
 //! a second local mock server (loopback is allowed only through the test hook; every other
@@ -201,7 +202,7 @@ async fn chat_has_no_write_or_execution_tools_and_never_touches_the_project_list
     let (_, status, msgs) = send(g, &conv.row.id, "What did I ask first?", &[]).await;
     assert_eq!(status, EventStatus::Completed);
     assert!(last_assistant(&msgs).content.contains("write a file"));
-    assert_eq!(g.usage_summary(&ws.id).unwrap()["calls"].as_u64().unwrap() >= 3, true, "usage is recorded against the general workspace");
+    assert!(g.usage_summary(&ws.id).unwrap()["calls"].as_u64().unwrap() >= 3, "usage is recorded against the general workspace");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -468,7 +469,7 @@ async fn prompt_injection_in_a_page_changes_neither_behaviour_nor_tool_permissio
         assert!(system.contains("Genius Research"));
         assert!(!system.contains("- write_file "), "tool list is fixed by the role, not by page content");
         if last.contains("USER MESSAGE:") && last.contains("Summarise that blog") {
-            return format!("{}", tool("fetch_url", json!({"url": format!("{p2}/evil")})));
+            return tool("fetch_url", json!({"url": format!("{p2}/evil")})).to_string();
         }
         if last.starts_with("<tool_result name=\"fetch_url\"") && last.contains("Totally Normal Blog") {
             assert!(last.contains("Genius security notice") && last.contains("NOT followed"), "page text aimed at the model is flagged: {last}");

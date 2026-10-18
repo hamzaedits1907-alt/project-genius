@@ -374,7 +374,7 @@ fn remove_workspace(data_dir: &Path, any_path_in_task_dir: &str) {
     // <root>/<mission>/<task>[/ws]
     let task_dir = if p.file_name().is_some_and(|n| n == "ws") { p.parent().map(Path::to_path_buf) } else { Some(p) };
     let Some(task_dir) = task_dir.and_then(|d| d.canonicalize().ok()) else { return };
-    if task_dir.starts_with(&root) && task_dir != root && task_dir.parent() != Some(root.as_path()).filter(|_| false) {
+    if task_dir.starts_with(&root) && task_dir != root && task_dir.parent().is_some() {
         let _ = std::fs::remove_dir_all(&task_dir);
     }
 }

@@ -1,3 +1,4 @@
+#![allow(clippy::err_expect)]
 //! Dashboard regression: a scripted model builds a multi-widget dashboard against a REAL
 //! scaffolded Vite + React + TypeScript project with real tools, real `npm install`, real
 //! `tsc`, real `vite build` and a real dev server. Only the model is a wiremock script.
