@@ -154,8 +154,28 @@ impl Genius {
             return Ok(());
         }
         // Vite's overlay shows absolute paths; keep them project-relative like everything else.
-        let prefix = format!("{}/", p.path.replace('\\', "/"));
-        let rel = |s: String| s.replace(&prefix, "");
+        // On Windows the project path may appear with `\\?\` (verbatim) or without it, with
+        // either slash style, and Vite mixes `/` into the remainder — strip every spelling.
+        let plain = p.path.trim_start_matches(r"\\?\").trim_start_matches("//?/");
+        let mut prefixes: Vec<String> = Vec::new();
+        for base in [plain.to_string(), format!(r"\\?\{plain}")] {
+            for spelled in [base.replace('\\', "/"), base.replace('/', "\\")] {
+                for sep in ["/", "\\"] {
+                    let pre = format!("{spelled}{sep}");
+                    if !prefixes.contains(&pre) {
+                        prefixes.push(pre);
+                    }
+                }
+            }
+        }
+        // Longest first, so the verbatim spelling is removed before its plain suffix.
+        prefixes.sort_by_key(|p| std::cmp::Reverse(p.len()));
+        let rel = |mut s: String| {
+            for pre in &prefixes {
+                s = s.replace(pre.as_str(), "");
+            }
+            s
+        };
         let errors = errors.into_iter().map(|e| PreviewRuntimeError { message: rel(e.message), source: e.source.map(rel), stack: e.stack.map(rel), ..e }).collect();
         let (fresh, all) = {
             let mut map = self.runtime_errors.lock().unwrap();
@@ -307,5 +327,12 @@ mod tests {
         g.clear_preview_errors(&p.id);
         assert!(g.preview_errors(&p.id).is_empty());
         assert_eq!(rec.on(channels::PREVIEW_ERRORS).last().unwrap()["errors"], json!([]));
+        // Windows spellings: verbatim prefix, backslashes, Vite's mixed separators.
+        let plain = p.path.trim_start_matches(r"\\?\");
+        let win = format!(r"\\?\{}", plain.replace('/', "\\"));
+        g.report_preview_errors(&p.id, vec![PreviewRuntimeError { source: Some(format!("{win}/src/Main.tsx")), stack: Some(format!("at App ({}\\src\\App.tsx:3:5)", plain.replace('/', "\\"))), ..err("vite", "Other failure", Some(4)) }]).unwrap();
+        let last = g.preview_errors(&p.id).pop().unwrap();
+        assert_eq!(last.source.as_deref(), Some("src/Main.tsx"));
+        assert!(last.stack.as_deref().unwrap().contains(r"(src\App.tsx:3:5)"), "{:?}", last.stack);
     }
 }
