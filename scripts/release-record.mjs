@@ -36,7 +36,8 @@ if (!Array.isArray(paths) || paths.length === 0) {
   process.exit(1);
 }
 
-const artifacts = paths.map((p) => {
+// macOS reports the unpacked `.app` bundle (a directory) next to the files it uploads.
+const artifacts = paths.filter((p) => statSync(p).isFile()).map((p) => {
   const bytes = readFileSync(p);
   return { name: basename(p), size: statSync(p).size, sha256: createHash('sha256').update(bytes).digest('hex') };
 });
