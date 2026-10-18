@@ -76,6 +76,7 @@ const TOOLS: &[ToolSpec] = &[
     ToolSpec { name: "add_dependency", args: r#"{"packages": [string, ...], "dev"?: boolean}"#, description: "Add npm packages to package.json (latest version; installed automatically before the next check). Only well-known, maintained packages.", read_only: false },
     ToolSpec { name: "run_check", args: r#"{"check": "typecheck"|"build"|"test"}"#, description: "Run the project's real type check, build or tests and return the exit code and output. Installs dependencies first when needed.", read_only: false },
     ToolSpec { name: "last_run_output", args: r#"{"check"?: "build"|"test"|"typecheck"|"install"|"dev"}"#, description: "Exit code and output tail of the most recent run of a check or of the dev server (real recorded output).", read_only: true },
+    ToolSpec { name: "inspect_preview", args: r#"{"widths"?: [number]}"#, description: "Look at the running app in the user's preview, in the real browser: whether it rendered, the visible text outline, layout problems (horizontal overflow, broken images), accessibility problems (missing alt/labels/names, contrast, heading order) at the current width plus mobile (375) and desktop (1280). Use after building or changing UI, and to verify responsive design. Needs the preview running.", read_only: true },
     ToolSpec { name: "preview_errors", args: "{}", description: "Runtime errors from the live preview in the user's window: uncaught exceptions with stack traces, failed imports, console errors, a blank page. Use whenever the app misbehaves, shows nothing or a black/white screen.", read_only: true },
     ToolSpec { name: "git_status", args: "{}", description: "Current Git branch, remotes and changed files (if the project is a repository).", read_only: true },
     ToolSpec { name: "git_diff", args: r#"{"path": string}"#, description: "Uncommitted diff of one file against the last commit.", read_only: true },
@@ -704,6 +705,13 @@ pub fn extract_ask(text: &str) -> (String, Option<Ask>) {
 // Lenient on purpose: unknown fields are ignored, and arguments pass through
 // `toolcall::normalize` (the alias table and shape fixes) first, because a rejected call costs
 // a full model round-trip. Required fields are checked by `toolcall::validate`.
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct InspectArgs {
+    #[serde(default)]
+    widths: Vec<u32>,
+}
 
 #[derive(Deserialize)]
 struct NoArgs {}
@@ -1644,7 +1652,7 @@ impl Genius {
             Err(GeniusError::Validation(e.message))
         } else if !run.role.allows(name) {
             Err(GeniusError::Validation(format!("the {} agent is not permitted to use '{name}'", run.role.as_str())))
-        } else if run.seen.get(&key).is_some_and(|n| *n >= 1) && TOOLS.iter().any(|t| t.name == name && t.read_only) && !["capabilities", "preview_errors", "last_run_output"].contains(&name) {
+        } else if run.seen.get(&key).is_some_and(|n| *n >= 1) && TOOLS.iter().any(|t| t.name == name && t.read_only) && !["capabilities", "preview_errors", "inspect_preview", "last_run_output"].contains(&name) {
             // Repeating an identical read-only call adds no information.
             Ok(ToolOutcome { ok: false, summary: format!("{name} repeated (skipped)"), text: "You already called this tool with identical arguments and nothing changed since; its result is earlier in the conversation. Use it, or try something different.".into(), data: json!({ "duplicate": true }) })
         } else if run.failed_calls.get(&key).is_some_and(|n| *n >= 2) {
@@ -1971,6 +1979,11 @@ impl Genius {
                 let a: NameArgs = typed(name, args)?;
                 let skill = crate::skills::find(&ws, &a.name).ok_or_else(|| GeniusError::Validation(format!("unknown skill '{}'. Available: {}", a.name, crate::skills::all(&ws).iter().map(|s| s.id.clone()).collect::<Vec<_>>().join(", "))))?;
                 Ok(ToolOutcome::ok(format!("Loaded the {} skill", skill.name), format!("SKILL: {}\n{}", skill.name, skill.body), json!({ "skill": skill.id })))
+            }
+            "inspect_preview" => {
+                let a: InspectArgs = typed(name, args)?;
+                let report = self.inspect_preview(pid, a.widths, std::time::Duration::from_secs(20)).await?;
+                Ok(ToolOutcome::ok("Inspected the running preview", crate::inspection::render_inspection(&report), json!({})))
             }
             "preview_errors" => {
                 typed::<NoArgs>(name, args)?;

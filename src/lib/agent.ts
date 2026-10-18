@@ -41,6 +41,7 @@ export function stepTitle(s: AgentStep): string {
     run_check: `Ran ${str('check')}`,
     remember: 'Saved a project memory',
     delegate: `Asked the ${roleName(str('role'))} agent${task ? `: ${clip(task, 90)}` : '…'}`,
+    inspect_preview: 'Looked at the running app',
     web_search: `Searched the web for “${str('query')}”`,
     fetch_url: `Read ${hostOf(str('url'))}`,
     write_file: `Wrote ${str('path')}${counts}`,

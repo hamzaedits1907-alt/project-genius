@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.3.2]
+
+Genius gets far more reliable at using its tools.
+
+- **Tool calls that just work.** Genius understands every common way models write tool calls (JSON, OpenAI-style, XML-parameter styles, argument aliases, files as a map or list) and checks the arguments before running anything. A bad call gets one precise example back, never a silent failure.
+- **No more loops.** The same failing call is blocked after two tries with clear guidance, repeated format mistakes switch Genius to the most robust file format, and every recovery is bounded.
+- **Smarter Auto and Max.** Auto learns from what each model actually does on your key (speed, failures, bad tool calls, context limits) and avoids the ones that struggle. Max adds a planning pass and a final review for complex work. Works with no model selected.
+- **Genius can look at your running app.** A new inspection tool checks what rendered, layout problems, accessibility (labels, contrast, headings) and mobile/desktop views in the real preview.
+- **Dashboard regression test:** a real build (install, typecheck, build, dev server, follow-up change, rollback) driven through malformed tool calls and real compiler errors.
+
 ## [0.3.1]
 
 - **Fixed:** steering Genius while it works, rewinding and compacting a conversation, and the slash-command menu were blocked by the app's permission list in 0.3.0 and did nothing. They work now.
