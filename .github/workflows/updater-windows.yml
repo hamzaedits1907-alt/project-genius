@@ -1,0 +1,149 @@
+name: Updater (Windows)
+
+# Verifies the in-app updater against REAL published releases on a real Windows runner.
+# Manual (Actions -> Updater (Windows) -> Run workflow) or called by release.yml after publishing.
+# It never creates, edits, uploads or deletes a release: it only downloads published assets.
+#
+# What a green run proves (details and limits in docs/RELEASING.md):
+#   1. the OLD release's NSIS setup.exe matches its published .sha256 and installs silently
+#   2. the real updater code (crates/genius-core/src/updater.rs), starting from the OLD version,
+#      finds the NEW release, selects its -setup.exe, downloads it and verifies the SHA-256;
+#      a tampered copy, a substituted/truncated download and a foreign host are all rejected
+#   3. running that downloaded NEW installer over the OLD install gives an executable that
+#      reports the NEW version, in the same folder, with user data in %APPDATA% untouched
+#   4. the updated app starts, stays alive ~20 s and shows a main window titled "Genius"
+# What it does NOT prove: that the interactive installer the app launches behaves the same as
+# the silent one, the app's own "Update now" button and exit/relaunch sequence (covered only by
+# unit tests and the Linux AppImage run), code signing (there is none), or that macOS works.
+
+on:
+  workflow_dispatch:
+    inputs:
+      old_tag:
+        description: 'Release to update FROM (empty = the published release before new_tag)'
+        required: false
+        default: ''
+        type: string
+      new_tag:
+        description: 'Release to update TO (empty = the latest published release)'
+        required: false
+        default: ''
+        type: string
+  workflow_call:
+    inputs:
+      old_tag:
+        required: false
+        default: ''
+        type: string
+      new_tag:
+        required: false
+        default: ''
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: updater-windows-${{ inputs.new_tag || 'latest' }}
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    name: Update ${{ inputs.old_tag || 'previous' }} to ${{ inputs.new_tag || 'latest' }} on Windows
+    runs-on: windows-latest
+    timeout-minutes: 45
+    env:
+      GH_TOKEN: ${{ github.token }}
+      OLD_TAG: ${{ inputs.old_tag }}
+      NEW_TAG: ${{ inputs.new_tag }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 1. Resolve the two releases under test
+        id: resolve
+        shell: pwsh
+        run: pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/verify-updater-windows.ps1 -Step resolve -OldTag "$env:OLD_TAG" -NewTag "$env:NEW_TAG"
+
+      - name: 2. Download the OLD installer and verify its published SHA-256
+        shell: pwsh
+        run: pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/verify-updater-windows.ps1 -Step download-old
+
+      - name: 3. Install the OLD version silently (NSIS /S, default per-user location)
+        shell: pwsh
+        run: pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/verify-updater-windows.ps1 -Step install-old
+
+      - name: 4. Create user-data markers in %APPDATA%\dev.genius.studio
+        shell: pwsh
+        run: pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/verify-updater-windows.ps1 -Step markers
+
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: swatinem/rust-cache@v2
+
+      - name: 5. Real updater code against the real release (check, download, verify, tamper, silent install of the NEW installer)
+        shell: bash
+        env:
+          GENIUS_LIVE_UPDATER: '1'
+          GENIUS_LIVE_INSTALL: '1'
+          GENIUS_LIVE_OLD_VERSION: ${{ steps.resolve.outputs.old_version }}
+          GENIUS_LIVE_NEW_TAG: ${{ steps.resolve.outputs.new_tag }}
+          GENIUS_LIVE_RESULT: ${{ runner.temp }}\updater-verify\live-result.json
+        run: |
+          set -o pipefail
+          mkdir -p "$RUNNER_TEMP/updater-verify/collected"
+          log="$RUNNER_TEMP/updater-verify/collected/updater_live.log"
+          if ! cargo test -p genius-core --test updater_live -- --nocapture --test-threads=1 2>&1 | tee "$log"; then
+            summary=$(grep -E "^\[live-updater\]|panicked|assertion|^error|FAILED" -A3 "$log" | tail -c 5000 | sed ':a;N;$!ba;s/%/%25/g;s/\r//g;s/\n/%0A/g')
+            echo "::error title=Updater live test failed::${summary}"
+            exit 1
+          fi
+          steps=$(grep '^\[live-updater\]' "$log" | sed 's/^\[live-updater\] //' | sed ':a;N;$!ba;s/%/%25/g;s/\r//g;s/\n/%0A/g')
+          echo "::notice title=Updater test passed (real code, real release)::${steps}"
+
+      - name: 6. Verify the installed app is now the NEW version and user data survived
+        shell: pwsh
+        run: pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/verify-updater-windows.ps1 -Step verify-new -ResultFile "$env:RUNNER_TEMP\updater-verify\live-result.json"
+
+      - name: 7. Start the updated app, wait, check the process and the window title
+        shell: pwsh
+        run: pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/verify-updater-windows.ps1 -Step launch
+
+      - name: Collect logs
+        if: always()
+        shell: pwsh
+        run: pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/verify-updater-windows.ps1 -Step collect
+
+      - name: Upload logs and screenshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: updater-windows-logs-${{ github.run_id }}
+          path: |
+            ${{ runner.temp }}\updater-verify\collected
+            ${{ runner.temp }}\updater-verify\live-result.json
+            ${{ runner.temp }}\updater-verify\app-screenshot.png
+          if-no-files-found: warn
+
+      - name: Summary
+        if: always()
+        shell: bash
+        env:
+          OLD_TAG_R: ${{ steps.resolve.outputs.old_tag }}
+          NEW_TAG_R: ${{ steps.resolve.outputs.new_tag }}
+          JOB_STATUS: ${{ job.status }}
+        run: |
+          {
+            echo "## Windows updater verification: ${JOB_STATUS}"
+            echo
+            echo "Update path under test: \`${OLD_TAG_R:-?}\` to \`${NEW_TAG_R:-?}\` (real published releases, nothing was published or changed)."
+            echo
+            echo "| Check | Where |"
+            echo "|---|---|"
+            echo "| Old installer equals its published SHA-256, installs silently, reports the old version | steps 2-3 |"
+            echo "| Real updater code finds the new release, selects the NSIS setup.exe, downloads and verifies it | step 5 |"
+            echo "| Tampered copy, substituted content, size mismatch and foreign hosts are rejected, nothing left behind | step 5 |"
+            echo "| New installer runs over the old install: exe version, same folder, uninstaller, registry entry | step 6 |"
+            echo "| User data in %APPDATA% unchanged | steps 4, 6, 7 |"
+            echo "| Updated app stays alive and its window is titled Genius | step 7 |"
+            echo
+            echo "Not proven: the interactive installer and the in-app Update button flow, code signing (the installer is unsigned), macOS."
+          } >> "$GITHUB_STEP_SUMMARY"

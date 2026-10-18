@@ -109,7 +109,7 @@ export default function UpdateDialog({ onClose }: { onClose: () => void }) {
         <div className="faint tiny">macOS: the disk image opens — drag Genius into Applications and replace the old copy. If macOS says the app is damaged, run <span className="mono">xattr -cr /Applications/Genius.app</span> (the app is not notarized).</div>
       )}
       {update.available && update.asset && /\.(exe|msi)$/i.test(update.asset.name) && (
-        <div className="faint tiny">Windows: if SmartScreen warns about an unknown publisher, choose “More info → Run anyway” (the installer is not code-signed).</div>
+        <div className="faint tiny">Windows: the installer is not code-signed yet, so Windows may warn about an unknown publisher. Install only if you trust this source; the download is checked against the SHA-256 published with the release.</div>
       )}
       <div className="faint tiny">Your projects, settings and API key are kept. Updates come only from the official GitHub releases of Project Genius.</div>
     </Modal>
