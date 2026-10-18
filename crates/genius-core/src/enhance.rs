@@ -306,6 +306,15 @@ mod tests {
         let g = genius(dir.path());
         let err = g.enhance_prompt("x", &CancellationToken::new()).await.unwrap_err();
         assert_eq!(err.kind(), "validation");
+        // Auto mode (the default) needs no chosen model: without a key (or models to route to) it cannot proceed.
+        let err = g.enhance_prompt("a recipe site", &CancellationToken::new()).await.unwrap_err();
+        assert!(["provider_missing_key", "provider_no_model"].contains(&err.kind()), "{}", err.kind());
+        // Manual mode without a chosen model fails before any network call.
+        let mut s = g.settings().unwrap();
+        s.model_mode = "manual".into();
+        s.model = None;
+        g.save_settings(&s).unwrap();
+        g.save_api_key("nvapi-enhance-test-key-0123456789").unwrap();
         let err = g.enhance_prompt("a recipe site", &CancellationToken::new()).await.unwrap_err();
         assert_eq!(err.kind(), "provider_no_model");
     }

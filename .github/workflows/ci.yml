@@ -18,7 +18,13 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: swatinem/rust-cache@v2
       - name: Core tests
-        run: cargo test -p genius-core
+        run: |
+          set -o pipefail
+          if ! cargo test -p genius-core 2>&1 | tee core-tests.log; then
+            summary=$(grep -E "^---- |panicked|FAILED|^error" -A4 core-tests.log | head -c 6000 | sed ':a;N;$!ba;s/%/%25/g;s/\r//g;s/\n/%0A/g')
+            echo "::error title=Core test failures::${summary}"
+            exit 1
+          fi
 
   frontend:
     runs-on: ubuntu-22.04
