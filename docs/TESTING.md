@@ -69,3 +69,10 @@ A scripted **mock** provider plays the model's side of the tool protocol (labell
 - Live GitHub device login, repository creation and push to github.com.
 - Windows Credential Manager / macOS Keychain storage (the Linux CI box has no Secret Service, so the memory-only fallback path was exercised instead).
 - Windows/macOS builds of the desktop app (built and tested on Linux only).
+
+## Updater: failure behaviour and live verification
+
+- `cargo test -p genius-core --lib updater` covers partial downloads (previous file untouched, no `.part`), a cut connection, checksum mismatch, missing checksum, unsafe install paths, AppImage backup and rollback.
+- `cargo test -p genius-core --test updater_live` always runs the offline checks, including a child-process test that `HTTPS_PROXY` is honoured (a fake local proxy sees `CONNECT api.github.com:443`). With `GENIUS_LIVE_UPDATER=1` it also talks to the real GitHub release (needs network; optional `GENIUS_LIVE_OLD_VERSION`, `GENIUS_LIVE_NEW_TAG`).
+- The Windows installer path is verified by `.github/workflows/updater-windows.yml` (manual; see `docs/RELEASING.md`). Not yet run.
+- CI runs clippy with `-D warnings`; rustfmt is reported only.

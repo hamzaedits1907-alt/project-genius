@@ -1,5 +1,7 @@
 name: CI
 
+# The release workflow (release.yml) refuses to publish unless the jobs `rust`, `frontend` and
+# `windows-desktop` below succeeded on the release commit: keep their ids (or update scripts/ci-gate.sh).
 on:
   push:
     branches: [main]
@@ -14,9 +16,28 @@ jobs:
       - name: Install Linux dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf libsecret-1-dev libssl-dev libdbus-1-dev pkg-config
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf libsecret-1-dev libssl-dev libdbus-1-dev libxdo-dev pkg-config
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
       - uses: swatinem/rust-cache@v2
+      - name: Clippy (warnings are errors)
+        # Two stylistic lints are allowed because the code they flag is readable as written:
+        # `unnecessary_sort_by` (descending sorts written as `b.cmp(a)`) and `if_same_then_else`
+        # (separate branches for separate model families that happen to share a setting).
+        run: cargo clippy -p genius-core -p genius --all-targets -- -D warnings -A clippy::unnecessary_sort_by -A clippy::if_same_then_else
+      - name: Formatting report (not enforced)
+        # The code base is hand-formatted in a dense style; rustfmt.toml approximates it but
+        # `cargo fmt` would still rewrite hundreds of places, so formatting is reported, not gated.
+        # To enforce it: run `cargo fmt --all` once on a quiet main, commit it alone, then replace
+        # this step with a plain `cargo fmt --all --check`.
+        run: |
+          if cargo fmt --all --check > fmt.log 2>&1; then
+            echo "rustfmt: clean"
+          else
+            n=$(grep -c '^Diff in' fmt.log || true)
+            echo "::warning title=rustfmt is not enforced::${n} places differ from rustfmt.toml (informational)"
+          fi
       - name: Core tests
         run: |
           set -o pipefail
@@ -57,7 +78,7 @@ jobs:
         shell: bash
         run: |
           set -o pipefail
-          if ! cargo test -p genius-core --lib 2>&1 | tee core-tests.log; then
+          if ! cargo test -p genius-core --lib --test updater_live 2>&1 | tee core-tests.log; then
             # Surface the failing tests and their panics as one annotation (readable via the API).
             summary=$(sed -n '/^failures:$/,$p' core-tests.log | head -c 6000 | sed ':a;N;$!ba;s/%/%25/g;s/\r//g;s/\n/%0A/g')
             echo "::error title=Windows core test failures::${summary}"

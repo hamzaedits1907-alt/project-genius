@@ -782,6 +782,8 @@ pub async fn install_update(app: AppHandle) -> Result<String> {
                     Ok(_) => app.exit(0),
                     Err(e) => {
                         log::warn!("could not relaunch {}: {e}", target.display());
+                        // The new AppImage does not start: put the previous one back before restarting.
+                        let _ = updater::rollback_appimage(&target);
                         app.restart();
                     }
                 }

@@ -3,6 +3,15 @@ name: Release
 # Push a tag like v0.2.1 (matching the version in src-tauri/tauri.conf.json) to build installers
 # for Windows, macOS and Linux and publish them as a GitHub release. Installed copies of Genius
 # find the release through the in-app updater, which verifies the .sha256 files made below.
+#
+# Gates (any failure leaves the release a DRAFT that nobody can update to):
+#   prepare          tag == app version, commit is on main, version not already published
+#   ci-gate          the CI workflow (rust, frontend, windows-desktop) succeeded on this commit
+#   build            one record per runner of what it built from this commit
+#   verify-artifacts release assets == what the runners built; the Windows installer is a real
+#                    NSIS exe; writes RELEASE_MANIFEST.json (name, size, sha256, commit, run URL)
+#   checksums        re-checks the manifest, publishes .sha256 files, then publishes the release
+#   verify-updater   OPTIONAL, after publishing: only reports (see docs/RELEASING.md)
 on:
   push:
     tags:
@@ -11,6 +20,13 @@ on:
 
 permissions:
   contents: write
+  checks: read
+
+# Two releases must never race (both flipping "latest", both uploading assets). A second run
+# waits for the first; GitHub keeps only the newest waiting run, so re-run a superseded one by hand.
+concurrency:
+  group: release
+  cancel-in-progress: false
 
 jobs:
   prepare:
@@ -20,13 +36,34 @@ jobs:
       notes: ${{ steps.meta.outputs.notes }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - id: meta
-        name: Read version and release notes
+        name: Read version and release notes; check the commit
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           version=$(jq -r .version src-tauri/tauri.conf.json)
           if [[ "$GITHUB_REF_TYPE" == "tag" && "$GITHUB_REF_NAME" != "v$version" ]]; then
             echo "::error::Tag $GITHUB_REF_NAME does not match the app version v$version in src-tauri/tauri.conf.json"
             exit 1
+          fi
+          # Only commits that are on main may be released.
+          if [[ "$GITHUB_REF_TYPE" == "tag" ]]; then
+            if ! git merge-base --is-ancestor "$GITHUB_SHA" origin/main; then
+              echo "::error::Commit ${GITHUB_SHA:0:12} (tag $GITHUB_REF_NAME) is not on main. Merge it to main first."
+              exit 1
+            fi
+          elif [[ "$GITHUB_REF" != "refs/heads/main" ]]; then
+            echo "::error::Run this workflow from the main branch (it was started from $GITHUB_REF)."
+            exit 1
+          fi
+          # A published version is immutable: never upload into it again.
+          if state=$(gh release view "v$version" -R "$GITHUB_REPOSITORY" --json isDraft --jq .isDraft 2>/dev/null); then
+            if [[ "$state" == "false" ]]; then
+              echo "::error::v$version is already published. Bump the version instead of re-releasing it."
+              exit 1
+            fi
           fi
           echo "version=$version" >> "$GITHUB_OUTPUT"
           # The CHANGELOG.md section for this version becomes the release notes shown in the app.
@@ -38,8 +75,25 @@ jobs:
           {
             echo "notes<<GENIUS_NOTES_EOF"
             echo "$notes"
+            echo
+            echo "---"
+            echo "Source commit: \`$GITHUB_SHA\`  "
+            echo "Built by: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID  "
+            echo "Every installer is listed with its SHA-256 in \`RELEASE_MANIFEST.json\` and has a \`.sha256\` file. The installers are not code-signed."
             echo "GENIUS_NOTES_EOF"
           } >> "$GITHUB_OUTPUT"
+
+  ci-gate:
+    # Refuses to publish when CI on this exact commit is not green (waits while it is running).
+    needs: prepare
+    runs-on: ubuntu-22.04
+    timeout-minutes: 75
+    steps:
+      - uses: actions/checkout@v4
+      - name: Require CI success on this commit
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: bash scripts/ci-gate.sh "$GITHUB_SHA" "$GITHUB_REPOSITORY"
 
   build:
     needs: prepare
@@ -85,6 +139,7 @@ jobs:
         run: npm ci
 
       - uses: tauri-apps/tauri-action@v0
+        id: tauri
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
@@ -94,12 +149,73 @@ jobs:
           # Draft until every platform built and the checksums job verified the assets.
           releaseDraft: true
           prerelease: false
+          commitish: ${{ github.sha }}
           args: ${{ matrix.args }}
 
-  checksums:
+      - name: Record what this runner built from this commit
+        shell: bash
+        env:
+          ARTIFACT_PATHS: ${{ steps.tauri.outputs.artifactPaths }}
+          PLATFORM: ${{ matrix.platform }}
+          ARGS: ${{ matrix.args }}
+        run: node scripts/release-record.mjs "$RUNNER_TEMP/build-record.json"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: build-record-${{ strategy.job-index }}
+          path: ${{ runner.temp }}/build-record.json
+          if-no-files-found: error
+
+  verify-artifacts:
+    # The published (draft) assets must be byte-identical to what the runners built from this
+    # commit, the Windows installer must be a real NSIS executable, and the tag must point here.
     needs: [prepare, build]
     runs-on: ubuntu-22.04
     steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: build-record-*
+          path: records
+      - name: Verify the release assets and write RELEASE_MANIFEST.json
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: v${{ needs.prepare.outputs.version }}
+          VERSION: ${{ needs.prepare.outputs.version }}
+        run: |
+          mkdir -p records-flat assets
+          # download-artifact puts each artifact in its own sub folder; every record is renamed uniquely.
+          i=0; for f in records/*/build-record.json; do i=$((i+1)); cp "$f" "records-flat/build-record-$i.json"; done
+          # The release must belong to the commit that was built. A tag push already has the tag;
+          # a manual run has none yet (GitHub creates it at publish time from the draft's target).
+          if tag_commit=$(gh api "repos/$GITHUB_REPOSITORY/commits/$TAG" --jq .sha 2>/dev/null); then
+            if [[ "$tag_commit" != "$GITHUB_SHA" ]]; then
+              echo "::error title=Tag does not point at the built commit::$TAG is $tag_commit but this run built $GITHUB_SHA"
+              exit 1
+            fi
+          else
+            target=$(gh api "repos/$GITHUB_REPOSITORY/releases?per_page=30" --jq "[.[] | select(.tag_name == \"$TAG\")][0].target_commitish")
+            if [[ "$target" != "$GITHUB_SHA" ]]; then
+              echo "::error title=Draft release targets the wrong commit::$TAG does not exist yet and its draft targets '$target', not $GITHUB_SHA"
+              exit 1
+            fi
+          fi
+          gh release download "$TAG" -R "$GITHUB_REPOSITORY" -D assets
+          ls -la assets
+          node scripts/release-manifest.mjs build records-flat assets assets/RELEASE_MANIFEST.json
+          gh release upload "$TAG" assets/RELEASE_MANIFEST.json -R "$GITHUB_REPOSITORY" --clobber
+
+  checksums:
+    needs: [prepare, build, ci-gate, verify-artifacts]
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
       - name: Verify installers, publish checksums, then publish the release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -112,9 +228,21 @@ jobs:
           for pattern in '*-setup.exe' '*.msi' '*_aarch64.dmg' '*_x64.dmg' '*.AppImage' '*.deb'; do
             compgen -G "$pattern" > /dev/null || { echo "::error::missing installer matching $pattern"; exit 1; }
           done
+          # Last check before publishing: the files are still the ones recorded in the manifest.
+          node ../scripts/release-manifest.mjs check RELEASE_MANIFEST.json .
           for f in *; do
             case "$f" in *.sha256|*.sig|*.json) continue ;; esac
             sha256sum "$f" | awk -v n="$f" '{ print $1 "  " n }' > "$f.sha256"
           done
           gh release upload "$TAG" *.sha256 -R "$GITHUB_REPOSITORY" --clobber
           gh release edit "$TAG" -R "$GITHUB_REPOSITORY" --draft=false --latest
+
+  verify-updater:
+    # OPTIONAL post-publish check on a real Windows runner (see docs/RELEASING.md). Enable it by
+    # setting the repository variable VERIFY_UPDATER_AFTER_RELEASE to "true". It only reports: it
+    # never unpublishes or edits the release, so a red result here means "investigate", not "rolled back".
+    if: ${{ vars.VERIFY_UPDATER_AFTER_RELEASE == 'true' }}
+    needs: [prepare, checksums]
+    uses: ./.github/workflows/updater-windows.yml
+    with:
+      new_tag: v${{ needs.prepare.outputs.version }}

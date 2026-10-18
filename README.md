@@ -71,12 +71,12 @@ Genius checks [GitHub Releases](https://github.com/hamzaedits1907-alt/project-ge
 
 | Platform | What happens |
 |---|---|
-| Windows | the setup `.exe` runs and Genius closes (unsigned: SmartScreen → *More info → Run anyway*) |
+| Windows | the setup `.exe` runs and Genius closes. The installer is **not code-signed yet**, so Windows may warn; install only if you trust the source and compare the published SHA-256 |
 | macOS | the `.dmg` opens; drag Genius into Applications (not notarized: if needed `xattr -cr /Applications/Genius.app`) |
 | Linux AppImage | the AppImage replaces itself and restarts — fully automatic |
 | Linux .deb | the package opens in your software installer |
 
-Downloads are only accepted from GitHub. If the repository is private, the updater uses your GitHub CLI login (Settings → GitHub) or `GH_TOKEN`.
+Downloads are only accepted from GitHub, a release without a published `.sha256` is refused, and the checksum proves integrity only (it comes from the same release; signing is described in [docs/RELEASING.md](docs/RELEASING.md)). If the repository is private, the updater uses your GitHub CLI login (Settings → GitHub) or `GH_TOKEN`.
 
 **Publishing a release** (one command):
 
