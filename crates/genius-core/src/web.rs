@@ -7,6 +7,12 @@
 //!   checked address so DNS cannot change between the check and the request. Redirects are
 //!   followed manually (at most 5), re-checking every hop.
 //! * **Bounds.** 20 s timeout, 2 MB body, text clipped for the model.
+//! * **More SSRF cases covered** (see the tests): IPv4-compatible / 6to4 / Teredo / NAT64 IPv6
+//!   forms, cloud metadata addresses, numeric host spellings (decimal, hex, octal), a block
+//!   list of well-known service ports, and `localhost.`-style trailing dots. A resolution that
+//!   contains *any* forbidden address is refused, so a mixed DNS answer cannot smuggle one in.
+//!   Note: when the user's environment forces an HTTP(S) proxy (`HTTPS_PROXY`), the proxy
+//!   resolves and connects, so address pinning cannot apply to that hop (the pre-check still does).
 //! * **Untrusted.** Everything returned is data from the internet; callers label it so.
 //!
 //! The parsers (`parse_ddg_results`, `html_to_text`) are pure functions with tests.
@@ -24,6 +30,28 @@ const TIMEOUT: Duration = Duration::from_secs(20);
 const MAX_BODY: usize = 2 * 1024 * 1024;
 const MAX_REDIRECTS: usize = 5;
 pub const MAX_RESULTS: usize = 8;
+/// Largest body kept from one fetch (also the bound tests assert).
+pub const MAX_BODY_BYTES: usize = MAX_BODY;
+
+/// Ports of well-known non-web services; fetching them from a public host is never useful
+/// for reading documentation and is a classic SSRF probe.
+const BLOCKED_PORTS: &[u16] = &[22, 23, 25, 110, 135, 139, 143, 445, 465, 587, 993, 995, 1433, 1521, 2375, 2376, 3306, 3389, 5432, 5900, 6379, 9200, 11211, 27017];
+
+/// What an outbound fetch may reach. The default (production) policy allows public internet
+/// addresses only; the loopback exception exists so tests can serve pages from a local mock
+/// server. It is only reachable from Rust code (never from the UI or the model), and
+/// everything else — private, link-local, metadata, `localhost` by name — stays blocked.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct WebPolicy {
+    allow_loopback_ips: bool,
+}
+
+impl WebPolicy {
+    /// Tests only: also allow `127.0.0.0/8` / `::1` IP addresses (never the name `localhost`).
+    pub fn allow_loopback_for_tests() -> Self {
+        Self { allow_loopback_ips: true }
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct SearchResult {
@@ -103,7 +131,7 @@ pub async fn search(query: &str) -> Result<Vec<SearchResult>> {
         return Err(GeniusError::Validation("search query must be 2-400 characters".into()));
     }
     let url = Url::parse_with_params("https://html.duckduckgo.com/html/", &[("q", q)]).map_err(|e| GeniusError::Internal(e.to_string()))?;
-    let page = fetch_raw(url).await?;
+    let page = fetch_raw(url, WebPolicy::default()).await?;
     if !(200..300).contains(&page.0) {
         return Err(GeniusError::Validation(format!("the search service answered HTTP {}; try again shortly", page.0)));
     }
@@ -118,15 +146,24 @@ pub fn is_forbidden_ip(ip: IpAddr) -> bool {
         IpAddr::V4(v4) => forbidden_v4(v4),
         IpAddr::V6(v6) => {
             if let Some(v4) = v6.to_ipv4_mapped() {
-                return forbidden_v4(v4);
+                return forbidden_v4(v4); // ::ffff:a.b.c.d
             }
-            let seg0 = v6.segments()[0];
-            v6.is_loopback() || v6.is_unspecified() || v6.is_multicast()
-                || (seg0 & 0xfe00) == 0xfc00 // unique local fc00::/7
-                || (seg0 & 0xffc0) == 0xfe80 // link-local fe80::/10
-                || (seg0 & 0xffc0) == 0xfec0 // site-local (deprecated)
-                || (seg0 == 0x2001 && v6.segments()[1] == 0x0db8) // documentation
-                || (seg0 == 0x0064 && v6.segments()[1] == 0xff9b) // NAT64 to arbitrary v4
+            let s = v6.segments();
+            if s[..6].iter().all(|x| *x == 0) {
+                return true; // ::, ::1 and the deprecated IPv4-compatible ::a.b.c.d
+            }
+            if s[0] == 0x2002 {
+                // 6to4 embeds an IPv4 address in the next 32 bits
+                return forbidden_v4(Ipv4Addr::new((s[1] >> 8) as u8, s[1] as u8, (s[2] >> 8) as u8, s[2] as u8));
+            }
+            v6.is_multicast()
+                || (s[0] & 0xfe00) == 0xfc00 // unique local fc00::/7 (includes AWS fd00:ec2::254)
+                || (s[0] & 0xffc0) == 0xfe80 // link-local fe80::/10
+                || (s[0] & 0xffc0) == 0xfec0 // site-local (deprecated)
+                || (s[0] == 0x2001 && s[1] == 0x0db8) // documentation
+                || (s[0] == 0x2001 && s[1] == 0) // Teredo (obfuscated IPv4)
+                || (s[0] == 0x0064 && s[1] == 0xff9b) // NAT64 64:ff9b::/32 (embeds arbitrary IPv4)
+                || (s[0] == 0x0100 && s[1] == 0 && s[2] == 0 && s[3] == 0) // discard-only 100::/64
         }
     }
 }
@@ -141,8 +178,9 @@ fn forbidden_v4(ip: Ipv4Addr) -> bool {
         || o[0] >= 240 // reserved
 }
 
-/// Validate a URL's scheme and host and resolve it to a public address.
-async fn check_url(url: &Url) -> Result<SocketAddr> {
+/// What the URL itself says (no network): scheme, credentials, host name and port rules.
+/// Returns the bare host (no brackets, no trailing dot) and the port.
+fn check_url_shape(url: &Url) -> Result<(String, u16)> {
     if !matches!(url.scheme(), "http" | "https") {
         return Err(GeniusError::Validation(format!("only http and https URLs can be fetched (got {}:)", url.scheme())));
     }
@@ -150,36 +188,56 @@ async fn check_url(url: &Url) -> Result<SocketAddr> {
         return Err(GeniusError::Validation("URLs with embedded credentials are not fetched".into()));
     }
     let host = url.host_str().ok_or_else(|| GeniusError::Validation("the URL has no host".into()))?;
-    let bare = host.trim_start_matches('[').trim_end_matches(']');
+    let bare = host.trim_start_matches('[').trim_end_matches(']').trim_end_matches('.');
     let lower = bare.to_ascii_lowercase();
-    if lower == "localhost" || lower.ends_with(".localhost") || lower.ends_with(".local") || lower.ends_with(".internal") {
+    if lower.is_empty() {
+        return Err(GeniusError::Validation("the URL has no host".into()));
+    }
+    if lower == "localhost" || lower.ends_with(".localhost") || lower.ends_with(".local") || lower.ends_with(".internal") || lower.ends_with(".localdomain") || lower.ends_with(".home.arpa") || lower == "metadata" {
         return Err(GeniusError::Validation(format!("{host} is a local address; only public internet addresses can be fetched")));
     }
     let port = url.port_or_known_default().unwrap_or(443);
-    let addrs: Vec<SocketAddr> = match bare.parse::<IpAddr>() {
-        Ok(ip) => vec![SocketAddr::new(ip, port)],
-        Err(_) => tokio::time::timeout(Duration::from_secs(10), tokio::net::lookup_host((bare, port)))
-            .await
-            .map_err(|_| GeniusError::Validation(format!("DNS lookup for {host} timed out")))?
-            .map_err(|e| GeniusError::Validation(format!("could not resolve {host}: {e}")))?
-            .collect(),
-    };
+    if BLOCKED_PORTS.contains(&port) {
+        return Err(GeniusError::Validation(format!("port {port} is reserved for non-web services and is not fetched")));
+    }
+    Ok((lower, port))
+}
+
+/// Pick the address to connect to from a resolution. **Every** address must be allowed: a DNS
+/// answer that mixes a public and a private address is refused, so the connection can never be
+/// steered to the private one. The chosen address is then pinned for the request.
+pub fn choose_address(host: &str, addrs: &[SocketAddr], policy: WebPolicy) -> Result<SocketAddr> {
     if addrs.is_empty() {
         return Err(GeniusError::Validation(format!("{host} did not resolve to any address")));
     }
-    if let Some(bad) = addrs.iter().find(|a| is_forbidden_ip(a.ip())) {
+    let allowed = |ip: IpAddr| !is_forbidden_ip(ip) || (policy.allow_loopback_ips && ip.is_loopback());
+    if let Some(bad) = addrs.iter().find(|a| !allowed(a.ip())) {
         return Err(GeniusError::Validation(format!("{host} resolves to a private or local address ({}); only public internet addresses can be fetched", bad.ip())));
     }
     Ok(addrs[0])
 }
 
+/// Validate a URL's scheme and host and resolve it to a public address.
+async fn check_url(url: &Url, policy: WebPolicy) -> Result<SocketAddr> {
+    let (bare, port) = check_url_shape(url)?;
+    let addrs: Vec<SocketAddr> = match bare.parse::<IpAddr>() {
+        Ok(ip) => vec![SocketAddr::new(ip, port)],
+        Err(_) => tokio::time::timeout(Duration::from_secs(10), tokio::net::lookup_host((bare.as_str(), port)))
+            .await
+            .map_err(|_| GeniusError::Validation(format!("DNS lookup for {bare} timed out")))?
+            .map_err(|e| GeniusError::Validation(format!("could not resolve {bare}: {e}")))?
+            .collect(),
+    };
+    choose_address(&bare, &addrs, policy)
+}
+
 /// GET with manual, re-checked redirects. Returns (status, final url, content type, body, truncated).
-async fn fetch_raw(start: Url) -> Result<(u16, Url, String, Vec<u8>, bool)> {
+async fn fetch_raw(start: Url, policy: WebPolicy) -> Result<(u16, Url, String, Vec<u8>, bool)> {
     let mut url = start;
     for _ in 0..=MAX_REDIRECTS {
-        let addr = check_url(&url).await?;
+        let addr = check_url(&url, policy).await?;
         let mut b = reqwest::Client::builder().redirect(reqwest::redirect::Policy::none()).timeout(TIMEOUT).user_agent(USER_AGENT);
-        if let Some(host) = url.host_str().filter(|h| h.parse::<IpAddr>().is_err()) {
+        if let Some(host) = url.host_str().filter(|h| h.parse::<IpAddr>().is_err() && !h.starts_with('[')) {
             b = b.resolve(host, addr); // pin the checked address (no DNS rebinding)
         }
         let client = b.build().map_err(|e| GeniusError::Internal(e.to_string()))?;
@@ -214,8 +272,13 @@ async fn fetch_raw(start: Url) -> Result<(u16, Url, String, Vec<u8>, bool)> {
 
 /// Fetch a public web page and convert it to readable text.
 pub async fn fetch(raw_url: &str) -> Result<Page> {
+    fetch_with(raw_url, WebPolicy::default()).await
+}
+
+/// [`fetch`] with an explicit policy (tests use it to serve pages from a local mock server).
+pub async fn fetch_with(raw_url: &str, policy: WebPolicy) -> Result<Page> {
     let url = Url::parse(raw_url.trim()).map_err(|e| GeniusError::Validation(format!("invalid URL: {e}")))?;
-    let (status, url, ct, body, truncated) = fetch_raw(url).await?;
+    let (status, url, ct, body, truncated) = fetch_raw(url, policy).await?;
     if ct.starts_with("image/") || ct.starts_with("video/") || ct.starts_with("audio/") || ct.contains("octet-stream") || ct.contains("application/pdf") || ct.contains("zip") {
         return Err(GeniusError::Validation(format!("{url} is not a text page (content type {ct})")));
     }
@@ -347,6 +410,64 @@ mod tests {
         }
         for ip in ["93.184.216.34", "1.1.1.1", "2606:4700:4700::1111"] {
             assert!(!is_forbidden_ip(ip.parse().unwrap()), "{ip}");
+        }
+    }
+
+    #[test]
+    fn ipv6_and_cloud_metadata_variants_are_forbidden() {
+        for ip in [
+            "::127.0.0.1", "::7f00:1", "::a00:1", "::ffff:169.254.169.254", "::ffff:a9fe:a9fe", "2002:7f00:1::1", "2002:a9fe:a9fe::", "2002:c0a8:101::", "2001:0:4136:e378:8000:63bf:3fff:fdd2",
+            "64:ff9b::7f00:1", "64:ff9b::a9fe:a9fe", "fd00:ec2::254", "fe80::a9fe:a9fe", "fec0::1", "ff02::1", "2001:db8::1", "100::1", "100.100.100.200", "169.254.170.2", "192.0.0.192", "198.18.0.1", "240.0.0.1", "255.255.255.255", "172.31.255.255",
+        ] {
+            assert!(is_forbidden_ip(ip.parse().unwrap()), "{ip} must be forbidden");
+        }
+        for ip in ["8.8.8.8", "93.184.216.34", "2606:4700:4700::1111", "2a00:1450:4001:81b::200e", "2002:808:808::"] {
+            assert!(!is_forbidden_ip(ip.parse().unwrap()), "{ip} must be allowed");
+        }
+    }
+
+    fn shape(u: &str) -> Result<(String, u16)> {
+        check_url_shape(&Url::parse(u).unwrap())
+    }
+
+    #[test]
+    fn url_shape_rules_cover_schemes_hosts_ports_and_numeric_spellings() {
+        for u in [
+            "file:///etc/passwd", "ftp://example.com/", "gopher://example.com/", "data:text/html,hi", "javascript:alert(1)", "ws://example.com/", "http://user@example.com/", "http://user:pw@example.com/",
+            "http://localhost/", "http://LOCALHOST:8080/", "http://localhost./", "http://app.localhost/", "http://router.local/", "http://metadata.google.internal/computeMetadata/v1/", "http://metadata.google.internal./",
+            "http://example.com:22/", "http://example.com:6379/", "https://example.com:3306/",
+        ] {
+            assert!(shape(u).is_err(), "{u} must be rejected by shape rules");
+        }
+        for u in ["https://react.dev/reference/react", "http://example.com:8080/x", "https://docs.rs:443/"] {
+            assert!(shape(u).is_ok(), "{u}");
+        }
+        // Numeric spellings are normalised by the URL parser to dotted quads, which are then forbidden.
+        for (u, canon) in [("http://2130706433/", "127.0.0.1"), ("http://0x7f.1/", "127.0.0.1"), ("http://0177.0.0.1/", "127.0.0.1"), ("http://127.1/", "127.0.0.1"), ("http://0xA9FEA9FE/", "169.254.169.254"), ("http://2852039166/", "169.254.169.254"), ("http://[::ffff:7f00:1]/", "[::ffff:7f00:1]")] {
+            let url = Url::parse(u).unwrap();
+            let host = url.host_str().unwrap();
+            assert_eq!(host, canon, "{u}");
+            let (bare, _) = check_url_shape(&url).unwrap();
+            assert!(is_forbidden_ip(bare.parse().unwrap()), "{u} -> {bare}");
+        }
+    }
+
+    #[test]
+    fn a_mixed_dns_answer_is_refused_and_the_checked_address_is_the_one_returned() {
+        let sa = |s: &str| -> SocketAddr { s.parse().unwrap() };
+        let policy = WebPolicy::default();
+        // DNS rebinding style answer: a public address next to a private one is refused outright.
+        assert!(choose_address("evil.example", &[sa("93.184.216.34:443"), sa("127.0.0.1:443")], policy).is_err());
+        assert!(choose_address("evil.example", &[sa("127.0.0.1:443"), sa("93.184.216.34:443")], policy).is_err());
+        assert!(choose_address("evil.example", &[sa("[::1]:443")], policy).is_err());
+        assert!(choose_address("evil.example", &[], policy).is_err());
+        // The returned address is the one that gets pinned for the connection.
+        assert_eq!(choose_address("ok.example", &[sa("93.184.216.34:443"), sa("1.1.1.1:443")], policy).unwrap(), sa("93.184.216.34:443"));
+        // The test-only loopback exception never opens private, link-local or metadata ranges.
+        let t = WebPolicy::allow_loopback_for_tests();
+        assert!(choose_address("x", &[sa("127.0.0.1:80")], t).is_ok());
+        for bad in ["169.254.169.254:80", "10.0.0.1:80", "192.168.1.1:80", "172.16.0.1:80", "[fd00:ec2::254]:80", "[::ffff:169.254.169.254]:80"] {
+            assert!(choose_address("x", &[sa(bad)], t).is_err(), "{bad}");
         }
     }
 

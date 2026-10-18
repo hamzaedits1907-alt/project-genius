@@ -5,6 +5,13 @@ fn main() {
     tauri_build::try_build(tauri_build::Attributes::new().app_manifest(tauri_build::AppManifest::new().commands(&[
         "get_settings",
         "compact_conversation",
+        "chat_workspace",
+        "list_chat_conversations",
+        "create_chat_conversation",
+        "start_chat",
+        "research_sources",
+        "project_from_conversation",
+        "start_research_spec",
         "rewind_conversation",
         "steer_agent",
         "list_commands",
