@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-create-chat-conversation"
+description = "Enables the create_chat_conversation command without any pre-configured scope."
+commands.allow = ["create_chat_conversation"]
+
+[[permission]]
+identifier = "deny-create-chat-conversation"
+description = "Denies the create_chat_conversation command without any pre-configured scope."
+commands.deny = ["create_chat_conversation"]

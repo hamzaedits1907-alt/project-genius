@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-start-research-spec"
+description = "Enables the start_research_spec command without any pre-configured scope."
+commands.allow = ["start_research_spec"]
+
+[[permission]]
+identifier = "deny-start-research-spec"
+description = "Denies the start_research_spec command without any pre-configured scope."
+commands.deny = ["start_research_spec"]

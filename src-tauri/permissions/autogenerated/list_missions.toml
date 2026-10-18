@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-list-missions"
+description = "Enables the list_missions command without any pre-configured scope."
+commands.allow = ["list_missions"]
+
+[[permission]]
+identifier = "deny-list-missions"
+description = "Denies the list_missions command without any pre-configured scope."
+commands.deny = ["list_missions"]

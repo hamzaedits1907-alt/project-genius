@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-approve-mission-task"
+description = "Enables the approve_mission_task command without any pre-configured scope."
+commands.allow = ["approve_mission_task"]
+
+[[permission]]
+identifier = "deny-approve-mission-task"
+description = "Denies the approve_mission_task command without any pre-configured scope."
+commands.deny = ["approve_mission_task"]

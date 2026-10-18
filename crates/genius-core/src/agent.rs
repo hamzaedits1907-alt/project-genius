@@ -47,6 +47,9 @@ use std::collections::HashMap;
 use std::sync::{LazyLock, Mutex};
 use tokio_util::sync::CancellationToken;
 
+/// Running custom agents (profile-bound runs used by missions): see `custom_agents.rs`.
+pub(crate) mod custom_run;
+
 pub const AGENT_STEPS_CHANNEL: &str = "genius://agent-step";
 pub const AGENT_STEERED_CHANNEL: &str = "genius://agent-steered";
 
@@ -988,14 +991,26 @@ struct Run<'a> {
     passed: Vec<String>,
     /// The autopilot checkpoint after which every check last passed (None: none in this run).
     last_passing: Option<String>,
+    /// Set for a custom agent's run: limits enforced on every tool call, path and model call.
+    profile: Option<std::sync::Arc<crate::custom_agents::AgentProfile>>,
+    /// Why the run stopped on its budget ("maxTokens … reached"), if it did.
+    budget_stop: Option<String>,
+    /// Operations the profile refused (for the report).
+    violations: Vec<String>,
 }
 
 impl<'a> Run<'a> {
     fn new(project_id: &'a str, task_id: &'a str, conversation_id: Option<&'a str>, role: Role, mode: AgentMode, effort: Effort) -> Self {
-        Run { project_id, task_id, conversation_id, role, seq: 0, seen: HashMap::new(), steps: Vec::new(), mode, effort, staged: Vec::new(), turn_text: String::new(), turn_note: None, turn: 0, turn_blocks: Vec::new(), autopilot: false, applied: Vec::new(), applied_paths: Vec::new(), dirty: false, checks: Vec::new(), usage: [0; 4], models: Vec::new(), request: String::new(), model: String::new(), malformed: HashMap::new(), proto_streak: 0, refunds: 0, file_block_mode: false, failed_calls: HashMap::new(), passed: Vec::new(), last_passing: None }
+        Run { project_id, task_id, conversation_id, role, seq: 0, seen: HashMap::new(), steps: Vec::new(), mode, effort, staged: Vec::new(), turn_text: String::new(), turn_note: None, turn: 0, turn_blocks: Vec::new(), autopilot: false, applied: Vec::new(), applied_paths: Vec::new(), dirty: false, checks: Vec::new(), usage: [0; 4], models: Vec::new(), request: String::new(), model: String::new(), malformed: HashMap::new(), proto_streak: 0, refunds: 0, file_block_mode: false, failed_calls: HashMap::new(), passed: Vec::new(), last_passing: None, profile: None, budget_stop: None, violations: Vec::new() }
     }
     fn stage(&mut self, path: &str, content: Option<String>) {
         let path = path.trim_start_matches("./");
+        if let Some(p) = &self.profile {
+            if !p.can_write() || !p.path_ok(path) {
+                self.violations.push(format!("refused to stage {path}"));
+                return;
+            }
+        }
         self.staged.retain(|(p, _)| p != path);
         self.staged.push((path.to_string(), content));
         self.dirty = true;
@@ -1166,7 +1181,7 @@ impl Genius {
         let mut run = Run::new(project_id, task_id, Some(conv_id), Role::Main, mode, effort);
         run.autopilot = mode == AgentMode::Build && req.autopilot.unwrap_or(settings.approvals.apply_ai_edits == crate::settings::Policy::Auto);
         run.request = req.message.trim().lines().next().unwrap_or("").chars().take(80).collect();
-        let mut messages = self.agent_prompt(project_id, conv_id, Role::Main, mode, effort, run.autopilot, &message)?;
+        let mut messages = self.agent_prompt(project_id, conv_id, Role::Main, mode, effort, run.autopilot, &message, None)?;
         let req = AgentRequest { message, mode, ..req.clone() };
         messages.push(self.user_turn(project_id, &req, &attachments)?);
         if work.planning && mode == AgentMode::Build {
@@ -1275,6 +1290,7 @@ impl Genius {
     async fn agent_loop(&self, run: &mut Run<'_>, messages: &mut Vec<ChatMessage>, cancel: &CancellationToken) -> Result<String> {
         let max = run.role.max_turns(run.effort);
         let budget = self.settings()?.context_budget_chars.max(20_000) * 2;
+        let max = run.profile.as_ref().map(|p| p.budget.max_steps as usize + MAX_PROTOCOL_REFUNDS).unwrap_or(max);
         let builder = run.role == Role::Main && run.mode == AgentMode::Build;
         let mut verify_rounds = 0;
         let mut used = 0usize;
@@ -1282,6 +1298,9 @@ impl Genius {
         loop {
             if cancel.is_cancelled() {
                 return Err(GeniusError::Cancelled);
+            }
+            if let Some(why) = run.profile.as_ref().and_then(|p| p.exhausted(used, &run.usage)) {
+                return self.stop_on_budget(run, why).await;
             }
             let last = used >= max || iteration >= max + MAX_PROTOCOL_REFUNDS;
             iteration += 1;
@@ -1294,13 +1313,19 @@ impl Genius {
             }
             compact(messages, budget);
             let purpose = format!("{} agent · step {}", run.role.as_str(), iteration);
-            let (res, _) = self.ai_call(run.project_id, run.task_id, &purpose, messages, run.role == Role::Main, cancel).await?;
+            let (res, _) = match run.profile.as_ref().and_then(|p| p.model_override.clone()) {
+                Some(model) => self.ai_call_opts(run.project_id, run.task_id, &purpose, messages, run.role == Role::Main, cancel, &crate::app::CallOptions { role: Some(crate::router::ModelRole::Agent), model: Some(model), ..Default::default() }).await?,
+                None => self.ai_call(run.project_id, run.task_id, &purpose, messages, run.role == Role::Main, cancel).await?,
+            };
             let model = if res.model.is_empty() { self.settings()?.model.unwrap_or_default() } else { res.model.clone() };
             run.note_usage(&res, &model);
             run.model = model;
             used += 1;
             let text = res.content.clone();
             let parsed = parse_turn(&text);
+            if run.profile.is_some() {
+                self.profile_log_message(run, &text);
+            }
 
             // Output cut off by the length limit in the middle of file blocks: keep every
             // complete file and ask the model to continue instead of losing the work.
@@ -1378,11 +1403,11 @@ impl Genius {
         if !is_tool(name) {
             return Some(ProtocolError {
                 signature: crate::toolcall::signature(name, "unknown"),
-                message: format!("unknown tool '{name}'. Available: {}", TOOLS.iter().filter(|t| run.role.allows(t.name)).map(|t| t.name).collect::<Vec<_>>().join(", ")),
+                message: format!("unknown tool '{name}'. Available: {}", TOOLS.iter().filter(|t| run.role.allows(t.name) && run.profile.as_ref().is_none_or(|p| p.allows_tool(t.name))).map(|t| t.name).collect::<Vec<_>>().join(", ")),
                 tool: None,
             });
         }
-        if !run.role.allows(name) {
+        if !run.role.allows(name) || run.profile.as_ref().is_some_and(|p| p.deny_reason(name, args).is_some()) {
             return None; // a permission error, reported by execute_tool
         }
         let inline = !run.turn_blocks.is_empty() || (name == "write_files" && !crate::blocks::fenced_files(&run.turn_text).files.is_empty());
@@ -1630,7 +1655,7 @@ impl Genius {
         let mut ev = self.bus.start(Some(parent.project_id), Some(parent.task_id), EventKind::Task, EventStatus::Running, format!("{} subagent: {}", role.as_str(), task.lines().next().unwrap_or("").chars().take(70).collect::<String>()), json!({ "agent": role.as_str() }));
         let mut sub = Run::new(parent.project_id, parent.task_id, parent.conversation_id, role, AgentMode::Plan, parent.effort);
         sub.seq = parent.seq;
-        let mut messages = self.agent_prompt(parent.project_id, "", role, AgentMode::Plan, parent.effort, false, task)?;
+        let mut messages = self.agent_prompt(parent.project_id, "", role, AgentMode::Plan, parent.effort, false, task, None)?;
         messages.push(ChatMessage::user(format!("ASSIGNMENT FROM THE MAIN AGENT:\n{task}")));
         let res = Box::pin(self.agent_loop(&mut sub, &mut messages, cancel)).await;
         parent.seq = sub.seq;
@@ -1652,6 +1677,9 @@ impl Genius {
             Err(GeniusError::Validation(e.message))
         } else if !run.role.allows(name) {
             Err(GeniusError::Validation(format!("the {} agent is not permitted to use '{name}'", run.role.as_str())))
+        } else if let Some(why) = run.profile.as_ref().and_then(|p| p.deny_reason(name, args)) {
+            run.violations.push(why.clone());
+            Err(GeniusError::Validation(why))
         } else if run.seen.get(&key).is_some_and(|n| *n >= 1) && TOOLS.iter().any(|t| t.name == name && t.read_only) && !["capabilities", "preview_errors", "inspect_preview", "last_run_output"].contains(&name) {
             // Repeating an identical read-only call adds no information.
             Ok(ToolOutcome { ok: false, summary: format!("{name} repeated (skipped)"), text: "You already called this tool with identical arguments and nothing changed since; its result is earlier in the conversation. Use it, or try something different.".into(), data: json!({ "duplicate": true }) })
@@ -1697,6 +1725,9 @@ impl Genius {
             ended_at: now(),
         };
         self.db.insert_agent_step(&row)?;
+        if run.profile.is_some() {
+            self.profile_on_step(run, &row);
+        }
         self.bus.push(AGENT_STEPS_CHANNEL, serde_json::to_value(&row)?);
         run.steps.push(row);
         Ok(())
@@ -1744,6 +1775,11 @@ impl Genius {
     async fn dispatch_tool(&self, run: &mut Run<'_>, name: &str, args: &Value, cancel: &CancellationToken) -> Result<ToolOutcome> {
         let pid = run.project_id;
         let ws = self.workspace(pid)?;
+        if run.profile.is_some() {
+            if let Some(out) = self.profile_intercept(run, name, args)? {
+                return Ok(out);
+            }
+        }
         if WRITE_TOOLS.contains(&name) && run.mode == AgentMode::Plan {
             return Err(GeniusError::Validation("Plan mode: files cannot be changed. Present the plan in <final> and ask whether to go ahead.".into()));
         }
@@ -1756,7 +1792,7 @@ impl Genius {
             "list_files" => {
                 let a: ListArgs = typed(name, args)?;
                 let prefix = a.prefix.unwrap_or_default().trim_start_matches("./").trim_end_matches('/').to_string();
-                let files: Vec<_> = ws.list_files()?.into_iter().filter(|f| f.path.starts_with(&prefix)).collect();
+                let files: Vec<_> = ws.list_files()?.into_iter().filter(|f| f.path.starts_with(&prefix) && run.profile.as_ref().is_none_or(|p| p.path_ok(&f.path))).collect();
                 let text: String = files.iter().take(400).map(|f| format!("{} ({} B{})\n", f.path, f.size, if f.sensitive { ", not readable" } else { "" })).collect();
                 Ok(ToolOutcome::ok(format!("Listed {} files{}", files.len(), if prefix.is_empty() { String::new() } else { format!(" under {prefix}") }), clip(&text, MAX_RESULT), json!({ "count": files.len() })))
             }
@@ -1766,7 +1802,7 @@ impl Genius {
                     return Err(GeniusError::Validation("query must be at least 2 characters".into()));
                 }
                 let prefix = a.prefix.unwrap_or_default().trim_start_matches("./").to_string();
-                let hits: Vec<_> = ws.search(&a.query, 200)?.into_iter().filter(|h| h.path.starts_with(&prefix)).take(80).collect();
+                let hits: Vec<_> = ws.search(&a.query, 200)?.into_iter().filter(|h| h.path.starts_with(&prefix) && run.profile.as_ref().is_none_or(|p| p.path_ok(&h.path))).take(80).collect();
                 let text: String = hits.iter().map(|h| format!("{}:{}: {}\n", h.path, h.line, h.text)).collect();
                 let files: Vec<&str> = hits.iter().map(|h| h.path.as_str()).collect::<std::collections::BTreeSet<_>>().into_iter().collect();
                 Ok(ToolOutcome::ok(format!("Searched for \"{}\": {} matches", a.query, hits.len()), if text.is_empty() { "no matches".into() } else { clip(&text, MAX_RESULT) }, json!({ "query": a.query, "matches": hits.len(), "files": files })))
@@ -2020,6 +2056,9 @@ impl Genius {
                     pre.push_str(&self.flush(run).await?);
                 }
                 if self.needs_install(pid)? {
+                    if run.profile.is_some() {
+                        self.detach_shared_modules(pid); // an isolated workspace must never install into the shared node_modules
+                    }
                     let out = self.run_operation(pid, Some(run.task_id), Operation::Install, "Install dependencies before checking", false, cancel).await?;
                     if !out.ok() {
                         return Ok(ToolOutcome { ok: false, summary: format!("npm install {} (exit {})", out.status, out.exit_code.map(|c| c.to_string()).unwrap_or_else(|| "none".into())), text: format!("npm install failed, so the check could not run.\noutput tail:\n{}", clip(&out.output_tail, 6000)), data: json!({ "check": "install", "status": out.status, "exitCode": out.exit_code }) });
@@ -2186,13 +2225,13 @@ impl Genius {
         let Ok(ws) = self.workspace(run.project_id) else { return vec![] };
         let mut staged = Vec::new();
         for (p, c) in &parsed.files {
-            if self.writable(&ws, p, c).is_ok() && run.staged.len() < MAX_STAGED {
+            if self.writable(&ws, p, c).is_ok() && run.staged.len() < MAX_STAGED && run.profile.as_ref().is_none_or(|pr| pr.can_write() && pr.path_ok(p)) {
                 run.stage(p, Some(c.clone()));
                 staged.push(p.clone());
             }
         }
         for d in &parsed.deletes {
-            if ws.check_writable(d).is_ok() {
+            if ws.check_writable(d).is_ok() && run.profile.as_ref().is_none_or(|pr| pr.can_write() && pr.path_ok(d)) {
                 run.stage(d, None);
                 staged.push(format!("{d} (delete)"));
             }
@@ -2222,10 +2261,10 @@ impl Genius {
     }
 
     #[allow(clippy::too_many_arguments)]
-    fn agent_prompt(&self, project_id: &str, conversation_id: &str, role: Role, mode: AgentMode, effort: Effort, autopilot: bool, request: &str) -> Result<Vec<ChatMessage>> {
+    fn agent_prompt(&self, project_id: &str, conversation_id: &str, role: Role, mode: AgentMode, effort: Effort, autopilot: bool, request: &str, profile: Option<&crate::custom_agents::AgentProfile>) -> Result<Vec<ChatMessage>> {
         let settings = self.settings()?;
-        let internet = settings.internet_access;
-        let tools: String = TOOLS.iter().filter(|t| role.allows(t.name) && (internet || !WEB_TOOLS.contains(&t.name))).map(|t| format!("- {} {} — {}\n", t.name, t.args, t.description)).collect();
+        let internet = settings.internet_access && profile.is_none_or(|p| p.network);
+        let tools: String = TOOLS.iter().filter(|t| role.allows(t.name) && profile.is_none_or(|p| p.allows_tool(t.name)) && (internet || !WEB_TOOLS.contains(&t.name))).map(|t| format!("- {} {} — {}\n", t.name, t.args, t.description)).collect();
         let caps = self.capability_report_quick(Some(project_id))?.render();
         let ws = self.workspace(project_id)?;
         let facts = crate::project_context::render(&crate::project_context::gather(&ws)?);
@@ -2273,7 +2312,9 @@ impl Genius {
             if let Some(spec) = p.spec.as_ref().and_then(|v| serde_json::from_value::<crate::spec::ProjectSpec>(v.clone()).ok()) {
                 ctx.push_str(&format!("Original plan: {} — {}\nArchitecture: {}\n", spec.name, spec.purpose, spec.architecture));
             }
-            ctx.push_str(&format!("\nPROJECT MEMORY:\n{}\n", self.memory_text(project_id)?));
+            if profile.is_none_or(|p| p.memory != "none") {
+                ctx.push_str(&format!("\nPROJECT MEMORY:\n{}\n", self.memory_text(profile.map_or(project_id, |p| p.live_project_id.as_str()))?));
+            }
             let recent: Vec<String> = self.list_changesets(project_id)?.iter().take(6).map(|c| format!("- [{}] {} ({})", c.status, c.title, c.files.iter().map(|f| f.path.as_str()).collect::<Vec<_>>().join(", "))).collect();
             if !recent.is_empty() {
                 ctx.push_str(&format!("\nRECENT CHANGES:\n{}\n", recent.join("\n")));

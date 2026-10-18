@@ -813,3 +813,101 @@ pub fn rewind_conversation(g: G, conversation_id: String, message_id: String, re
 pub async fn compact_conversation(g: G<'_>, conversation_id: String) -> Result<serde_json::Value> {
     g.compact_conversation(&conversation_id, &tokio_util::sync::CancellationToken::new()).await
 }
+
+// ---------------------------------------------------------------- custom agents, teams, missions
+
+use genius_core::custom_agents::{AgentRuntime, AgentTaskLog, AgentTemplate, CustomAgent, Team};
+use genius_core::missions::Mission;
+
+#[tauri::command]
+pub fn list_agents(g: G) -> Result<Vec<CustomAgent>> {
+    g.list_agents()
+}
+#[tauri::command]
+pub fn get_agent(g: G, agent_id: String) -> Result<CustomAgent> {
+    g.get_agent(&agent_id)
+}
+#[tauri::command]
+pub fn save_agent(g: G, agent: CustomAgent) -> Result<CustomAgent> {
+    g.save_agent(agent)
+}
+#[tauri::command]
+pub fn duplicate_agent(g: G, agent_id: String) -> Result<CustomAgent> {
+    g.duplicate_agent(&agent_id)
+}
+#[tauri::command]
+pub fn delete_agent(g: G, agent_id: String) -> Result<()> {
+    g.delete_agent(&agent_id)
+}
+#[tauri::command]
+pub fn agent_templates(g: G) -> Vec<AgentTemplate> {
+    g.agent_templates()
+}
+#[tauri::command]
+pub fn agent_runtimes(g: G) -> Result<Vec<AgentRuntime>> {
+    g.agent_runtimes()
+}
+#[tauri::command]
+pub fn agent_logs(g: G, agent_id: String, limit: Option<usize>) -> Result<Vec<AgentTaskLog>> {
+    g.agent_logs(&agent_id, limit)
+}
+#[tauri::command]
+pub fn run_agent_task(g: G, agent_id: String, project_id: String, task: String) -> Result<Mission> {
+    g.run_agent_task(&agent_id, &project_id, &task)
+}
+#[tauri::command]
+pub fn list_teams(g: G) -> Result<Vec<Team>> {
+    g.list_teams()
+}
+#[tauri::command]
+pub fn save_team(g: G, team: Team) -> Result<Team> {
+    g.save_team(team)
+}
+#[tauri::command]
+pub fn delete_team(g: G, team_id: String) -> Result<()> {
+    g.delete_team(&team_id)
+}
+#[tauri::command]
+pub fn create_mission(g: G, project_id: String, goal: String, team_id: Option<String>) -> Result<Mission> {
+    g.create_mission(&project_id, &goal, team_id.as_deref())
+}
+#[tauri::command]
+pub fn list_missions(g: G, project_id: Option<String>) -> Result<Vec<Mission>> {
+    g.list_missions(project_id.as_deref())
+}
+#[tauri::command]
+pub fn get_mission(g: G, mission_id: String) -> Result<Mission> {
+    g.get_mission(&mission_id)
+}
+#[tauri::command]
+pub fn start_mission(g: G, mission_id: String) -> Result<Mission> {
+    g.start_mission(&mission_id)
+}
+#[tauri::command]
+pub fn pause_mission(g: G, mission_id: String) -> Result<Mission> {
+    g.pause_mission(&mission_id)
+}
+#[tauri::command]
+pub fn resume_mission(g: G, mission_id: String) -> Result<Mission> {
+    g.resume_mission(&mission_id)
+}
+#[tauri::command]
+pub fn cancel_mission(g: G, mission_id: String) -> Result<Mission> {
+    g.cancel_mission(&mission_id)
+}
+#[tauri::command]
+pub fn cancel_mission_task(g: G, task_id: String) -> Result<Mission> {
+    g.cancel_mission_task(&task_id)
+}
+#[tauri::command]
+pub fn reprioritize_task(g: G, task_id: String, priority: i64) -> Result<Mission> {
+    g.reprioritize_task(&task_id, priority)
+}
+#[tauri::command]
+pub fn retry_mission_task(g: G, task_id: String) -> Result<Mission> {
+    g.retry_mission_task(&task_id)
+}
+#[tauri::command]
+pub fn approve_mission_task(g: G, task_id: String, approved: bool) -> Result<Mission> {
+    g.approve_mission_task(&task_id, approved)
+}
