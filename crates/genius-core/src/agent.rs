@@ -236,7 +236,7 @@ pub struct Turn {
     pub final_text: Option<String>,
 }
 
-const CALL_TAGS: &[(&str, &str)] = &[("<tool>", "</tool>"), ("<tool_call>", "</tool_call>"), ("<function_call>", "</function_call>"), ("<function=", "</function>")];
+const CALL_TAGS: &[(&str, &str)] = &[("<tool>", "</tool>"), ("<tool_call>", "</tool_call>"), ("<function_call>", "</function_call>"), ("<function=", "</function>"), ("<TOOLCALL>", "</TOOLCALL>"), ("<invoke ", "</invoke>")];
 
 /// `text` with file-block content blanked out (byte offsets preserved), so protocol tags
 /// inside a file (a file may legitimately contain "<tool>" or "<final>") are never parsed.
@@ -290,9 +290,18 @@ pub fn parse_turn(text: &str) -> Turn {
         let body = &text[body_start..body_end];
         if open == "<function=" {
             match body.split_once('>') {
+                Some((name, args)) if args.contains("<parameter") => calls.push(xml_call(&format!("<function={name}>{args}</function>")).unwrap_or(Action::Invalid { error: "malformed <function=…> call".into() })),
                 Some((name, args)) => calls.push(call_from(json!({ "name": name.trim(), "args": if args.trim().is_empty() { json!({}) } else { lenient_json(args).unwrap_or(Value::String(args.to_string())) } }))),
                 None => calls.push(Action::Invalid { error: "malformed <function=…> call".into() }),
             }
+        } else if open == "<invoke " {
+            match xml_call(&format!("<invoke {body}</invoke>")) {
+                Some(a) => calls.push(a),
+                None => calls.push(Action::Invalid { error: "malformed <invoke …> call".into() }),
+            }
+        } else if let Some(a) = xml_call(body).filter(|_| body.contains("<function=") || body.contains("<invoke ")) {
+            // <tool_call><function=name><parameter=k>v</parameter></function></tool_call>
+            calls.push(a);
         } else if masked[body_start..body_end].trim().is_empty() && !body.trim().is_empty() {
             // the "call" was inside a file block; not a call
         } else {
@@ -333,6 +342,51 @@ fn final_body(text: &str, masked: &str) -> String {
         _ => text,
     };
     t.trim().to_string()
+}
+
+/// Argument names whose values are not plain strings; everything else stays a string so file
+/// contents that happen to look like JSON or numbers are never reinterpreted.
+const STRUCTURED_KEYS: &[&str] = &["edits", "paths", "files", "items", "todos", "list", "packages", "dependencies", "names", "replace_all", "replaceAll", "dev", "start_line", "end_line", "start", "end", "offset", "multi", "options"];
+
+/// Parse the XML-parameter dialect used by several open models:
+/// `<function=NAME><parameter=KEY>VALUE</parameter>…</function>` and
+/// `<invoke name="NAME"><parameter name="KEY">VALUE</parameter></invoke>`.
+fn xml_call(body: &str) -> Option<Action> {
+    let (name, rest) = if let Some(i) = body.find("<function=") {
+        let r = &body[i + 10..];
+        let (n, rest) = r.split_once('>')?;
+        (n.trim().trim_matches('"').to_string(), rest)
+    } else {
+        let i = body.find("<invoke ")?;
+        let r = &body[i + 8..];
+        let (attrs, rest) = r.split_once('>')?;
+        let n = attrs.split_once("name=")?.1.trim().trim_matches(|c| c == '"' || c == '\'' || c == '/');
+        (n.split(['"', '\'']).next().unwrap_or(n).to_string(), rest)
+    };
+    if name.is_empty() {
+        return None;
+    }
+    let mut args = serde_json::Map::new();
+    let mut cur = rest;
+    while let Some(i) = cur.find("<parameter") {
+        let after = &cur[i + 10..];
+        let (head, tail) = after.split_once('>')?;
+        let key = head.trim().trim_start_matches('=').trim_start_matches("name=").trim().trim_matches(|c| c == '"' || c == '\'').to_string();
+        let (val, next) = match tail.find("</parameter>") {
+            Some(e) => (&tail[..e], &tail[e + 12..]),
+            None => {
+                let e = tail.find("</function>").or_else(|| tail.find("</invoke>")).unwrap_or(tail.len());
+                (&tail[..e], &tail[e..])
+            }
+        };
+        // one leading and one trailing newline are formatting, not content
+        let val = val.strip_prefix('\n').unwrap_or(val);
+        let val = val.strip_suffix('\n').unwrap_or(val);
+        let v = if STRUCTURED_KEYS.contains(&key.as_str()) { lenient_json(val).unwrap_or_else(|_| Value::String(val.to_string())) } else { Value::String(val.to_string()) };
+        args.insert(key, v);
+        cur = next;
+    }
+    Some(Action::Tool { name, args: Value::Object(args) })
 }
 
 /// Normalise the many shapes of a JSON tool call into an action.
@@ -746,6 +800,10 @@ struct Run<'a> {
     role: Role,
     seq: usize,
     seen: HashMap<String, usize>,
+    /// Identical calls that already failed since the last successful state change.
+    failed: HashMap<String, usize>,
+    /// Consecutive malformed tool calls.
+    invalid: usize,
     steps: Vec<AgentStepRow>,
     mode: AgentMode,
     effort: Effort,
@@ -772,7 +830,7 @@ struct Run<'a> {
 
 impl<'a> Run<'a> {
     fn new(project_id: &'a str, task_id: &'a str, conversation_id: Option<&'a str>, role: Role, mode: AgentMode, effort: Effort) -> Self {
-        Run { project_id, task_id, conversation_id, role, seq: 0, seen: HashMap::new(), steps: Vec::new(), mode, effort, staged: Vec::new(), turn_text: String::new(), turn_note: None, turn: 0, turn_blocks: Vec::new(), autopilot: false, applied: Vec::new(), applied_paths: Vec::new(), dirty: false, checks: Vec::new(), usage: [0; 4], models: Vec::new(), request: String::new() }
+        Run { project_id, task_id, conversation_id, role, seq: 0, seen: HashMap::new(), failed: HashMap::new(), invalid: 0, steps: Vec::new(), mode, effort, staged: Vec::new(), turn_text: String::new(), turn_note: None, turn: 0, turn_blocks: Vec::new(), autopilot: false, applied: Vec::new(), applied_paths: Vec::new(), dirty: false, checks: Vec::new(), usage: [0; 4], models: Vec::new(), request: String::new() }
     }
     fn stage(&mut self, path: &str, content: Option<String>) {
         let path = path.trim_start_matches("./");
@@ -1070,6 +1128,7 @@ impl Genius {
             }
             match call {
                 Action::Tool { name, args } => {
+                    run.invalid = 0;
                     wrote |= WRITE_TOOLS.contains(&name.as_str());
                     let outcome = match self.execute_tool(run, &name, &args, cancel).await {
                         Err(GeniusError::Cancelled) => return Err(GeniusError::Cancelled),
@@ -1077,6 +1136,9 @@ impl Genius {
                         Ok(o) => o,
                     };
                     results.push_str(&tool_result(&name, outcome.ok, &outcome.text));
+                }
+                Action::Invalid { error } if { run.invalid += 1; run.invalid >= 4 } => {
+                    results.push_str(&tool_result("error", false, &format!("{error}. This is the {}th malformed call in a row. STOP calling tools in this format: use exactly <tool>{{\"name\": \"write_file\", \"args\": {{\"path\": \"src/App.tsx\", \"content\": \"…\"}}}}</tool>, or put whole files in <<<FILE: path>>> … <<<END FILE>>> blocks.", run.invalid)));
                 }
                 Action::Invalid { error } => results.push_str(&tool_result("error", false, &format!("{error}. Call tools as <tool>{{\"name\": \"read_file\", \"args\": {{\"path\": \"src/App.tsx\"}}}}</tool> (several per message are fine) or answer with <final>…</final>. For file content prefer write_file/edit_file or <<<FILE: path>>> blocks."))),
                 Action::Final { .. } => {}
@@ -1226,9 +1288,21 @@ impl Genius {
         } else if run.seen.get(&key).is_some_and(|n| *n >= 1) && TOOLS.iter().any(|t| t.name == name && t.read_only) && !["capabilities", "preview_errors", "last_run_output"].contains(&name) {
             // Repeating an identical read-only call adds no information.
             Ok(ToolOutcome { ok: false, summary: format!("{name} repeated (skipped)"), text: "You already called this tool with identical arguments and nothing changed since; its result is earlier in the conversation. Use it, or try something different.".into(), data: json!({ "duplicate": true }) })
+        } else if run.failed.get(&key).is_some_and(|n| *n >= 2) {
+            // Retrying a call that failed twice with nothing changed in between cannot succeed.
+            Ok(ToolOutcome { ok: false, summary: format!("{name} blocked: identical call failed twice"), text: format!("BLOCKED: this exact {name} call has already failed twice and nothing has changed since. Do not send it again. Read the earlier error, fix the cause (different arguments, read the file first, or another tool), or explain the blocker in <final>."), data: json!({ "blocked": true }) })
         } else {
             self.dispatch_tool(run, name, args, cancel).await
         };
+        match &outcome {
+            Ok(o) if o.ok => {
+                if TOOLS.iter().any(|t| t.name == name && !t.read_only) {
+                    run.failed.clear();
+                }
+            }
+            Ok(o) if o.data.get("blocked").is_some() || o.data.get("duplicate").is_some() => {}
+            _ => *run.failed.entry(key.clone()).or_default() += 1,
+        }
         *run.seen.entry(key).or_default() += 1;
         run.seq += 1;
         let (ok, summary, mut data) = match &outcome {
@@ -2092,6 +2166,21 @@ mod tests {
         assert!(parse_turn("{\"name\": \"Alice\"}").final_text.is_some());
         // unclosed tag at the end of the reply
         assert_eq!(parse_turn("<tool>{\"name\":\"memory\"}").calls, vec![Action::Tool { name: "memory".into(), args: json!({}) }]);
+    }
+
+    #[test]
+    fn xml_parameter_dialects() {
+        let t = "<tool_call>\n<function=write_file>\n<parameter=path>\nsrc/a.ts\n</parameter>\n<parameter=content>\nexport const a = {\"x\": 1};\n</parameter>\n</function>\n</tool_call>";
+        assert_eq!(parse_turn(t).calls, vec![Action::Tool { name: "write_file".into(), args: json!({ "path": "src/a.ts", "content": "export const a = {\"x\": 1};" }) }]);
+        let t = "<function=read_file><parameter=paths>[\"a\",\"b\"]</parameter><parameter=start_line>3</parameter></function>";
+        assert_eq!(parse_turn(t).calls, vec![Action::Tool { name: "read_file".into(), args: json!({ "paths": ["a", "b"], "start_line": 3 }) }]);
+        let t = "<TOOLCALL>[{\"name\": \"search\", \"arguments\": {\"query\": \"Header\"}}]</TOOLCALL>";
+        assert_eq!(parse_turn(t).calls, vec![Action::Tool { name: "search".into(), args: json!({ "query": "Header" }) }]);
+        let t = "<invoke name=\"edit_file\"><parameter name=\"path\">a.ts</parameter><parameter name=\"old\">1</parameter><parameter name=\"new\">2</parameter></invoke>";
+        assert_eq!(parse_turn(t).calls, vec![Action::Tool { name: "edit_file".into(), args: json!({ "path": "a.ts", "old": "1", "new": "2" }) }]);
+        // file content that looks like JSON stays a string
+        let t = "<function=write_file><parameter=path>package.json</parameter><parameter=content>{\"a\": 1}</parameter></function>";
+        assert_eq!(parse_turn(t).calls, vec![Action::Tool { name: "write_file".into(), args: json!({ "path": "package.json", "content": "{\"a\": 1}" }) }]);
     }
 
     #[test]
