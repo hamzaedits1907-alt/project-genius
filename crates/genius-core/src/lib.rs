@@ -7,6 +7,7 @@ pub mod attachments;
 pub mod capabilities;
 pub mod approvals;
 pub mod blocks;
+pub mod browser;
 pub mod changes;
 pub mod context;
 pub mod conversation;

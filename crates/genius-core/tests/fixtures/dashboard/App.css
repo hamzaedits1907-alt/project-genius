@@ -1,0 +1,29 @@
+:root { --bg: #f4f5f9; --card: #ffffff; --text: #1a1f2c; --muted: #4b5365; --accent: #2342c9; --on-accent: #ffffff; --border: #c9cedb; }
+:root[data-theme='dark'] { --bg: #0f1219; --card: #1a1f2d; --text: #e9ecf4; --muted: #b3bad0; --accent: #9db0ff; --on-accent: #0b1020; --border: #3a4258; }
+body { background: var(--bg); color: var(--text); }
+.app { max-width: 1100px; margin: 0 auto; padding: 16px; }
+.topbar { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; justify-content: space-between; }
+.topbar h1 { margin: 0; font-size: clamp(1.4rem, 4vw, 2rem); }
+.controls, .adder, .row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.adder { margin: 16px 0; }
+.grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 260px), 1fr)); gap: 16px; }
+.widget { background: var(--card); border: 1px solid var(--border); border-radius: 10px; padding: 12px; min-width: 0; }
+.widget-head { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+.widget-head h2 { margin: 0; font-size: 1.05rem; }
+button { background: var(--accent); color: var(--on-accent); border: 1px solid var(--accent); border-radius: 6px; padding: 6px 12px; font: inherit; cursor: pointer; }
+button:disabled { background: transparent; color: var(--muted); border-color: var(--border); cursor: default; }
+.icon-btn { padding: 0 8px; }
+select, input:not([type='checkbox']), textarea { background: var(--card); color: var(--text); border: 1px solid var(--border); border-radius: 6px; padding: 6px; font: inherit; }
+input:not([type='checkbox']) { flex: 1; min-width: 0; }
+textarea { width: 100%; }
+.metrics { display: grid; gap: 8px; margin: 8px 0 0; }
+.metric { display: flex; flex-wrap: wrap; gap: 8px; align-items: baseline; }
+.metric dt { color: var(--muted); min-width: 6rem; }
+.metric dd { margin: 0; font-weight: 600; }
+.metric .delta { color: var(--muted); font-weight: 400; }
+.chart { margin: 8px 0 0; }
+.chart svg { width: 100%; height: 140px; }
+.bar { fill: var(--accent); }
+.tasks { list-style: none; padding: 0; margin: 8px 0; }
+.task.done { text-decoration: line-through; }
+.muted { color: var(--muted); margin: 4px 0; }
