@@ -682,3 +682,125 @@ export interface SupabaseProject {
   status: string;
   organizationId: string;
 }
+
+// ---------------------------------------------------------------------------
+// Custom agents, teams and missions (contract: agents-contract.md; backend workstream B1)
+// ---------------------------------------------------------------------------
+export type AgentModelPolicy = 'auto' | 'max' | 'manual';
+export type AgentMemoryPolicy = 'none' | 'project' | 'agent';
+export type AgentApproval = 'ask' | 'auto' | 'plan_only';
+
+export interface AgentBudget {
+  maxSteps: number;
+  maxMinutes: number;
+  maxTokens: number;
+  maxModelCalls: number;
+}
+
+export interface CustomAgent {
+  id: string;
+  name: string;
+  /** Emoji or preset key ("spark", "owl", "robot", "leaf"). */
+  avatar: string;
+  role: string;
+  description: string;
+  instructions: string;
+  specialization: string[];
+  /** Project-relative paths or https URLs. */
+  knowledgeSources: string[];
+  modelPolicy: AgentModelPolicy;
+  model: string | null;
+  tools: string[];
+  scope: { projects: 'current' | 'any'; paths: string[] };
+  network: boolean;
+  memoryPolicy: AgentMemoryPolicy;
+  budget: AgentBudget;
+  retryLimit: number;
+  approval: AgentApproval;
+  acceptanceCriteria: string;
+  outputRequirements: string;
+  builtin: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
+/** A custom agent that has not been saved yet (no id). */
+export type AgentDraft = Omit<CustomAgent, 'id'> & { id?: string };
+
+export type AgentStatus = 'idle' | 'planning' | 'working' | 'blocked' | 'awaiting_approval' | 'reviewing' | 'completed' | 'failed' | 'paused';
+
+export interface AgentRuntime {
+  agentId: string;
+  status: AgentStatus;
+  currentTaskId: string | null;
+  lastActivityAt: string | null;
+  usage: { tokens: number; calls: number; tasksDone: number; tasksFailed: number };
+}
+
+export interface AgentTemplate {
+  key: string;
+  name: string;
+  avatar: string;
+  role: string;
+  description: string;
+  agent: Omit<CustomAgent, 'id' | 'createdAt' | 'updatedAt' | 'builtin'>;
+}
+
+export interface Team {
+  id: string;
+  name: string;
+  description: string;
+  coordinatorAgentId: string;
+  agentIds: string[];
+  createdAt: string;
+}
+
+export type MissionTaskStatus = 'pending' | 'ready' | 'running' | 'blocked' | 'awaiting_approval' | 'reviewing' | 'done' | 'failed' | 'cancelled';
+export type VerifyState = 'unknown' | 'passed' | 'failed';
+
+export interface MissionTask {
+  id: string;
+  missionId: string;
+  title: string;
+  description: string;
+  assigneeAgentId: string | null;
+  dependsOn: string[];
+  priority: number;
+  status: MissionTaskStatus;
+  result: string | null;
+  blocker: string | null;
+  changesetId: string | null;
+  /** Isolated copy path or branch. */
+  workspace: string | null;
+  verification: { build: VerifyState; tests: VerifyState; notes: string };
+  startedAt: string | null;
+  endedAt: string | null;
+  usage: { tokens: number; calls: number };
+}
+
+export type MissionStatus = 'planning' | 'ready' | 'running' | 'paused' | 'integrating' | 'verifying' | 'completed' | 'failed' | 'cancelled';
+
+export interface Mission {
+  id: string;
+  projectId: string;
+  title: string;
+  goal: string;
+  teamId: string | null;
+  status: MissionStatus;
+  tasks: MissionTask[];
+  summary: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface AgentTaskLog {
+  id: string;
+  agentId: string;
+  missionId: string | null;
+  taskId: string | null;
+  projectId: string;
+  kind: 'message' | 'tool' | 'status' | 'result' | 'error';
+  text: string;
+  data: unknown;
+  at: string;
+}

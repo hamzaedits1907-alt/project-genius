@@ -1,5 +1,5 @@
 import { Component, useEffect, type ErrorInfo, type ReactNode } from 'react';
-import { ArrowDownCircle, Command, FolderKanban, Home as HomeIcon, Plus, Settings as SettingsIcon, X } from 'lucide-react';
+import { ArrowDownCircle, Bot, Command, FolderKanban, Home as HomeIcon, Plus, Settings as SettingsIcon, X } from 'lucide-react';
 import { useApp } from './store/app';
 import { subscribeAll } from './store/events';
 import { useSubscription } from './lib/effects';
@@ -11,6 +11,9 @@ import SettingsView from './views/Settings';
 import Workspace from './views/workspace/Workspace';
 import ApprovalDialog from './views/ApprovalDialog';
 import UpdateDialog from './views/UpdateDialog';
+import AgentsView from './views/agents/AgentsView';
+import { useAgents } from './store/agents';
+import { pendingApprovalTasks } from './lib/agents';
 import { GeniusAvatar } from './components/GeniusAvatar';
 import { useWorkspace } from './store/workspace';
 import CommandPalette, { openCommandPalette, shortcutLabel } from './components/CommandPalette';
@@ -92,6 +95,7 @@ export default function App() {
   const setShowUpdate = useApp((s) => s.setShowUpdate);
   const busy = useWorkspace((s) => s.tasks.some((t) => t.kind !== 'verify'));
   const skipped = useApp((s) => s.skippedVersion);
+  const agentApprovals = useAgents((s) => pendingApprovalTasks(s.missions).length);
 
   // Backend events: released even if the app unmounts before `listen` resolves (StrictMode
   // mounts twice in development; the old code leaked the first set and delivered every event twice).
@@ -142,6 +146,10 @@ export default function App() {
             {approvals.length > 0 && <span className="count">{approvals.length}</span>}
           </button>
         )}
+        <button className={route.name === 'agents' ? 'on' : ''} onClick={() => navigate({ name: 'agents' })} title="Agents and missions" aria-label="Agents">
+          <Bot size={19} />
+          {agentApprovals > 0 && <span className="count" title="Agent tasks waiting for your approval">{agentApprovals}</span>}
+        </button>
         <div className="spacer" />
         <button onClick={openCommandPalette} title={`Command palette (${shortcutLabel('Ctrl+K')})`} aria-label="Command palette">
           <Command size={18} />
@@ -162,6 +170,7 @@ export default function App() {
           {route.name === 'create' && <CreateProject />}
           {route.name === 'settings' && <SettingsView initialTab={route.tab} />}
           {route.name === 'project' && <Workspace projectId={route.id} />}
+          {route.name === 'agents' && <AgentsView initialTab={route.tab} />}
         </ErrorBoundary>
       </main>
       {approvals.length > 0 && <ApprovalDialog request={approvals[0]} remaining={approvals.length - 1} />}

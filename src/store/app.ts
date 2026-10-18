@@ -6,7 +6,8 @@ export type Route =
   | { name: 'home' }
   | { name: 'create' }
   | { name: 'settings'; tab?: SettingsTab }
-  | { name: 'project'; id: string };
+  | { name: 'project'; id: string }
+  | { name: 'agents'; tab?: 'agents' | 'missions' | 'teams' };
 
 export type SettingsTab = 'ai' | 'github' | 'integrations' | 'approvals' | 'workspace' | 'appearance' | 'updates';
 

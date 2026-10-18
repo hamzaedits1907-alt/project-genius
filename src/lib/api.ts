@@ -192,4 +192,28 @@ export const api = {
   /** Build and deploy the website to GitHub Pages (a task; progress via deployStatus). */
   deployPages: (projectId: string) => call<T.TaskInfo>('deploy_pages', { projectId }),
   deployStatus: (projectId: string) => call<T.DeployStatus | null>('deploy_status', { projectId }),
+
+  // custom agents, teams and missions
+  listAgents: () => call<T.CustomAgent[]>('list_agents'),
+  getAgent: (agentId: string) => call<T.CustomAgent>('get_agent', { agentId }),
+  saveAgent: (agent: T.CustomAgent | T.AgentDraft) => call<T.CustomAgent>('save_agent', { agent }),
+  deleteAgent: (agentId: string) => call<void>('delete_agent', { agentId }),
+  agentTemplates: () => call<T.AgentTemplate[]>('agent_templates'),
+  agentRuntimes: () => call<T.AgentRuntime[]>('agent_runtimes'),
+  agentLogs: (agentId: string, limit?: number) => call<T.AgentTaskLog[]>('agent_logs', { agentId, limit: limit ?? null }),
+  runAgentTask: (agentId: string, projectId: string, task: string) => call<T.Mission>('run_agent_task', { agentId, projectId, task }),
+  listTeams: () => call<T.Team[]>('list_teams'),
+  saveTeam: (team: T.Team | Omit<T.Team, 'id'>) => call<T.Team>('save_team', { team }),
+  deleteTeam: (teamId: string) => call<void>('delete_team', { teamId }),
+  createMission: (projectId: string, goal: string, teamId: string | null) => call<T.Mission>('create_mission', { projectId, goal, teamId }),
+  listMissions: (projectId: string | null) => call<T.Mission[]>('list_missions', { projectId }),
+  getMission: (missionId: string) => call<T.Mission>('get_mission', { missionId }),
+  startMission: (missionId: string) => call<T.Mission>('start_mission', { missionId }),
+  pauseMission: (missionId: string) => call<T.Mission>('pause_mission', { missionId }),
+  resumeMission: (missionId: string) => call<T.Mission>('resume_mission', { missionId }),
+  cancelMission: (missionId: string) => call<T.Mission>('cancel_mission', { missionId }),
+  cancelMissionTask: (taskId: string) => call<T.Mission>('cancel_mission_task', { taskId }),
+  reprioritizeTask: (taskId: string, priority: number) => call<T.Mission>('reprioritize_task', { taskId, priority }),
+  retryMissionTask: (taskId: string) => call<T.Mission>('retry_mission_task', { taskId }),
+  approveMissionTask: (taskId: string, approved: boolean) => call<T.Mission>('approve_mission_task', { taskId, approved }),
 };
