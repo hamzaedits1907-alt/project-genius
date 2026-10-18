@@ -51,6 +51,45 @@ export const messages: T.MessageRow[] = [
   },
 ];
 
+const agentBase: Omit<T.CustomAgent, 'id'> = {
+  name: 'Designer',
+  avatar: 'spark',
+  role: 'UI designer',
+  description: 'Designs clean, accessible interfaces.',
+  instructions: 'You are a careful UI designer. Read the code first, then propose small changes.',
+  specialization: ['ui', 'accessibility'],
+  knowledgeSources: [],
+  modelPolicy: 'auto',
+  model: null,
+  tools: ['read_file', 'list_files', 'search'],
+  scope: { projects: 'current', paths: [] },
+  network: false,
+  memoryPolicy: 'project',
+  budget: { maxSteps: 30, maxMinutes: 20, maxTokens: 200000, maxModelCalls: 40 },
+  retryLimit: 1,
+  approval: 'ask',
+  acceptanceCriteria: '',
+  outputRequirements: '',
+  builtin: true,
+  createdAt: '2026-10-01T00:00:00Z',
+  updatedAt: '2026-10-01T00:00:00Z',
+};
+export const builtinAgent: T.CustomAgent = { ...agentBase, id: 'agent-designer' };
+export const agentTemplate: T.AgentTemplate = { key: 'designer', name: 'Designer', avatar: 'spark', role: 'UI designer', description: 'Designs clean, accessible interfaces.', agent: (({ builtin: _b, createdAt: _c, updatedAt: _u, ...rest }) => rest)(agentBase) };
+
+const taskBase: T.MissionTask = {
+  id: 't-a', missionId: 'm1', title: 'Design the layout', description: 'Sketch the page structure', assigneeAgentId: 'agent-designer', dependsOn: [], priority: 5, status: 'done',
+  result: 'Layout drafted', blocker: null, changesetId: null, workspace: null, verification: { build: 'unknown', tests: 'unknown', notes: '' }, startedAt: null, endedAt: null, usage: { tokens: 1200, calls: 3 },
+};
+export const missionFixture: T.Mission = {
+  id: 'm1', projectId: 'p1', title: 'Ship the dashboard', goal: 'Ship the dashboard', teamId: null, status: 'running', summary: null, createdAt: '2026-10-01T00:00:00Z', updatedAt: '2026-10-01T00:00:01Z',
+  tasks: [
+    taskBase,
+    { ...taskBase, id: 't-b', title: 'Build the sidebar', dependsOn: ['t-a'], status: 'awaiting_approval', changesetId: 'cs1', workspace: 'agent/t-b', result: null, usage: { tokens: 800, calls: 2 } },
+    { ...taskBase, id: 't-c', title: 'Write tests', dependsOn: ['t-b'], status: 'blocked', blocker: 'Waiting for the sidebar', result: null, usage: { tokens: 0, calls: 0 } },
+  ],
+};
+
 const gh: T.AuthStatus = { ghInstalled: false, ghVersion: null, connected: false, login: null, scopes: [], detail: 'gh not installed' };
 
 const status: T.RepoStatus = { isRepo: false, branch: null, head: null, upstream: null, ahead: 0, behind: 0, files: [], merging: false, remotes: [] };
@@ -129,6 +168,29 @@ export const defaults: Record<string, Handler> = {
   get_changeset: () => ({ changeset: { id: 'cs1', projectId: 'p1', taskId: 't0', kind: 'change', title: 'Add a sidebar', summary: '', status: 'proposed', createdAt: '2026-10-01T00:00:00Z', appliedAt: null, files: [{ path: 'src/Sidebar.tsx', op: 'create', added: 3, removed: 0 }] }, files: [] }),
   capability_report: () => ({ generatedAt: '2026-10-01T00:00:00Z', provider: { name: 'NVIDIA', baseUrl: '', model: 'm', maxTokens: 1, keyStored: true }, capabilities: [{ id: 'vision', label: 'Image input (screenshots)', status: 'unverified', evidence: 'image input has not been tested with this model', remedy: 'Test image input' }], agentTools: [], integrations: [], permissions: {}, project: null, limitations: [] }),
   preview_context: () => ({ files: [], tree: [], budgetChars: 1000, usedChars: 0, excludedSensitive: [] }),
+  // custom agents / teams / missions (contract defaults)
+  list_agents: () => [builtinAgent],
+  get_agent: () => builtinAgent,
+  save_agent: (_c, a) => ({ ...(a.agent as object), id: (a.agent as { id?: string }).id ?? 'agent-new' }),
+  delete_agent: () => null,
+  agent_templates: () => [agentTemplate],
+  agent_runtimes: () => [],
+  agent_logs: () => [],
+  run_agent_task: () => missionFixture,
+  list_teams: () => [],
+  save_team: (_c, a) => ({ ...(a.team as object), id: (a.team as { id?: string }).id ?? 'team-new' }),
+  delete_team: () => null,
+  create_mission: () => ({ ...missionFixture, status: 'planning', tasks: [] }),
+  list_missions: () => [],
+  get_mission: () => missionFixture,
+  start_mission: () => ({ ...missionFixture, status: 'running' }),
+  pause_mission: () => ({ ...missionFixture, status: 'paused' }),
+  resume_mission: () => ({ ...missionFixture, status: 'running' }),
+  cancel_mission: () => ({ ...missionFixture, status: 'cancelled' }),
+  cancel_mission_task: () => missionFixture,
+  reprioritize_task: () => missionFixture,
+  retry_mission_task: () => missionFixture,
+  approve_mission_task: () => missionFixture,
 };
 
 export const calls: { cmd: string; args: Record<string, unknown> }[] = [];

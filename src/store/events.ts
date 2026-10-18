@@ -6,6 +6,8 @@ import { handleInspectRequest } from '../lib/inspection';
 import { noticeFor, notificationsEnabled, notifyIfAway, windowFocused } from '../lib/notify';
 import { useApp } from './app';
 import { useWorkspace } from './workspace';
+import { useAgents } from './agents';
+import type { AgentRuntime, AgentTaskLog, Mission } from '../lib/types';
 
 /** Long AI work finished or needs the user while Genius is in the background: tell them. */
 async function announce(ev: ActivityEvent) {
@@ -95,6 +97,10 @@ export async function subscribeAll(): Promise<UnlistenFn> {
     listen<InspectRequest>('genius://inspect-request', ({ payload }) => {
       void handleInspectRequest(payload);
     }),
+    // Custom agents / missions (live status, logs and task graphs).
+    listen<AgentRuntime>('genius://agent-status', ({ payload }) => useAgents.getState().onAgentStatus(payload)),
+    listen<AgentTaskLog>('genius://agent-log', ({ payload }) => useAgents.getState().onAgentLog(payload)),
+    listen<Mission>('genius://mission-update', ({ payload }) => useAgents.getState().onMission(payload)),
   ]);
   return () => unlisteners.forEach((u) => u());
 }
