@@ -432,3 +432,468 @@ async fn dashboard_builds_through_malformed_calls_real_diagnostics_dev_server_fo
         assert!(!body.to_string().contains("nvapi-dashboard-test-key"));
     }
 }
+
+// =====================================================================================
+// Upgraded acceptance: realistic multi-widget dashboard, real npm/tsc/vite/dev server and a
+// REAL headless browser (src/browser.rs). Fixture sources live in tests/fixtures/dashboard.
+// =====================================================================================
+
+use genius_core::browser::{find_browser, CheckOptions, RunLimits, Session, Step, TestOptions};
+
+const F_TYPES: &str = include_str!("fixtures/dashboard/types.ts");
+const F_DATA: &str = include_str!("fixtures/dashboard/data.ts");
+const F_HOOKS: &str = include_str!("fixtures/dashboard/hooks.ts");
+const F_WIDGETS: &str = include_str!("fixtures/dashboard/widgets.tsx");
+const F_APP: &str = include_str!("fixtures/dashboard/App.tsx");
+const F_CSS: &str = include_str!("fixtures/dashboard/App.css");
+const F_DENSITY: &str = include_str!("fixtures/dashboard/density.ts");
+const F_COMPACT: &str = include_str!("fixtures/dashboard/compact.css");
+
+type Notes = Arc<Mutex<Vec<(String, String)>>>;
+
+struct Env {
+    g: Arc<Genius>,
+    pid: String,
+    conv: String,
+    log: Arc<Mutex<Vec<Value>>>,
+    _server: MockServer,
+    _tmp: tempfile::TempDir,
+}
+
+async fn setup(script: impl Fn(&str, &str, &[Value]) -> String + Send + Sync + 'static) -> Env {
+    let server = MockServer::start().await;
+    let log = Arc::new(Mutex::new(Vec::new()));
+    Mock::given(method("POST")).and(path("/v1/chat/completions")).respond_with(Scripted { script: Box::new(script), log: log.clone() }).mount(&server).await;
+    let tmp = tempfile::tempdir().unwrap();
+    let g = Genius::new(&tmp.path().join("data"), Arc::new(NullEmitter), Arc::new(MemoryStore::default())).unwrap();
+    let mut s = g.settings().unwrap();
+    s.base_url = format!("http://127.0.0.1:{}/v1", server.address().port());
+    s.model = Some("mock/coder-1".into());
+    s.workspace_dir = Some(tmp.path().join("projects").to_string_lossy().to_string());
+    s.approvals.dependency_install = Policy::Auto;
+    s.approvals.apply_ai_edits = Policy::Auto;
+    g.save_settings(&s).unwrap();
+    g.save_api_key("nvapi-dashboard-test-key-0123456789").unwrap();
+    let p = g.create_project("Team Dashboard", "A multi-widget dashboard").unwrap();
+    let ws = g.workspace(&p.id).unwrap();
+    for (path, content) in genius_core::scaffold::files(&p.name, "A multi-widget dashboard") {
+        ws.write_text(&path, &content).unwrap();
+    }
+    let conv = g.db.create_conversation(&p.id, "New conversation").unwrap();
+    Env { g, pid: p.id, conv: conv.id, log, _server: server, _tmp: tmp }
+}
+
+async fn ask(e: &Env, msg: &str, autopilot: bool) -> Value {
+    let t = e.g.start_agent(&e.pid, AgentRequest { conversation_id: e.conv.clone(), message: msg.into(), mode: AgentMode::Build, effort: Some("max".into()), autopilot: Some(autopilot), ..Default::default() }).unwrap();
+    for _ in 0..4800 {
+        if e.g.active_tasks(Some(&e.pid)).is_empty() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+    assert!(e.g.active_tasks(Some(&e.pid)).is_empty(), "agent task did not finish in time");
+    let ev = e.g.bus.list(Some(&e.pid), 5000).unwrap().into_iter().find(|x| x.task_id.as_deref() == Some(t.id.as_str()) && x.kind == EventKind::Task && x.detail.get("taskKind").is_some()).unwrap();
+    json!({ "taskId": t.id, "status": ev.status, "detail": ev.detail })
+}
+
+fn checks_of(e: &Env) -> Vec<Value> {
+    let msgs = e.g.db.list_conversation_messages(&e.conv, 50).unwrap();
+    msgs.last().unwrap().meta["report"]["autopilot"]["checks"].as_array().cloned().unwrap_or_default()
+}
+
+fn steps_of(v: Value) -> Vec<Step> {
+    serde_json::from_value(v).unwrap()
+}
+
+fn tool(name: &str, args: Value) -> String {
+    format!("<tool>{}</tool>", json!({ "name": name, "args": args }))
+}
+
+fn build_reply() -> String {
+    let files = tool(
+        "write_files",
+        json!({ "files": [
+        { "path": "src/types.ts", "content": F_TYPES }, { "path": "src/data.ts", "content": F_DATA },
+        { "path": "src/hooks/storage.ts", "content": F_HOOKS }, { "path": "src/components/widgets.tsx", "content": F_WIDGETS } ] }),
+    );
+    format!("Building the dashboard.\n{files}\n{}\n{}", tool("write_file", json!({ "path": "src/App.tsx", "content": F_APP })), tool("write_file", json!({ "path": "src/App.css", "content": F_CSS })))
+}
+
+struct Acc(Vec<(&'static str, String)>);
+impl Acc {
+    fn pass(&mut self, section: &'static str, msg: impl Into<String>) {
+        let m = msg.into();
+        eprintln!("[{section}] PASS {m}");
+        self.0.push((section, m));
+    }
+    fn summary(&self, outstanding: &[&str]) {
+        eprintln!("==== DASHBOARD ACCEPTANCE ====");
+        for s in ["files written", "build", "runtime/preview", "interaction", "visual/a11y"] {
+            let n = self.0.iter().filter(|(k, _)| *k == s).count();
+            eprintln!("{s:16} {n} checks passed");
+        }
+        for o in outstanding {
+            eprintln!("outstanding      {o}");
+        }
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn dashboard_acceptance_real_build_preview_browser_followup_rollback() {
+    if find_executable("npm").is_none() || std::env::var("GENIUS_SKIP_E2E").is_ok() {
+        eprintln!("SKIPPED: npm not available (or GENIUS_SKIP_E2E set)");
+        return;
+    }
+    let notes: Notes = Arc::new(Mutex::new(Vec::new()));
+    let n2 = notes.clone();
+    let e = setup(move |system, last, _| {
+        if system.contains("Reviewer subagent") {
+            return "<final>No blocking issues found.</final>".into();
+        }
+        if last.starts_with("AUTOPILOT CHECK FAILED") {
+            n2.lock().unwrap().push(("unexpected-failure".into(), last.to_string()));
+            return "<final>stop</final>".into();
+        }
+        if last.contains("USER MESSAGE:\nBuild a team dashboard") {
+            return build_reply();
+        }
+        if last.contains("USER MESSAGE:\nAdd a compact density toggle") {
+            let edit = tool(
+                "edit_file",
+                json!({ "path": "src/App.tsx", "edits": [
+                { "old": "import './App.css';", "new": "import './App.css';\nimport './compact.css';" },
+                { "old": "import { useLocalStorage, useTheme } from './hooks/storage';", "new": "import { useLocalStorage, useTheme } from './hooks/storage';\nimport { useDensity } from './hooks/density';" },
+                { "old": "const { theme, toggle } = useTheme();", "new": "const { theme, toggle } = useTheme();\n  const density = useDensity();" },
+                { "old": "<div className=\"app\">", "new": "<div className=\"app\" data-density={density.compact ? 'compact' : 'comfortable'}>" },
+                { "old": "<button type=\"submit\">Add widget</button>", "new": "<button type=\"submit\">Add widget</button>\n          <button type=\"button\" aria-pressed={density.compact} onClick={density.toggle}>Compact view</button>" } ] }),
+            );
+            return format!("{}\n{}\n{edit}", tool("write_file", json!({ "path": "src/hooks/density.ts", "content": F_DENSITY })), tool("write_file", json!({ "path": "src/compact.css", "content": F_COMPACT })));
+        }
+        if last.starts_with("<tool_result") {
+            return "<final>Done.</final>".into();
+        }
+        n2.lock().unwrap().push(("unexpected".into(), last.to_string()));
+        "<final>unexpected turn</final>".into()
+    })
+    .await;
+    let ws = e.g.workspace(&e.pid).unwrap();
+    let mut acc = Acc(vec![]);
+
+    // ---- build through validated tools; real npm install, tsc, vite build
+    let r = ask(&e, "Build a team dashboard with metrics, tasks, notes, an SVG chart, add/remove widgets and themes", true).await;
+    let obs = notes.lock().unwrap().clone();
+    assert_eq!(r["status"], json!(EventStatus::Completed), "{r}\n{obs:#?}");
+    assert!(obs.is_empty(), "{obs:#?}");
+    let steps = e.g.agent_steps(r["taskId"].as_str().unwrap()).unwrap();
+    assert!(steps.iter().filter(|s| s.ok && s.tool.starts_with("write_file")).count() >= 2, "{:?}", steps.iter().map(|s| (&s.tool, s.ok)).collect::<Vec<_>>());
+    for f in ["src/types.ts", "src/data.ts", "src/hooks/storage.ts", "src/components/widgets.tsx", "src/App.tsx", "src/App.css"] {
+        assert!(ws.exists(f), "{f}");
+    }
+    acc.pass("files written", "6 files written through write_files/write_file");
+    let checks = checks_of(&e);
+    assert!(checks.iter().any(|c| c["check"] == "typecheck" && c["ok"] == true) && checks.iter().any(|c| c["check"] == "build" && c["ok"] == true), "{checks:?}");
+    assert!(ws.exists("dist/index.html"));
+    acc.pass("build", "real npm install + tsc + vite build passed");
+
+    // ---- dev server
+    let url = e.g.start_preview(&e.pid, None).await.expect("dev server starts");
+    let html = reqwest::get(&url).await.unwrap().text().await.unwrap();
+    assert!(html.contains("<div id=\"root\"></div>"));
+    acc.pass("runtime/preview", format!("dev server serves the app at {url}"));
+
+    let have_browser = find_browser().is_some();
+    if have_browser {
+        // ---- real browser: render, console, network, viewports, a11y
+        let rep = e.g.browser_check(&e.pid, &url, CheckOptions { viewports: vec![375, 768, 1280], screenshot: true, ..Default::default() }).await.unwrap();
+        eprintln!("{}", genius_core::browser::render_browser_report(&rep));
+        assert!(rep.error.is_none(), "{:?}", rep.error);
+        assert!(rep.ok(), "blocking problems: {:?}", rep.blocking_problems());
+        assert_eq!(rep.inspection.viewports.len(), 3);
+        assert!(rep.inspection.viewports.iter().all(|v| !v.rendered.blank && v.text.contains("Team dashboard")));
+        acc.pass("runtime/preview", "real browser: page rendered at 375/768/1280, no console errors/exceptions/failed requests");
+        assert!(rep.inspection.viewports.iter().all(|v| !v.layout.iter().any(|i| i.kind == "page-overflow-x")));
+        acc.pass("visual/a11y", "no horizontal overflow at 375/768/1280");
+        let a11y: Vec<_> = rep.inspection.viewports.iter().flat_map(|v| v.a11y.iter().map(|i| format!("{}: {}", i.kind, i.message))).collect();
+        assert!(a11y.is_empty(), "a11y problems: {a11y:?}");
+        acc.pass("visual/a11y", "inspector: 0 accessibility problems (labels, names, headings, lang, contrast)");
+        assert!(rep.screenshots.len() == 3 && rep.screenshots.iter().all(|s| std::fs::metadata(&s.path).map(|m| m.len() > 500).unwrap_or(false)));
+        acc.pass("visual/a11y", "3 screenshots saved (PNG files; not reviewed by a vision model)");
+
+        // ---- interactions at desktop
+        let steps = steps_of(json!([
+            { "action": "assert_count", "selector": ".widget", "count": 4 },
+            { "action": "assert_text", "text": "$48,210" },
+            { "action": "assert_count", "selector": "svg .bar", "count": 7 },
+            { "action": "select", "selector": "#period", "value": "Last 30 days" },
+            { "action": "assert_text", "text": "$182,400" },
+            { "action": "assert_count", "selector": "svg .bar", "count": 30 },
+            { "action": "select", "selector": "#period", "value": "Last 7 days" },
+            { "action": "select", "selector": "#add-kind", "value": "Metric" },
+            { "action": "click", "text": "Add widget" },
+            { "action": "assert_count", "selector": ".widget", "count": 5 },
+            { "action": "assert_text", "text": "New metric 5" },
+            { "action": "click", "text": "Remove New metric 5" },
+            { "action": "assert_count", "selector": ".widget", "count": 4 },
+            { "action": "assert_text", "text": "New metric 5", "absent": true },
+            { "action": "select", "selector": "#add-kind", "value": "Notes" },
+            { "action": "click", "text": "Add widget" },
+            { "action": "assert_count", "selector": ".widget", "count": 5 },
+            { "action": "type", "label": "New task", "text": "Write tests" },
+            { "action": "press", "key": "Enter" },
+            { "action": "assert_text", "text": "Write tests" },
+            { "action": "click", "text": "Write tests" },
+            { "action": "assert_count", "selector": ".task.done", "count": 1 },
+            { "action": "type", "selector": "textarea[aria-label='Notes']", "text": "Ship the dashboard" },
+            { "action": "assert_attr", "selector": "html", "attr": "data-theme", "equals": "light" },
+            { "action": "click", "text": "Switch to dark theme" },
+            { "action": "assert_attr", "selector": "html", "attr": "data-theme", "equals": "dark" },
+            { "action": "assert_attr", "selector": "html", "attr": "class", "contains": "dark" },
+            { "action": "reload" },
+            { "action": "assert_attr", "selector": "html", "attr": "data-theme", "equals": "dark" },
+            { "action": "assert_count", "selector": ".widget", "count": 5 },
+            { "action": "assert_count", "selector": ".task.done", "count": 1 },
+            { "action": "assert_attr", "selector": "textarea[aria-label='Notes']", "attr": "value", "equals": "Ship the dashboard" },
+            { "action": "click", "text": "Remove New notes 5" },
+            { "action": "assert_count", "selector": ".widget", "count": 4 },
+            { "action": "assert_no_errors" }
+        ]));
+        let rep = e.g.browser_test(&e.pid, &url, TestOptions { steps, screenshot: true, ..Default::default() }).await.unwrap();
+        eprintln!("{}", genius_core::browser::render_browser_report(&rep));
+        assert!(rep.error.is_none() && rep.steps.iter().all(|s| s.ok), "{:?}", rep.steps.iter().find(|s| !s.ok));
+        acc.pass("interaction", format!("{} scripted steps passed: period select, add/remove widget, tasks, notes, theme switch, reload persistence", rep.steps.len()));
+
+        // ---- mobile: Session API directly
+        let t = e.g.browser_target(&e.pid, &url).unwrap();
+        let mut s = Session::launch(t, &RunLimits::default(), Duration::from_secs(60)).await.unwrap();
+        s.set_viewport(375).await.unwrap();
+        s.goto("/").await.unwrap();
+        let w = s.eval("({sw: document.documentElement.scrollWidth, iw: window.innerWidth})").await.unwrap();
+        assert!(w["sw"].as_i64() <= w["iw"].as_i64(), "horizontal overflow on mobile: {w}");
+        for st in steps_of(json!([{ "action": "click", "text": "Add widget" }, { "action": "assert_count", "selector": ".widget", "count": 5 }])) {
+            assert!(s.run_step(&st).await.unwrap().ok);
+        }
+        let w = s.eval("({sw: document.documentElement.scrollWidth, iw: window.innerWidth})").await.unwrap();
+        assert!(w["sw"].as_i64() <= w["iw"].as_i64(), "overflow after adding a widget on mobile: {w}");
+        let rep = s.finish("test").await;
+        assert!(rep.console_errors() == 0 && rep.exceptions.is_empty());
+        acc.pass("interaction", "mobile 375px: adding a widget works and the page never scrolls horizontally");
+    }
+
+    // ---- follow-up and rollback
+    let before = ws.read_text("src/App.tsx").unwrap();
+    let r2 = ask(&e, "Add a compact density toggle", true).await;
+    assert_eq!(r2["status"], json!(EventStatus::Completed), "{r2}\n{:?}", notes.lock().unwrap());
+    assert!(ws.read_text("src/App.tsx").unwrap().contains("Compact view"));
+    let checks2 = checks_of(&e);
+    assert!(checks2.iter().all(|c| c["ok"] == true) && checks2.iter().any(|c| c["check"] == "build"), "{checks2:?}");
+    acc.pass("build", "follow-up typechecked and rebuilt");
+    if have_browser {
+        let steps = steps_of(json!([
+            { "action": "click", "text": "Compact view" },
+            { "action": "assert_attr", "selector": ".app", "attr": "data-density", "equals": "compact" },
+            { "action": "reload" },
+            { "action": "assert_attr", "selector": ".app", "attr": "data-density", "equals": "compact" },
+            { "action": "assert_count", "selector": ".widget", "count": 4 },
+            { "action": "assert_no_errors" }
+        ]));
+        let rep = e.g.browser_test(&e.pid, &url, TestOptions { steps, ..Default::default() }).await.unwrap();
+        assert!(rep.steps.iter().all(|s| s.ok) && rep.error.is_none(), "{}", genius_core::browser::render_browser_report(&rep));
+        acc.pass("interaction", "follow-up feature works in the browser and persists across reload");
+    }
+    let msgs = e.g.db.list_conversation_messages(&e.conv, 50).unwrap();
+    let ids: Vec<String> = msgs.last().unwrap().meta["changesetIds"].as_array().expect("changesets").iter().map(|v| v.as_str().unwrap().to_string()).collect();
+    e.g.revert_checkpoints(&e.pid, &ids).unwrap();
+    assert_eq!(ws.read_text("src/App.tsx").unwrap(), before);
+    assert!(!ws.exists("src/compact.css"));
+    if have_browser {
+        let steps = steps_of(json!([{ "action": "assert_text", "text": "Compact view", "absent": true }, { "action": "assert_count", "selector": ".widget", "count": 4 }, { "action": "assert_no_errors" }]));
+        let rep = e.g.browser_test(&e.pid, &url, TestOptions { steps, ..Default::default() }).await.unwrap();
+        assert!(rep.steps.iter().all(|s| s.ok), "{}", genius_core::browser::render_browser_report(&rep));
+        acc.pass("interaction", "after rollback the toggle is gone in the real browser and the dashboard still works");
+    }
+    e.g.stop_preview(&e.pid).await.unwrap();
+    for body in e.log.lock().unwrap().iter() {
+        assert!(!body.to_string().contains("nvapi-dashboard-test-key"));
+    }
+    acc.pass("runtime/preview", "no key leaked to the model");
+    let mut out = vec!["model is scripted (mock); live NVIDIA not exercised", "only Chromium-family tested; screenshots saved but not judged by a vision model"];
+    if !have_browser {
+        out.push("NO BROWSER INSTALLED: all real-browser checks were NOT run");
+    }
+    acc.summary(&out);
+}
+
+/// Scripted model: first reply writes `first`; a failing autopilot check is recorded and
+/// answered with `repair`; everything else ends the turn.
+async fn fail_then_repair(first: String, repair: String, codes: &[&str], texts: &[&str]) {
+    if find_executable("npm").is_none() || std::env::var("GENIUS_SKIP_E2E").is_ok() {
+        eprintln!("SKIPPED: npm not available");
+        return;
+    }
+    let notes: Notes = Arc::new(Mutex::new(Vec::new()));
+    let n2 = notes.clone();
+    let e = setup(move |system, last, _| {
+        if system.contains("Reviewer subagent") {
+            return "<final>No blocking issues found.</final>".into();
+        }
+        if last.starts_with("AUTOPILOT CHECK FAILED") {
+            n2.lock().unwrap().push(("diag".into(), last.to_string()));
+            return repair.clone();
+        }
+        if last.contains("USER MESSAGE:\nBuild it") {
+            return first.clone();
+        }
+        if last.starts_with("<tool_result") {
+            return "<final>Done.</final>".into();
+        }
+        n2.lock().unwrap().push(("unexpected".into(), last.to_string()));
+        "<final>unexpected</final>".into()
+    })
+    .await;
+    let r = ask(&e, "Build it", true).await;
+    let obs = notes.lock().unwrap().clone();
+    assert_eq!(r["status"], json!(EventStatus::Completed), "{r}\n{obs:#?}");
+    let diags: Vec<_> = obs.iter().filter(|(k, _)| k == "diag").collect();
+    assert_eq!(diags.len(), 1, "{obs:#?}");
+    assert!(codes.iter().any(|c| diags[0].1.contains(c)), "real diagnostic code {codes:?}: {}", diags[0].1);
+    for t in texts {
+        assert!(diags[0].1.contains(t), "{t}: {}", diags[0].1);
+    }
+    assert!(!obs.iter().any(|(k, _)| k == "unexpected"), "{obs:#?}");
+    let checks = checks_of(&e);
+    assert!(checks.iter().any(|c| c["check"] == "build" && c["ok"] == true), "repaired and rebuilt: {checks:?}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn missing_named_export_is_diagnosed_and_repaired() {
+    let first = format!(
+        "{}\n{}",
+        tool("write_file", json!({ "path": "src/hooks/useWidgets.ts", "content": "export function useWidgetStore() { return [1, 2, 3]; }\n" })),
+        tool("write_file", json!({ "path": "src/App.tsx", "content": "import { useWidgets } from './hooks/useWidgets';\nexport default function App() { return <main><h1>x</h1>{useWidgets().length}</main>; }\n" }))
+    );
+    let repair = tool("edit_file", json!({ "path": "src/App.tsx", "edits": [{ "old": "{ useWidgets }", "new": "{ useWidgetStore }" }, { "old": "{useWidgets().length}", "new": "{useWidgetStore().length}" }] }));
+    fail_then_repair(first, repair, &["TS2305", "TS2724"], &["useWidgets", "src/App.tsx"]).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn unresolved_import_missing_file_is_diagnosed_and_repaired() {
+    let first = tool("write_file", json!({ "path": "src/App.tsx", "content": "import Chart from './components/Chart';\nexport default function App() { return <main><h1>x</h1><Chart /></main>; }\n" }));
+    let repair = tool("write_file", json!({ "path": "src/components/Chart.tsx", "content": "export default function Chart() { return <svg role=\"img\" aria-label=\"c\" />; }\n" }));
+    fail_then_repair(first, repair, &["TS2307"], &["./components/Chart"]).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn wrong_hook_return_contract_is_diagnosed_and_repaired() {
+    let first = format!(
+        "{}\n{}",
+        tool("write_file", json!({ "path": "src/useTheme.ts", "content": "export function useTheme() { return ['light', () => {}] as const; }\n" })),
+        tool("write_file", json!({ "path": "src/App.tsx", "content": "import { useTheme } from './useTheme';\nexport default function App() { const { theme, toggle } = useTheme(); return <main><h1>{theme}</h1><button onClick={toggle}>t</button></main>; }\n" }))
+    );
+    let repair = tool("edit_file", json!({ "path": "src/App.tsx", "old": "const { theme, toggle }", "new": "const [theme, toggle]" }));
+    fail_then_repair(first, repair, &["TS2339"], &["theme"]).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn missing_dependency_is_diagnosed_and_installed() {
+    let first = tool("write_file", json!({ "path": "src/App.tsx", "content": "import dayjs from 'dayjs';\nexport default function App() { return <main><h1>{dayjs('2020-01-02').format('YYYY')}</h1></main>; }\n" }));
+    let repair = tool("add_dependency", json!({ "packages": ["dayjs"] }));
+    fail_then_repair(first, repair, &["TS2307"], &["dayjs"]).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn preview_start_failures_are_reported_honestly() {
+    // No npm needed: dependencies are not installed.
+    let notes: Notes = Arc::new(Mutex::new(Vec::new()));
+    let n2 = notes.clone();
+    let e = setup(move |system, last, _| {
+        if system.contains("Reviewer subagent") {
+            return "<final>ok</final>".into();
+        }
+        if last.contains("USER MESSAGE:\nLook at it") {
+            return tool("browser_check", json!({}));
+        }
+        if last.starts_with("<tool_result") {
+            n2.lock().unwrap().push(("result".into(), last.to_string()));
+        }
+        "<final>reported</final>".into()
+    })
+    .await;
+    let err = e.g.start_preview(&e.pid, None).await.err().expect("must fail").to_string();
+    assert!(err.contains("not installed"), "{err}");
+    assert!(e.g.preview_url(&e.pid).is_none());
+    let r = ask(&e, "Look at it", false).await;
+    assert_eq!(r["status"], json!(EventStatus::Completed), "{r}");
+    let obs = notes.lock().unwrap().clone();
+    let res = &obs.iter().find(|(k, _)| k == "result").expect("tool result").1;
+    assert!(res.contains("ok=\"false\""), "{res}");
+    if find_browser().is_some() {
+        assert!(res.contains("dev server could not be started"), "{res}");
+    } else {
+        assert!(res.contains("NOT run"), "{res}");
+    }
+
+    // With npm: a broken vite.config.ts makes the dev server exit; then it is repaired.
+    if find_executable("npm").is_none() || std::env::var("GENIUS_SKIP_E2E").is_ok() {
+        return;
+    }
+    let out = e.g.run_operation(&e.pid, None, genius_core::process::Operation::Install, "test", true, &tokio_util::sync::CancellationToken::new()).await.unwrap();
+    assert!(out.ok(), "{}", out.output_tail);
+    let ws = e.g.workspace(&e.pid).unwrap();
+    let good = ws.read_text("vite.config.ts").unwrap();
+    ws.write_text("vite.config.ts", "export default {{{ broken\n").unwrap();
+    let err = e.g.start_preview(&e.pid, None).await.err().expect("broken config must fail").to_string();
+    eprintln!("preview failure message: {err}");
+    assert!(e.g.preview_url(&e.pid).is_none());
+    ws.write_text("vite.config.ts", &good).unwrap();
+    let url = e.g.start_preview(&e.pid, None).await.expect("repaired config starts");
+    assert!(e.g.preview_url(&e.pid).is_some());
+    if find_browser().is_some() {
+        let rep = e.g.browser_check(&e.pid, &url, CheckOptions { viewports: vec![800], ..Default::default() }).await.unwrap();
+        assert!(rep.error.is_none() && rep.inspection.viewports[0].text.contains("Project template"), "{}", genius_core::browser::render_browser_report(&rep));
+    }
+    e.g.stop_preview(&e.pid).await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn runtime_exception_found_by_browser_check_and_repaired() {
+    if find_executable("npm").is_none() || std::env::var("GENIUS_SKIP_E2E").is_ok() || find_browser().is_none() {
+        eprintln!("SKIPPED: needs npm and a browser");
+        return;
+    }
+    let notes: Notes = Arc::new(Mutex::new(Vec::new()));
+    let n2 = notes.clone();
+    let calls = Arc::new(Mutex::new(0usize));
+    let e = setup(move |system, last, _| {
+        if system.contains("Reviewer subagent") {
+            return "<final>ok</final>".into();
+        }
+        if last.contains("USER MESSAGE:\nBuild it") {
+            return tool("write_file", json!({ "path": "src/App.tsx", "content": "import { useEffect, useState } from 'react';\ntype Item = { id: number; name: string };\nexport default function App() {\n  const [items, setItems] = useState<Item[]>([]);\n  useEffect(() => { fetch('/api/items').then((r) => r.json()).then((d: { items: Item[] }) => setItems(d.items)); }, []);\n  return <main><h1>Items</h1><ul>{items.map((i) => <li key={i.id}>{i.name}</li>)}</ul></main>;\n}\n" }));
+        }
+        if last.starts_with("<tool_result name=\"browser_check\"") {
+            n2.lock().unwrap().push(("report".into(), last.to_string()));
+            let mut c = calls.lock().unwrap();
+            *c += 1;
+            if last.contains("[exception]") && *c == 1 {
+                return tool("edit_file", json!({ "path": "src/App.tsx", "old": "fetch('/api/items').then((r) => r.json()).then((d: { items: Item[] }) => setItems(d.items));", "new": "setItems([{ id: 1, name: 'Alpha' }]);" }));
+            }
+            return "<final>Verified in the browser.</final>".into();
+        }
+        if last.starts_with("<tool_result name=\"write_file\"") {
+            return tool("run_check", json!({ "check": "build" }));
+        }
+        if last.starts_with("<tool_result") {
+            return tool("browser_check", json!({ "viewports": [800] }));
+        }
+        "<final>done</final>".into()
+    })
+    .await;
+    let r = ask(&e, "Build it", true).await;
+    let obs = notes.lock().unwrap().clone();
+    assert_eq!(r["status"], json!(EventStatus::Completed), "{r}\n{obs:#?}");
+    let reports: Vec<&String> = obs.iter().filter(|(k, _)| k == "report").map(|(_, v)| v).collect();
+    assert!(reports.len() >= 2, "{obs:#?}");
+    assert!(reports[0].contains("[exception]") && reports[0].contains("RESULT: ") && !reports[0].contains("RESULT: OK"), "{}", reports[0]);
+    assert!(reports.last().unwrap().contains("RESULT: OK"), "{}", reports.last().unwrap());
+    e.g.stop_preview(&e.pid).await.unwrap();
+}

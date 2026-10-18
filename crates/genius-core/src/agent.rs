@@ -1989,11 +1989,17 @@ impl Genius {
             }
             "browser_check" => {
                 let a: crate::browser::CheckArgs = typed(name, args)?;
+                if run.autopilot && run.role == Role::Main && !run.staged.is_empty() {
+                    self.flush(run).await?;
+                }
                 let (summary, text, data) = self.tool_browser_check(pid, run.task_id, a, cancel).await?;
                 Ok(ToolOutcome::ok(summary, text, data))
             }
             "browser_test" => {
                 let a: crate::browser::TestArgs = typed(name, args)?;
+                if run.autopilot && run.role == Role::Main && !run.staged.is_empty() {
+                    self.flush(run).await?;
+                }
                 let (summary, text, data) = self.tool_browser_test(pid, run.task_id, a, cancel).await?;
                 Ok(ToolOutcome::ok(summary, text, data))
             }
