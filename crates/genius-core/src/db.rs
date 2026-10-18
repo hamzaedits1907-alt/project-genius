@@ -162,6 +162,88 @@ const MIGRATIONS: &[&str] = &[
         updated_at TEXT NOT NULL
     );
     "#,
+    // v3 — custom agents, teams, missions (see custom_agents.rs, missions.rs)
+    r#"
+    CREATE TABLE custom_agents (
+        id         TEXT PRIMARY KEY,
+        name       TEXT NOT NULL,
+        builtin    INTEGER NOT NULL DEFAULT 0,
+        json       TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+    );
+    CREATE TABLE agent_teams (
+        id                   TEXT PRIMARY KEY,
+        name                 TEXT NOT NULL,
+        description          TEXT NOT NULL DEFAULT '',
+        coordinator_agent_id TEXT NOT NULL,
+        agent_ids_json       TEXT NOT NULL DEFAULT '[]',
+        created_at           TEXT NOT NULL
+    );
+    CREATE TABLE missions (
+        id         TEXT PRIMARY KEY,
+        project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+        title      TEXT NOT NULL,
+        goal       TEXT NOT NULL,
+        team_id    TEXT,
+        status     TEXT NOT NULL,
+        summary    TEXT,
+        meta_json  TEXT NOT NULL DEFAULT '{}',
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+    );
+    CREATE INDEX idx_missions_project ON missions(project_id, created_at);
+    CREATE TABLE mission_tasks (
+        id                 TEXT PRIMARY KEY,
+        mission_id         TEXT NOT NULL REFERENCES missions(id) ON DELETE CASCADE,
+        ordinal            INTEGER NOT NULL DEFAULT 0,
+        title              TEXT NOT NULL,
+        description        TEXT NOT NULL DEFAULT '',
+        assignee_agent_id  TEXT,
+        depends_on_json    TEXT NOT NULL DEFAULT '[]',
+        priority           INTEGER NOT NULL DEFAULT 3,
+        status             TEXT NOT NULL,
+        result             TEXT,
+        blocker            TEXT,
+        changeset_id       TEXT,
+        workspace          TEXT,
+        verification_json  TEXT NOT NULL DEFAULT '{}',
+        started_at         TEXT,
+        ended_at           TEXT,
+        usage_json         TEXT NOT NULL DEFAULT '{}',
+        extra_json         TEXT NOT NULL DEFAULT '{}'
+    );
+    CREATE INDEX idx_mission_tasks_mission ON mission_tasks(mission_id, ordinal);
+    CREATE TABLE agent_logs (
+        id         TEXT PRIMARY KEY,
+        agent_id   TEXT NOT NULL,
+        mission_id TEXT,
+        task_id    TEXT,
+        project_id TEXT NOT NULL,
+        kind       TEXT NOT NULL,
+        text       TEXT NOT NULL,
+        data_json  TEXT NOT NULL DEFAULT '{}',
+        at         TEXT NOT NULL
+    );
+    CREATE INDEX idx_agent_logs_agent ON agent_logs(agent_id);
+    CREATE TABLE agent_usage (
+        agent_id         TEXT PRIMARY KEY,
+        tokens           INTEGER NOT NULL DEFAULT 0,
+        calls            INTEGER NOT NULL DEFAULT 0,
+        tasks_done       INTEGER NOT NULL DEFAULT 0,
+        tasks_failed     INTEGER NOT NULL DEFAULT 0,
+        last_activity_at TEXT
+    );
+    CREATE TABLE agent_memories (
+        id              TEXT PRIMARY KEY,
+        agent_id        TEXT NOT NULL,
+        project_id      TEXT NOT NULL,
+        content         TEXT NOT NULL,
+        provenance_json TEXT NOT NULL DEFAULT '{}',
+        created_at      TEXT NOT NULL
+    );
+    CREATE INDEX idx_agent_memories_agent ON agent_memories(agent_id, project_id);
+    "#,
 ];
 
 pub fn now() -> String {
@@ -387,7 +469,7 @@ impl Db {
     pub fn list_projects(&self) -> Result<Vec<ProjectRow>> {
         let conn = self.conn();
         let mut stmt = conn.prepare(
-            "SELECT * FROM projects ORDER BY COALESCE(last_opened_at, updated_at) DESC",
+            "SELECT * FROM projects WHERE kind != 'mission_workspace' ORDER BY COALESCE(last_opened_at, updated_at) DESC",
         )?;
         let rows = stmt.query_map([], Self::row_to_project)?;
         Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)

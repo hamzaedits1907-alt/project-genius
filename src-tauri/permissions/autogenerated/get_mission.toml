@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-get-mission"
+description = "Enables the get_mission command without any pre-configured scope."
+commands.allow = ["get_mission"]
+
+[[permission]]
+identifier = "deny-get-mission"
+description = "Denies the get_mission command without any pre-configured scope."
+commands.deny = ["get_mission"]

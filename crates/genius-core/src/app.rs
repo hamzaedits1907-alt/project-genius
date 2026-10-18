@@ -83,6 +83,8 @@ pub struct CallOptions {
     pub max_tokens: Option<u32>,
     pub thinking: Option<bool>,
     pub temperature: Option<f32>,
+    /// Use exactly this model (custom agents with a manual model policy); no routing.
+    pub model: Option<String>,
 }
 
 impl CallOptions {
@@ -165,6 +167,8 @@ pub struct Genius {
     pub(crate) task_effort: Mutex<HashMap<String, Effort>>,
     /// Optional request parameters each model rejected (shared by every client).
     param_memory: ParamMemory,
+    /// Custom agents / missions runtime state (see `custom_agents.rs`, `missions.rs`).
+    pub(crate) agents: crate::custom_agents::AgentsRuntime,
     /// Token usage per task (in memory, bounded).
     usage: Mutex<HashMap<String, UsageTotals>>,
     data_dir: PathBuf,
@@ -185,6 +189,8 @@ impl Genius {
         // A previous session may have been killed: never show stale "running" states.
         bus.close_stale()?;
         db.mark_orphaned_runs()?;
+        crate::custom_agents::seed_builtins(&db)?;
+        crate::missions::recover(&db, data_dir)?;
         let procs = ProcessManager::new(db.clone(), bus.clone());
         let rt = tokio::runtime::Handle::try_current().map_err(|_| GeniusError::Internal("Genius must be created inside a Tokio runtime".into()))?;
         Ok(Arc::new(Self {
@@ -204,6 +210,7 @@ impl Genius {
             model_stats: Default::default(),
             task_effort: Mutex::new(HashMap::new()),
             param_memory: ParamMemory::default(),
+            agents: Default::default(),
             usage: Mutex::new(HashMap::new()),
             data_dir: data_dir.to_path_buf(),
         }))
@@ -687,8 +694,11 @@ impl Genius {
         // Explicit per-call effort, else the effort chosen for this task (plan_work), else settings.
         let effort = opts.effort.or_else(|| self.task_effort(task_id)).unwrap_or(s.effort);
         let request_chars: usize = messages.iter().map(|m| m.content.len()).sum();
-        let chain = self.resolve_models_for(role, effort, request_chars).await?;
-        let manual = !s.is_auto();
+        let chain = match &opts.model {
+            Some(m) => vec![m.clone()],
+            None => self.resolve_models_for(role, effort, request_chars).await?,
+        };
+        let manual = !s.is_auto() || opts.model.is_some();
         let (budget, think) = effort_budget(effort, role, &s);
         let thinking = opts.thinking.unwrap_or(think);
         let level = if !thinking { "low" } else { match effort { Effort::Fast => "low", Effort::Balanced => "medium", Effort::Max => "high" } };

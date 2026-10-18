@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-pause-mission"
+description = "Enables the pause_mission command without any pre-configured scope."
+commands.allow = ["pause_mission"]
+
+[[permission]]
+identifier = "deny-pause-mission"
+description = "Denies the pause_mission command without any pre-configured scope."
+commands.deny = ["pause_mission"]

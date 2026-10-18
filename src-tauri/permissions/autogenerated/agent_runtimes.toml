@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-agent-runtimes"
+description = "Enables the agent_runtimes command without any pre-configured scope."
+commands.allow = ["agent_runtimes"]
+
+[[permission]]
+identifier = "deny-agent-runtimes"
+description = "Denies the agent_runtimes command without any pre-configured scope."
+commands.deny = ["agent_runtimes"]

@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-chat-workspace"
+description = "Enables the chat_workspace command without any pre-configured scope."
+commands.allow = ["chat_workspace"]
+
+[[permission]]
+identifier = "deny-chat-workspace"
+description = "Denies the chat_workspace command without any pre-configured scope."
+commands.deny = ["chat_workspace"]

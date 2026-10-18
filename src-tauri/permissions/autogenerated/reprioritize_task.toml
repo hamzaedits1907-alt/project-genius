@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-reprioritize-task"
+description = "Enables the reprioritize_task command without any pre-configured scope."
+commands.allow = ["reprioritize_task"]
+
+[[permission]]
+identifier = "deny-reprioritize-task"
+description = "Denies the reprioritize_task command without any pre-configured scope."
+commands.deny = ["reprioritize_task"]

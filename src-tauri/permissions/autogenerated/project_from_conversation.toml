@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-project-from-conversation"
+description = "Enables the project_from_conversation command without any pre-configured scope."
+commands.allow = ["project_from_conversation"]
+
+[[permission]]
+identifier = "deny-project-from-conversation"
+description = "Denies the project_from_conversation command without any pre-configured scope."
+commands.deny = ["project_from_conversation"]
