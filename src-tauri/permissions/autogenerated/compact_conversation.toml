@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-compact-conversation"
+description = "Enables the compact_conversation command without any pre-configured scope."
+commands.allow = ["compact_conversation"]
+
+[[permission]]
+identifier = "deny-compact-conversation"
+description = "Denies the compact_conversation command without any pre-configured scope."
+commands.deny = ["compact_conversation"]

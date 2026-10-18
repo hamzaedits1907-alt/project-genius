@@ -4,6 +4,10 @@ fn main() {
     // showing a user's dev server) get no access to any Genius command.
     tauri_build::try_build(tauri_build::Attributes::new().app_manifest(tauri_build::AppManifest::new().commands(&[
         "get_settings",
+        "compact_conversation",
+        "rewind_conversation",
+        "steer_agent",
+        "list_commands",
         "save_settings",
         "key_status",
         "save_api_key",

@@ -32,3 +32,61 @@ jobs:
       - run: npm run typecheck
       - run: npm run lint
       - run: npm test
+      - run: npm run build
+
+  windows-desktop:
+    # The real Windows desktop app: core tests on Windows, then the NSIS/MSI installers,
+    # uploaded as a workflow artifact (no release is created here).
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: swatinem/rust-cache@v2
+      - run: npm ci
+      - name: Core unit tests (Windows)
+        shell: bash
+        run: |
+          set -o pipefail
+          if ! cargo test -p genius-core --lib 2>&1 | tee core-tests.log; then
+            # Surface the failing tests and their panics as one annotation (readable via the API).
+            summary=$(sed -n '/^failures:$/,$p' core-tests.log | head -c 6000 | sed ':a;N;$!ba;s/%/%25/g;s/\r//g;s/\n/%0A/g')
+            echo "::error title=Windows core test failures::${summary}"
+            exit 1
+          fi
+      - name: Build the frontend (the Tauri app embeds dist/)
+        run: npm run build
+      - name: Tauri shell tests (command ACL)
+        shell: bash
+        run: |
+          set -o pipefail
+          if ! cargo test -p genius 2>&1 | tee shell-tests.log; then
+            summary=$(grep -E "^error|panicked|FAILED|failures:" -A6 shell-tests.log | head -c 5000 | sed ':a;N;$!ba;s/%/%25/g;s/\r//g;s/\n/%0A/g')
+            echo "::error title=Windows shell test failure::${summary}"
+            exit 1
+          fi
+      - name: Build Windows installers
+        shell: bash
+        run: |
+          set -o pipefail
+          if ! npx tauri build 2>&1 | tee tauri-build.log; then
+            summary=$(grep -E "^error|error\[|failed|Error" -B1 -A6 tauri-build.log | head -c 5000 | sed ':a;N;$!ba;s/%/%25/g;s/\r//g;s/\n/%0A/g')
+            echo "::error title=Windows installer build failure::${summary}"
+            exit 1
+          fi
+      - name: List installers
+        shell: bash
+        run: |
+          ls -la target/release/bundle/nsis target/release/bundle/msi
+          test -n "$(ls target/release/bundle/nsis/*-setup.exe)"
+          test -n "$(ls target/release/bundle/msi/*.msi)"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: genius-windows-installers-${{ github.sha }}
+          path: |
+            target/release/bundle/nsis/*-setup.exe
+            target/release/bundle/msi/*.msi
+          if-no-files-found: error

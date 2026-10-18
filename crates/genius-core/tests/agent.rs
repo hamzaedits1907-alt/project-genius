@@ -455,3 +455,29 @@ async fn autopilot_edits_verifies_fixes_and_rewinds() {
         assert!(!body.to_string().contains("SECRET_VALUE_123"));
     }
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn xml_dialect_writes_files_and_repeated_failures_are_blocked() {
+    let (_tmp, g, pid, _log, _server) = setup(|_system, last, msgs| {
+        let n = msgs.iter().filter(|m| m["content"].as_str().unwrap_or("").starts_with("<tool_result")).count();
+        match n {
+            // Nemotron/Qwen-style XML parameters: must write the file, not fail as invalid JSON
+            0 => "<tool_call>\n<function=write_file>\n<parameter=path>\nsrc/Widget.tsx\n</parameter>\n<parameter=content>\nexport const Widget = () => <div>{\"hi\"}</div>;\n</parameter>\n</function>\n</tool_call>".into(),
+            // the same failing call three times: the third is blocked, not executed
+            1..=3 => {
+                "<tool>{\"name\":\"edit_file\",\"args\":{\"path\":\"src/App.tsx\",\"old\":\"NOT PRESENT ANYWHERE\",\"new\":\"x\"}}</tool>".into()
+            }
+            _ => {
+                assert!(last.contains("BLOCKED"), "{last}");
+                "<final>Stopped; the anchor text does not exist.</final>".into()
+            }
+        }
+    })
+    .await;
+    let conv = g.db.create_conversation(&pid, "New conversation").unwrap();
+    let r = run(&g, &pid, &conv.id, "Add a widget", AgentMode::Build).await;
+    let steps = g.agent_steps(r["taskId"].as_str().unwrap()).unwrap();
+    assert_eq!(steps[0].tool, "write_file");
+    assert!(steps[0].ok, "{}", steps[0].summary);
+    assert!(steps.iter().filter(|s| s.summary.contains("blocked")).count() >= 1, "{:?}", steps.iter().map(|s| &s.summary).collect::<Vec<_>>());
+}
