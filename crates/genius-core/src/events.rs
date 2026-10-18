@@ -94,6 +94,8 @@ pub mod channels {
     pub const FS_CHANGED: &str = "genius://fs-changed";
     pub const PREVIEW: &str = "genius://preview";
     pub const PREVIEW_ERRORS: &str = "genius://preview-errors";
+    /// Ask the window to inspect the live preview: `{ projectId, requestId, url, widths }`.
+    pub const INSPECT_REQUEST: &str = "genius://inspect-request";
 }
 
 #[derive(Default)]

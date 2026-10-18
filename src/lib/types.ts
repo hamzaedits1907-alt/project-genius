@@ -508,6 +508,53 @@ export interface PreviewRuntimeError {
   count: number;
 }
 
+/** One problem found by the page inspector (see `inspect_page.js`). */
+export interface InspectionIssue {
+  kind: string;
+  message: string;
+  selector?: string | null;
+}
+
+/** What the page inspector measured at one viewport width (mirrors `inspection.rs`). */
+export interface PageReport {
+  url: string;
+  title: string;
+  lang: string | null;
+  viewport: { width: number; height: number };
+  scrollWidth: number;
+  scrollHeight: number;
+  rendered: { root: string; visibleElements: number; textLength: number; blank: boolean };
+  headings: { level: number; text: string }[];
+  landmarks: string[];
+  text: string;
+  layout: InspectionIssue[];
+  a11y: InspectionIssue[];
+  console: { errors: number; warnings: number };
+  truncated: boolean;
+}
+
+export interface ViewportReport extends PageReport {
+  label: 'current' | 'mobile' | 'tablet' | 'desktop';
+  requestedWidth: number | null;
+}
+
+export interface InspectionReport {
+  url: string;
+  title: string;
+  lang: string | null;
+  console: { errors: number; warnings: number };
+  viewports: ViewportReport[];
+  notes: string[];
+}
+
+/** Payload of `genius://inspect-request`. */
+export interface InspectRequest {
+  projectId: string;
+  requestId: string;
+  url?: string;
+  widths: number[];
+}
+
 /** GitHub Pages deployment of a project (persisted in project status as `deploy`). */
 export interface DeployStatus {
   step: 'building' | 'uploading' | 'enabling' | 'deployed' | 'failed';

@@ -62,6 +62,7 @@ fn main() {
         "report_preview_errors",
         "preview_errors",
         "clear_preview_errors",
+        "report_preview_inspection",
         "list_activity",
         "export_project",
         "readiness",

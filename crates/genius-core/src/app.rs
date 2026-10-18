@@ -153,6 +153,8 @@ pub struct Genius {
     previews: Arc<Mutex<HashMap<String, String>>>,
     repair_history: Arc<Mutex<HashMap<String, Vec<String>>>>,
     pub(crate) runtime_errors: crate::runtime_errors::Store,
+    /// Preview inspections waiting for the window's answer (see `inspection.rs`).
+    pub(crate) inspections: crate::inspection::Pending,
     /// Models that answered "unavailable" this session; routing skips them.
     pub(crate) failed_models: Mutex<HashSet<String>>,
     /// When the model list was last fetched (or tried) for routing because there was no cache.
@@ -196,6 +198,7 @@ impl Genius {
             previews: Arc::new(Mutex::new(HashMap::new())),
             repair_history: Arc::new(Mutex::new(HashMap::new())),
             runtime_errors: Default::default(),
+            inspections: Default::default(),
             failed_models: Mutex::new(HashSet::new()),
             models_fetch_at: Mutex::new(None),
             model_stats: Default::default(),

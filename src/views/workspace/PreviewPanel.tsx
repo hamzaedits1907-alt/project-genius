@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { AlertTriangle, ChevronDown, ChevronRight, Crosshair, ExternalLink, Laptop, Lock, Monitor, Play, RotateCw, Smartphone, Tablet, Wand2, X } from 'lucide-react';
 import { openUrl } from '@tauri-apps/plugin-opener';
 import { api, errorMessage } from '../../lib/api';
+import { registerPreviewTarget } from '../../lib/inspection';
 import { errorLocation, fixMessage, kindLabel, parseRuntimeReport, problemSummary } from '../../lib/runtime';
 import type { PreviewRuntimeError } from '../../lib/types';
 import { useApp } from '../../store/app';
@@ -24,6 +25,7 @@ export default function PreviewPanel({ onStart }: { onStart: () => void }) {
   const [device, setDevice] = useState<keyof typeof DEVICES>('full');
   const picking = useWorkspace((s) => s.picking);
   const frameRef = useRef<HTMLIFrameElement>(null);
+  const deviceRef = useRef<HTMLDivElement>(null);
   const devRun = order.map((id) => runs[id]).find((r) => r?.info.op === 'dev');
   const origin = preview.url ? new URL(preview.url).origin : null;
 
@@ -72,6 +74,17 @@ export default function PreviewPanel({ onStart }: { onStart: () => void }) {
       flushTimer.current = null;
     };
   }, [origin, set]);
+
+  // Genius can look at the running app (visual verification, `genius://inspect-request`).
+  const ready = preview.status === 'ready';
+  useEffect(() => {
+    return registerPreviewTarget(() => {
+      const frame = frameRef.current;
+      const container = deviceRef.current;
+      if (!ready || !origin || !frame || !container) return null;
+      return { frame, container, origin, projectId: useWorkspace.getState().projectId };
+    });
+  }, [ready, origin]);
 
   const togglePick = () => {
     const win = frameRef.current?.contentWindow;
@@ -139,7 +152,7 @@ export default function PreviewPanel({ onStart }: { onStart: () => void }) {
             Waiting for the server to accept connections. Output is in the Terminal tab.
           </Empty>
         ) : (
-          <div className="device-frame" style={{ width: DEVICES[device], maxWidth: '100%' }}>
+          <div ref={deviceRef} className="device-frame" style={{ width: DEVICES[device], maxWidth: '100%' }}>
             <iframe
               ref={frameRef}
               key={`${preview.url}#${preview.nonce}`}

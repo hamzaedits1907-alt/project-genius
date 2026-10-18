@@ -97,6 +97,7 @@ export const api = {
   reportPreviewErrors: (projectId: string, errors: T.PreviewRuntimeError[]) => call<T.PreviewRuntimeError[]>('report_preview_errors', { projectId, errors }),
   previewErrors: (projectId: string) => call<T.PreviewRuntimeError[]>('preview_errors', { projectId }),
   clearPreviewErrors: (projectId: string) => call<void>('clear_preview_errors', { projectId }),
+  reportPreviewInspection: (requestId: string, report: T.InspectionReport | null, error: string | null) => call<void>('report_preview_inspection', { requestId, report, error }),
 
   // activity, export
   listActivity: (projectId: string | null, limit = 1500) => call<T.ActivityEvent[]>('list_activity', { projectId, limit }),
