@@ -49,6 +49,9 @@ use tokio_util::sync::CancellationToken;
 
 /// Running custom agents (profile-bound runs used by missions): see `custom_agents.rs`.
 pub(crate) mod custom_run;
+// Genius Chat and Genius Research run on this same loop (as the `Chat` / `Research` roles).
+#[path = "chat_mode.rs"]
+pub mod chat_mode;
 
 pub const AGENT_STEPS_CHANNEL: &str = "genius://agent-step";
 pub const AGENT_STEERED_CHANNEL: &str = "genius://agent-steered";
@@ -117,6 +120,10 @@ pub enum Role {
     Tester,
     Explorer,
     Debugger,
+    /// Genius Chat: general conversation, no project editing or code execution (chat_mode.rs).
+    Chat,
+    /// Genius Research: web research with a sources ledger (chat_mode.rs).
+    Research,
 }
 
 impl Role {
@@ -130,6 +137,8 @@ impl Role {
             Role::Tester => "tester",
             Role::Explorer => "explorer",
             Role::Debugger => "debugger",
+            Role::Chat => "chat",
+            Role::Research => "research",
         }
     }
     pub fn parse(s: &str) -> Option<Role> {
@@ -150,12 +159,20 @@ impl Role {
             (Role::Main, Effort::Balanced) => 40,
             (Role::Main, Effort::Max) => 64,
             (Role::Explorer, _) => 12,
+            (Role::Chat, Effort::Fast) => 6,
+            (Role::Chat, Effort::Balanced) => 10,
+            (Role::Chat, Effort::Max) => 14,
+            (Role::Research, Effort::Fast) => 18,
+            (Role::Research, Effort::Balanced) => 28,
+            (Role::Research, Effort::Max) => 40,
             _ => 10,
         }
     }
     fn allows(&self, tool: &str) -> bool {
         match self {
             Role::Main => true,
+            Role::Chat => chat_mode::CHAT_TOOLS.contains(&tool),
+            Role::Research => chat_mode::RESEARCH_TOOLS.contains(&tool),
             // Subagents may only inspect: no checks, no memory writes, no further delegation.
             _ => TOOLS.iter().any(|t| t.name == tool && t.read_only && t.name != "delegate"),
         }
@@ -169,6 +186,7 @@ impl Role {
             Role::Designer => "You are the Designer subagent of Genius, a senior product/brand designer. Inspect the project (existing styles, components, content) and produce a concrete, buildable design direction: brand mood in a sentence; a color palette as CSS custom properties (light and dark values) with the text/background pairs you checked and their approximate contrast ratios (>= 4.5:1 for body text); font stacks (system fonts or Google Fonts with the exact <link> for index.html) and a fluid type scale using clamp(); an 8px spacing scale; radii, shadows and transitions; layout for each page/section; component styling (buttons, cards, inputs, nav) with hover/focus/active states; motion (respecting prefers-reduced-motion); responsive breakpoints; dark mode. Be specific (exact values), consistent and modern. Do not write full files.",
             Role::Tester => "You are the Tester subagent of Genius. Inspect the code and existing tests (Vitest + @testing-library/react) and report: what is untested, the highest-value test cases to add (name, setup, assertion) for behaviour, edge cases and accessibility, and any flaky or weak tests. Be concrete, with file paths. Do not write full files.",
             Role::Explorer => "You are the Explorer subagent of Genius. Answer the assignment by searching and reading the codebase efficiently (batch several read_file/search calls per turn). Report the relevant files, components, functions and how they connect, with paths and line numbers. Be concise and factual. Do not write code.",
+            Role::Chat | Role::Research => chat_mode::brief(*self),
             Role::Debugger => "You are the Debugger subagent of Genius. Find the root cause of the failure in the assignment from real evidence: last_run_output, preview_errors and the code. Report: the root cause (1-3 sentences, with file:line), the evidence, and the exact minimal fix (which lines to change and how). Do not guess beyond the evidence.",
         }
     }
@@ -1118,6 +1136,9 @@ impl Genius {
         if conv.project_id != project_id {
             return Err(GeniusError::Validation("That conversation belongs to another project.".into()));
         }
+        if self.db.get_project(project_id)?.kind == chat_mode::GENERAL_KIND {
+            return Err(GeniusError::Validation("The general workspace is not a code project; use Genius Chat or Research there.".into()));
+        }
         self.has_usable_model()?;
         self.client()?;
         let title = format!("Genius: {}", req.message.trim().lines().next().unwrap_or("").chars().take(60).collect::<String>());
@@ -1135,7 +1156,7 @@ impl Genius {
         if message.trim().is_empty() {
             return Err(GeniusError::Validation("Write a message first.".into()));
         }
-        if !self.active_tasks(None).iter().any(|t| t.id == task_id && t.kind == "agent") {
+        if !self.active_tasks(None).iter().any(|t| t.id == task_id && matches!(t.kind.as_str(), "agent" | "chat" | "research")) {
             return Err(GeniusError::NotFound("running Genius task (it may have just finished)".into()));
         }
         STEERING.lock().unwrap().entry(task_id.to_string()).or_default().push(message.trim().to_string());
@@ -1307,7 +1328,7 @@ impl Genius {
             let last = used >= max || iteration >= max + MAX_PROTOCOL_REFUNDS;
             iteration += 1;
             run.turn = iteration;
-            if run.role == Role::Main {
+            if matches!(run.role, Role::Main | Role::Chat | Role::Research) {
                 self.take_steering(run, messages)?;
             }
             if last {
@@ -1688,8 +1709,11 @@ impl Genius {
         } else if run.failed_calls.get(&key).is_some_and(|n| *n >= 2) {
             // Retrying a call that failed twice with nothing changed in between cannot succeed.
             Ok(ToolOutcome { ok: false, summary: format!("{name} blocked: identical call failed twice"), text: format!("BLOCKED: this exact {name} call has already failed twice and nothing has changed since. Do not send it again. Read the earlier error, fix the cause (different arguments, read the file first, or another tool), or explain the blocker in <final>."), data: json!({ "blocked": true }) })
+        } else if let Some(handled) = self.chat_intercept(run, name, args) {
+            handled // Chat/Research: outbound-data guard, conversation-scoped attachments
         } else {
-            self.dispatch_tool(run, name, args, cancel).await
+            let out = self.dispatch_tool(run, name, args, cancel).await;
+            self.chat_after_tool(run, name, args, out)
         };
         *run.seen.entry(key).or_default() += 1;
         self.record_step(run, name, args, started, &outcome)?;
@@ -2175,7 +2199,7 @@ impl Genius {
                 self.require_internet()?;
                 let mut ev = self.bus.start(Some(pid), Some(run.task_id), EventKind::Ai, EventStatus::Running, format!("Fetch {}", a.url.chars().take(100).collect::<String>()), json!({ "web": "fetch", "url": a.url, "agent": run.role.as_str() }));
                 let res = tokio::select! {
-                    r = crate::web::fetch(&a.url) => r,
+                    r = crate::web::fetch_with(&a.url, self.web_policy()) => r,
                     _ = cancel.cancelled() => Err(GeniusError::Cancelled),
                 };
                 match res {

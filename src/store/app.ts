@@ -5,6 +5,8 @@ import type { ApprovalRequest, AppInfo, KeyStatus, Settings, UpdateInfo } from '
 export type Route =
   | { name: 'home' }
   | { name: 'create' }
+  | { name: 'chat' }
+  | { name: 'research' }
   | { name: 'settings'; tab?: SettingsTab }
   | { name: 'project'; id: string }
   | { name: 'agents'; tab?: 'agents' | 'missions' | 'teams' };

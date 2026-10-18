@@ -15,7 +15,7 @@ impl Genius {
     /// rejected, so the project returns to its state before that message.
     pub fn rewind_conversation(&self, conversation_id: &str, message_id: &str, revert_files: bool) -> Result<Value> {
         let conv = self.db.get_conversation(conversation_id)?;
-        if self.active_tasks(Some(&conv.project_id)).iter().any(|t| t.kind == "agent") {
+        if self.active_tasks(Some(&conv.project_id)).iter().any(|t| matches!(t.kind.as_str(), "agent" | "chat" | "research")) {
             return Err(GeniusError::Conflict("Genius is still working in this project. Stop it first, then rewind.".into()));
         }
         let msgs = self.db.list_conversation_messages(conversation_id, 100_000)?;

@@ -911,3 +911,40 @@ pub fn retry_mission_task(g: G, task_id: String) -> Result<Mission> {
 pub fn approve_mission_task(g: G, task_id: String, approved: bool) -> Result<Mission> {
     g.approve_mission_task(&task_id, approved)
 }
+
+// ---------------------------------------------------------------- Genius Chat / Research
+
+#[tauri::command]
+pub fn chat_workspace(g: G) -> Result<ProjectRow> {
+    g.general_workspace()
+}
+
+#[tauri::command]
+pub fn list_chat_conversations(g: G, mode: Option<String>, query: Option<String>) -> Result<Vec<genius_core::chat_mode::ChatConversation>> {
+    g.list_chat_conversations(mode.as_deref(), query.as_deref())
+}
+
+#[tauri::command]
+pub fn create_chat_conversation(g: G, mode: String, title: Option<String>) -> Result<genius_core::chat_mode::ChatConversation> {
+    g.create_chat_conversation(&mode, title.as_deref())
+}
+
+#[tauri::command]
+pub fn start_chat(g: G, conversation_id: String, request: genius_core::chat_mode::ChatRequest) -> Result<TaskInfo> {
+    g.start_chat(&conversation_id, request)
+}
+
+#[tauri::command]
+pub fn research_sources(g: G, conversation_id: String) -> Result<Vec<genius_core::research::SourceRow>> {
+    g.db.list_sources(&conversation_id)
+}
+
+#[tauri::command]
+pub async fn project_from_conversation(g: G<'_>, conversation_id: String, name: Option<String>, source_message_id: Option<String>) -> Result<ProjectRow> {
+    g.project_from_conversation(&conversation_id, name.as_deref(), source_message_id.as_deref(), &CancellationToken::new()).await
+}
+
+#[tauri::command]
+pub fn start_research_spec(g: G, conversation_id: String) -> Result<TaskInfo> {
+    g.start_research_spec(&conversation_id)
+}

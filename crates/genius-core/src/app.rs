@@ -171,6 +171,8 @@ pub struct Genius {
     pub(crate) agents: crate::custom_agents::AgentsRuntime,
     /// Token usage per task (in memory, bounded).
     usage: Mutex<HashMap<String, UsageTotals>>,
+    /// What outbound web fetches may reach (public internet only, except in tests; see web.rs).
+    pub(crate) web_policy: Mutex<crate::web::WebPolicy>,
     data_dir: PathBuf,
     /// Runtime used for background work. Captured at construction so tasks can be spawned
     /// from any thread (Tauri runs synchronous commands on the main thread, outside Tokio).
@@ -186,6 +188,7 @@ impl Genius {
     }
 
     pub fn with_db(db: Arc<Db>, data_dir: &Path, emitter: Arc<dyn crate::events::Emitter>, secrets: Arc<dyn SecretStore>) -> Result<Arc<Self>> {
+        crate::research::ensure_schema(&db)?; // chat/research tables (idempotent)
         let bus = EventBus::new(db.clone(), emitter);
         // A previous session may have been killed: never show stale "running" states.
         bus.close_stale()?;
@@ -213,6 +216,7 @@ impl Genius {
             param_memory: ParamMemory::default(),
             agents: Default::default(),
             usage: Mutex::new(HashMap::new()),
+            web_policy: Mutex::new(crate::web::WebPolicy::default()),
             data_dir: data_dir.to_path_buf(),
         }))
     }
@@ -646,6 +650,10 @@ impl Genius {
         F: FnOnce(String, CancellationToken) -> Fut + Send + 'static,
         Fut: std::future::Future<Output = Result<Value>> + Send + 'static,
     {
+        // The hidden general workspace runs chat/research tasks only, never code tasks.
+        if !matches!(kind, "chat" | "research" | "spec") && self.db.get_project(project_id).is_ok_and(|p| p.kind == crate::agent::chat_mode::GENERAL_KIND) {
+            return Err(GeniusError::Validation("The general chat workspace is not a code project.".into()));
+        }
         {
             let tasks = self.tasks.lock().unwrap();
             if let Some(t) = tasks.values().find(|t| t.info.project_id == project_id && t.info.kind != "verify" && kind != "verify") {

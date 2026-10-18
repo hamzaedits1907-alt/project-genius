@@ -469,7 +469,7 @@ impl Db {
     pub fn list_projects(&self) -> Result<Vec<ProjectRow>> {
         let conn = self.conn();
         let mut stmt = conn.prepare(
-            "SELECT * FROM projects WHERE kind != 'mission_workspace' ORDER BY COALESCE(last_opened_at, updated_at) DESC",
+            "SELECT * FROM projects WHERE kind NOT IN ('mission_workspace', 'chat') ORDER BY COALESCE(last_opened_at, updated_at) DESC",
         )?;
         let rows = stmt.query_map([], Self::row_to_project)?;
         Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)

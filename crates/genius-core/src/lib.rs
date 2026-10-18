@@ -30,6 +30,7 @@ pub mod nvidia;
 pub mod process;
 pub mod pages;
 pub mod redact;
+pub mod research;
 pub mod runtime_errors;
 pub mod router;
 pub mod scaffold;
@@ -49,4 +50,5 @@ pub mod vcs;
 pub mod web;
 pub mod workspace;
 
+pub use agent::chat_mode;
 pub use error::{GeniusError, Result};

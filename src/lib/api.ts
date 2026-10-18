@@ -175,6 +175,16 @@ export const api = {
   importZipProject: (path: string) => call<T.Project>('import_zip_project', { path }),
   probeVision: (model: string) => call<{ ok: boolean; answer: string; error: string | null; at: string }>('probe_vision', { model }),
 
+  // Genius Chat / Research (conversations live in a hidden general workspace)
+  chatWorkspace: () => call<T.Project>('chat_workspace'),
+  listChatConversations: (mode: T.ChatMode | null, query?: string) => call<T.ChatConversation[]>('list_chat_conversations', { mode, query: query ?? null }),
+  createChatConversation: (mode: T.ChatMode, title?: string) => call<T.ChatConversation>('create_chat_conversation', { mode, title: title ?? null }),
+  startChat: (conversationId: string, request: T.ChatRequest) => call<T.TaskInfo>('start_chat', { conversationId, request }),
+  researchSources: (conversationId: string) => call<T.ResearchSource[]>('research_sources', { conversationId }),
+  projectFromConversation: (conversationId: string, name?: string, sourceMessageId?: string) =>
+    call<T.Project>('project_from_conversation', { conversationId, name: name ?? null, sourceMessageId: sourceMessageId ?? null }),
+  startResearchSpec: (conversationId: string) => call<T.TaskInfo>('start_research_spec', { conversationId }),
+
   // integrations
   integrationStatuses: () => call<{ id: string; name: string; status: string; meta: Record<string, unknown> | null; spec: Record<string, unknown> }[]>('integration_statuses'),
   supabaseConnect: (token: string) => call<{ connected: boolean; projects: T.SupabaseProject[] }>('supabase_connect', { token }),

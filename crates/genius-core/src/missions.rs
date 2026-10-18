@@ -1231,7 +1231,11 @@ impl Genius {
             let _ = self.update_task(task_id, |x| x.attempts = attempt);
             let out = match self.run_custom_agent(input, cancel).await {
                 Ok(o) => o,
-                Err(e) => crate::agent::custom_run::CustomRunOutput { end: RunEnd::Failed(e.to_string()), text: String::new(), usage: [0; 4], turns: 0, checks: vec![], acceptance: Value::Null, applied_paths: vec![], violations: vec![] },
+                // A cancellation that interrupts the run is a cancellation, not a failure.
+                Err(e) => {
+                    let end = if matches!(e, GeniusError::Cancelled) || cancel.is_cancelled() { RunEnd::Cancelled } else { RunEnd::Failed(e.to_string()) };
+                    crate::agent::custom_run::CustomRunOutput { end, text: String::new(), usage: [0; 4], turns: 0, checks: vec![], acceptance: Value::Null, applied_paths: vec![], violations: vec![] }
+                }
             };
             for i in 0..4 {
                 total[i] += out.usage[i];
@@ -1254,7 +1258,11 @@ impl Genius {
         self.agent_log(&agent.id, Some(mission_id), Some(task_id), &live, "result", &out.text, json!({ "usage": { "tokens": total[2], "calls": total[3] }, "turns": turns, "checks": out.checks, "acceptance": out.acceptance, "violations": out.violations }));
 
         let result = out.text.clone();
-        match out.end {
+        let out_end = match out.end {
+            RunEnd::Failed(_) if cancel.is_cancelled() => RunEnd::Cancelled,
+            e => e,
+        };
+        match out_end {
             RunEnd::Cancelled => Ok(Some(TaskEnd::Cancelled { result })),
             RunEnd::Failed(msg) => Ok(Some(TaskEnd::Failed { result, blocker: format!("the agent failed: {msg}"), verification: Verification::default(), changeset_id: None })),
             RunEnd::Budget(why) => {

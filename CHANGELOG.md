@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.4.0]
+
+Genius becomes a platform: chat, research, agents and a real browser.
+
+- **Genius Chat and Genius Research.** A general-purpose assistant that needs no project, with saved conversations, search, attachments, tables and citations. Research reads real web pages and keeps a sources ledger: every citation points to a page that was actually fetched, uncited claims are flagged, and a research report can become a project spec.
+- **Custom agents, teams and Mission Control.** Create agents with their own instructions, tools, folder scope, network permission, budget and approval mode; assign tasks or whole missions. A coordinator plans a dependency graph, tasks run in isolated copies of your project, conflicts are never overwritten, changes need your approval, and everything can be cancelled or retried. Statuses are real.
+- **Genius can open your app in a real browser.** It checks the console, failed requests, interactions (click, type, assert), responsive layouts and accessibility, and reports exactly what was and was not checked.
+- **Stronger regression tests.** A realistic dashboard (widgets, theme switch, persistence, mobile layout) is built, run in a real browser, changed and rolled back automatically, plus tests for missing exports, unresolved imports, wrong hook contracts and missing dependencies.
+- **Safer web access.** More SSRF protections (IPv6 tricks, numeric hosts, mixed DNS answers) and prompt-injection notices for web pages.
+- **Updates:** safer downloads (checked before they replace anything), automatic rollback, and Windows update verification in CI.
+
 ## [0.3.2]
 
 Genius gets far more reliable at using its tools.

@@ -11,7 +11,12 @@ export function Markdown({ text }: { text: string }) {
   return <div className="md">{blocks(text)}</div>;
 }
 
-type Block = { kind: 'code'; lang: string; body: string } | { kind: 'h'; level: number; body: string } | { kind: 'ul' | 'ol'; items: string[] } | { kind: 'quote'; body: string } | { kind: 'p'; body: string } | { kind: 'hr' };
+type Block = { kind: 'code'; lang: string; body: string } | { kind: 'h'; level: number; body: string } | { kind: 'ul' | 'ol'; items: string[] } | { kind: 'quote'; body: string } | { kind: 'p'; body: string } | { kind: 'hr' } | { kind: 'table'; head: string[]; rows: string[][] } | { kind: 'foot'; items: { n: string; text: string }[] };
+
+const cells = (l: string) => l.trim().replace(/^\|/, '').replace(/\|$/, '').split('|').map((c) => c.trim());
+const isSep = (l: string | undefined) => !!l && /^\s*\|?\s*:?-{2,}:?\s*(\|\s*:?-{2,}:?\s*)*\|?\s*$/.test(l) && l.includes('-');
+const isTableStart = (lines: string[], i: number) => lines[i].includes('|') && isSep(lines[i + 1]);
+const FOOT = /^\s*\[(\d{1,3})\]:?\s+(\S.*)$/;
 
 export function parseBlocks(text: string): Block[] {
   const lines = text.replace(/\r\n/g, '\n').split('\n');
@@ -30,6 +35,25 @@ export function parseBlocks(text: string): Block[] {
     }
     if (!line.trim()) {
       i++;
+      continue;
+    }
+    if (isTableStart(lines, i)) {
+      const head = cells(line);
+      const rows: string[][] = [];
+      i += 2;
+      while (i < lines.length && lines[i].trim() && lines[i].includes('|')) rows.push(cells(lines[i++]));
+      out.push({ kind: 'table', head, rows });
+      continue;
+    }
+    if (FOOT.test(line)) {
+      const items: { n: string; text: string }[] = [];
+      while (i < lines.length) {
+        const m = lines[i].match(FOOT);
+        if (!m) break;
+        items.push({ n: m[1], text: m[2] });
+        i++;
+      }
+      out.push({ kind: 'foot', items });
       continue;
     }
     const h = line.match(/^(#{1,4})\s+(.*)$/);
@@ -68,7 +92,7 @@ export function parseBlocks(text: string): Block[] {
       continue;
     }
     const body: string[] = [];
-    while (i < lines.length && lines[i].trim() && !/^\s*```/.test(lines[i]) && !/^#{1,4}\s/.test(lines[i]) && !/^\s*([-*+•]|\d+[.)])\s+/.test(lines[i])) body.push(lines[i++]);
+    while (i < lines.length && lines[i].trim() && !/^\s*```/.test(lines[i]) && !/^#{1,4}\s/.test(lines[i]) && !/^\s*([-*+•]|\d+[.)])\s+/.test(lines[i]) && !isTableStart(lines, i)) body.push(lines[i++]);
     if (!body.length) body.push(lines[i++]);
     out.push({ kind: 'p', body: body.join('\n') });
   }
@@ -90,6 +114,31 @@ function blocks(text: string): ReactNode {
         return <blockquote key={i}>{inline(b.body)}</blockquote>;
       case 'hr':
         return <hr key={i} />;
+      case 'table':
+        return (
+          <div className="md-table" key={i}>
+            <table>
+              <thead>
+                <tr>{b.head.map((c, j) => <th key={j}>{inline(c)}</th>)}</tr>
+              </thead>
+              <tbody>
+                {b.rows.map((r, j) => (
+                  <tr key={j}>{r.map((c, k) => <td key={k}>{inline(c)}</td>)}</tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        );
+      case 'foot':
+        return (
+          <ol className="footnotes" key={i} aria-label="Sources">
+            {b.items.map((it) => (
+              <li key={it.n} id={`src-${it.n}`} value={Number(it.n)}>
+                {inline(it.text)}
+              </li>
+            ))}
+          </ol>
+        );
       default:
         return <p key={i}>{inline(b.body)}</p>;
     }
@@ -121,7 +170,7 @@ function CodeBlock({ lang, body }: { lang: string; body: string }) {
   );
 }
 
-const TOKEN = /(`[^`]+`)|(\*\*[^*]+\*\*)|(__[^_]+__)|(\*[^*\s][^*]*\*)|(_[^_\s][^_]*_)|(\[[^\]]+\]\((https?:\/\/[^)\s]+)\))|(https?:\/\/[^\s)]+)/g;
+const TOKEN = /(`[^`]+`)|(\*\*[^*]+\*\*)|(__[^_]+__)|(\*[^*\s][^*]*\*)|(_[^_\s][^_]*_)|(\[[^\]]+\]\((https?:\/\/[^)\s]+)\))|(https?:\/\/[^\s)]+)|((?<!\w)\[\d{1,3}\](?!\())/g;
 
 export function inline(text: string): ReactNode {
   const parts: ReactNode[] = [];
@@ -136,6 +185,16 @@ export function inline(text: string): ReactNode {
     else if (m[4] || m[5]) parts.push(<em key={k++}>{t.slice(1, -1)}</em>);
     else if (m[6]) parts.push(<Link key={k++} href={m[7]}>{t.slice(1, t.indexOf(']'))}</Link>);
     else if (m[8]) parts.push(<Link key={k++} href={t}>{t}</Link>);
+    else if (m[9]) {
+      const n = t.slice(1, -1);
+      parts.push(
+        <sup key={k++} className="cite">
+          <a href={`#src-${n}`} title={`Source ${n}`} onClick={(e) => { e.preventDefault(); window.dispatchEvent(new CustomEvent('genius-cite', { detail: Number(n) })); }}>
+            {n}
+          </a>
+        </sup>,
+      );
+    }
     last = at + t.length;
   }
   if (last < text.length) parts.push(withBreaks(text.slice(last), k++));
