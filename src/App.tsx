@@ -1,5 +1,8 @@
 import { Component, useEffect, type ErrorInfo, type ReactNode } from 'react';
-import { ArrowDownCircle, Command, FolderKanban, Home as HomeIcon, Plus, Settings as SettingsIcon, X } from 'lucide-react';
+import { ArrowDownCircle, Command, FolderKanban, Home as HomeIcon, MessageCircle, Plus, Search as SearchIcon, Settings as SettingsIcon, X } from 'lucide-react';
+import ChatHome from './views/chat/ChatHome';
+import ResearchView from './views/chat/ResearchView';
+import { subscribeChat } from './store/chat';
 import { useApp } from './store/app';
 import { subscribeAll } from './store/events';
 import { useSubscription } from './lib/effects';
@@ -96,6 +99,7 @@ export default function App() {
   // Backend events: released even if the app unmounts before `listen` resolves (StrictMode
   // mounts twice in development; the old code leaked the first set and delivered every event twice).
   useSubscription('backend events', subscribeAll, []);
+  useSubscription('chat events', subscribeChat, []);
   useEffect(() => {
     void loadSettings();
     void refreshApprovals();
@@ -133,6 +137,12 @@ export default function App() {
         <button className={route.name === 'home' ? 'on' : ''} onClick={() => navigate({ name: 'home' })} title="Home" aria-label="Home">
           <HomeIcon size={19} />
         </button>
+        <button className={route.name === 'chat' ? 'on' : ''} onClick={() => navigate({ name: 'chat' })} title="Chat" aria-label="Chat mode">
+          <MessageCircle size={19} />
+        </button>
+        <button className={route.name === 'research' ? 'on' : ''} onClick={() => navigate({ name: 'research' })} title="Research" aria-label="Research mode">
+          <SearchIcon size={19} />
+        </button>
         <button className={route.name === 'create' ? 'on' : ''} onClick={() => navigate({ name: 'create' })} title="New project (Ctrl+Shift+N)" aria-label="New project">
           <Plus size={19} />
         </button>
@@ -160,6 +170,8 @@ export default function App() {
         <ErrorBoundary key={route.name} view={route.name}>
           {route.name === 'home' && <Home />}
           {route.name === 'create' && <CreateProject />}
+          {route.name === 'chat' && <ChatHome />}
+          {route.name === 'research' && <ResearchView />}
           {route.name === 'settings' && <SettingsView initialTab={route.tab} />}
           {route.name === 'project' && <Workspace projectId={route.id} />}
         </ErrorBoundary>

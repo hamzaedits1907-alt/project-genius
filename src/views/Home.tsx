@@ -12,6 +12,7 @@ import { GeniusAvatar } from '../components/GeniusAvatar';
 import { markAutoBuild } from '../store/workspace';
 import { BlueprintGallery } from '../components/BlueprintGallery';
 import { EnhanceButton } from '../components/EnhanceButton';
+import { ModeSwitch } from './chat/ModeSwitch';
 import { blueprintById, type Blueprint } from '../lib/blueprints';
 
 const IDEAS = [
@@ -159,6 +160,7 @@ export default function Home() {
     <div className="page">
       <div className="page-inner">
         <div className="home-hero">
+          <ModeSwitch mode="code" />
           <GeniusAvatar size={96} mood={starting || enhancing ? 'working' : idea.trim() ? 'listening' : 'idle'} />
           <div className="home-greet">{greeting()} I'm Genius.</div>
           <h1>What should we build today?</h1>

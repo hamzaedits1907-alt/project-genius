@@ -682,3 +682,48 @@ export interface SupabaseProject {
   status: string;
   organizationId: string;
 }
+
+// ---- Genius Chat / Research
+export type ChatMode = 'chat' | 'research';
+
+export interface ChatConversation extends Conversation {
+  mode: ChatMode;
+  snippet: string;
+  /** After "Start a project": `{ projectId, projectName, conversationId }`. */
+  origin: { projectId?: string; projectName?: string; conversationId?: string } | null;
+}
+
+export interface ChatRequest {
+  message: string;
+  attachmentIds: string[];
+  effort?: Effort;
+}
+
+export interface ResearchSource {
+  id: string;
+  conversationId: string;
+  taskId: string | null;
+  n: number;
+  url: string;
+  requestedUrl: string;
+  title: string;
+  status: number;
+  fetchedAt: string;
+  contentHash: string;
+  snippet: string;
+  usedFor: string;
+  official: boolean;
+  flags: string[];
+}
+
+export interface CitationValidation {
+  ok: boolean;
+  facts: number;
+  assumptions: number;
+  uncertain: number;
+  uncited: string[];
+  unknownCitations: number[];
+  unfetchedUrls: string[];
+  cited: number[];
+  repaired: boolean;
+}
