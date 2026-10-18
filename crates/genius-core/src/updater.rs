@@ -2,8 +2,21 @@
 //!
 //! [`check`] asks the GitHub API for the latest release, compares versions and picks the
 //! installer asset for the running platform. [`download_and_install`] streams that asset
-//! into a temp directory, verifies its SHA-256 when the release publishes one, and launches
-//! the platform installer. Downloads are restricted to GitHub-owned hosts.
+//! into a temp directory (`<name>.part`, renamed only after every check passed), verifies its
+//! SHA-256 and launches the platform installer. Downloads are restricted to GitHub-owned hosts.
+//!
+//! What the checksum does and does not prove: the `.sha256` file is published in the same
+//! release as the installer, so it detects corrupted or truncated downloads and a substituted
+//! file on the CDN, but it is **integrity, not authenticity**. Anyone able to publish release
+//! assets could publish a matching pair. Authenticity needs a signature checked against a public
+//! key shipped inside the app (Tauri's minisign updater signatures, which require a private key
+//! secret in CI that this repository does not have yet; see `docs/RELEASING.md`). Nothing here
+//! pretends otherwise. The Windows installer is not Authenticode-signed either.
+//!
+//! A failed update never touches the current installation: downloads land in the temp
+//! directory, an AppImage is replaced by an atomic rename with a `.bak` copy of the previous
+//! file kept until the new version has started ([`finish_update`]), and [`install`] only runs
+//! files that [`download_into`] left in the update directory.
 //!
 //! Private repositories: GitHub answers 404 to anonymous requests, so when a GitHub token is
 //! available (`GENIUS_UPDATE_TOKEN`, `GH_TOKEN`/`GITHUB_TOKEN`, or the GitHub CLI login Genius
@@ -322,8 +335,21 @@ pub async fn check_at(api_base: &str, current_version: &str) -> Result<UpdateInf
 
 /// [`check`] against `api_base` with an optional token.
 pub async fn check_with(api_base: &str, current_version: &str, token: Option<&str>) -> Result<UpdateInfo> {
+    fetch_release(api_base, "latest", current_version, token).await
+}
+
+/// Like [`check_with`] but for one specific release tag instead of the latest release
+/// (used by the live verification workflow to test an update to a chosen version).
+pub async fn check_tag_with(api_base: &str, tag: &str, current_version: &str, token: Option<&str>) -> Result<UpdateInfo> {
+    if tag.is_empty() || tag.len() > 64 || !tag.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_' | '+')) {
+        return Err(GeniusError::Validation(format!("invalid release tag: {tag}")));
+    }
+    fetch_release(api_base, &format!("tags/{tag}"), current_version, token).await
+}
+
+async fn fetch_release(api_base: &str, endpoint: &str, current_version: &str, token: Option<&str>) -> Result<UpdateInfo> {
     let client = http_client()?;
-    let url = format!("{}/repos/{}/releases/latest", api_base.trim_end_matches('/'), REPO);
+    let url = format!("{}/repos/{}/releases/{}", api_base.trim_end_matches('/'), REPO, endpoint);
     let get = |token: Option<&str>| {
         let mut req = client
             .get(&url)
@@ -507,20 +533,71 @@ pub async fn download_with<F>(asset: &UpdateAsset, token: Option<&str>, progress
 where
     F: Fn(Progress) + Send + Sync,
 {
+    download_into(&download_dir(), asset, token, progress).await
+}
+
+/// Download (and verify) an asset into `dir`. The bytes are written to `<name>.part` and renamed
+/// to `<name>` only after the size and SHA-256 checks passed, so a failure of any kind (network,
+/// truncation, checksum mismatch) removes the partial file and leaves everything else in `dir`,
+/// including an earlier good download of the same name, untouched.
+///
+/// A release that publishes no `.sha256` for the installer is refused: without it there is
+/// nothing to detect a corrupted or substituted download with.
+pub async fn download_into<F>(dir: &Path, asset: &UpdateAsset, token: Option<&str>, progress: &F) -> Result<PathBuf>
+where
+    F: Fn(Progress) + Send + Sync,
+{
     validate_download_url(&asset.url)?;
     let name = safe_file_name(&asset.name)?;
+    let sha_url = asset.sha256_url.as_deref().ok_or_else(|| {
+        GeniusError::Integration(format!(
+            "The release publishes no SHA-256 checksum for {name}, so Genius will not install it automatically. Download it from the release page instead."
+        ))
+    })?;
     let client = http_client()?;
 
-    let dir = download_dir();
-    tokio::fs::create_dir_all(&dir).await?;
+    tokio::fs::create_dir_all(dir).await?;
     let dest = dir.join(name);
     let partial = dir.join(format!("{name}.part"));
+    let _ = tokio::fs::remove_file(&partial).await; // leftover of an interrupted earlier attempt
 
-    let resp = fetch(&client, &asset.url, asset.api_url.as_deref(), token, None).await?;
+    // The expected hash first: no point in downloading 100 MB we could not verify.
+    let text = fetch(&client, sha_url, asset.sha256_api_url.as_deref(), token, Some(Duration::from_secs(30)))
+        .await
+        .map_err(|e| GeniusError::Integration(format!("Could not fetch the update checksum: {e}")))?
+        .text()
+        .await
+        .map_err(|e| GeniusError::Integration(format!("Could not read the update checksum: {e}")))?;
+    let expected = parse_sha256_file(&text).ok_or_else(|| GeniusError::Integration("The update checksum file is malformed.".into()))?;
+
+    if let Err(e) = download_to_partial(&client, asset, token, progress, &partial, &expected).await {
+        let _ = tokio::fs::remove_file(&partial).await;
+        return Err(e);
+    }
+    let _ = tokio::fs::remove_file(&dest).await;
+    if let Err(e) = tokio::fs::rename(&partial, &dest).await {
+        let _ = tokio::fs::remove_file(&partial).await;
+        return Err(e.into());
+    }
+    Ok(dest)
+}
+
+async fn download_to_partial<F>(client: &reqwest::Client, asset: &UpdateAsset, token: Option<&str>, progress: &F, partial: &Path, expected: &str) -> Result<()>
+where
+    F: Fn(Progress) + Send + Sync,
+{
+    let resp = fetch(client, &asset.url, asset.api_url.as_deref(), token, None).await?;
+    // Fail before streaming (possibly 100 MB) when the server already announces another size.
+    if let Some(announced) = resp.content_length().filter(|n| asset.size > 0 && *n != asset.size) {
+        return Err(GeniusError::Integration(format!(
+            "Update download was incomplete or does not match the release: the server announced {announced} bytes, the release lists {}.",
+            asset.size
+        )));
+    }
     let total = resp.content_length().or((asset.size > 0).then_some(asset.size));
     progress(Progress { downloaded: 0, total, stage: Stage::Downloading });
 
-    let mut file = tokio::fs::File::create(&partial).await?;
+    let mut file = tokio::fs::File::create(partial).await?;
     let mut hasher = Sha256::new();
     let mut downloaded: u64 = 0;
     let mut last_report: u64 = 0;
@@ -542,48 +619,68 @@ where
 
     // The release lists the asset size; a mismatch means a truncated or substituted file.
     if let Some(t) = total.into_iter().chain((asset.size > 0).then_some(asset.size)).find(|t| *t != downloaded) {
-        {
-            let _ = tokio::fs::remove_file(&partial).await;
-            return Err(GeniusError::Integration(format!("Update download was incomplete ({downloaded} of {t} bytes).")));
-        }
+        return Err(GeniusError::Integration(format!("Update download was incomplete ({downloaded} of {t} bytes).")));
     }
 
     progress(Progress { downloaded, total, stage: Stage::Verifying });
-    if let Some(sha_url) = asset.sha256_url.as_deref() {
-        let text = fetch(&client, sha_url, asset.sha256_api_url.as_deref(), token, Some(Duration::from_secs(30)))
-            .await
-            .map_err(|e| GeniusError::Integration(format!("Could not fetch the update checksum: {e}")))?
-            .text()
-            .await
-            .map_err(|e| GeniusError::Integration(format!("Could not read the update checksum: {e}")))?;
-        let expected = parse_sha256_file(&text)
-            .ok_or_else(|| GeniusError::Integration("The update checksum file is malformed.".into()))?;
-        let actual = to_hex(&hasher.finalize());
-        if actual != expected {
-            let _ = tokio::fs::remove_file(&partial).await;
-            return Err(GeniusError::Integration(
-                "The downloaded update failed its checksum verification and was discarded.".into(),
-            ));
-        }
+    if to_hex(&hasher.finalize()) != expected {
+        return Err(GeniusError::Integration("The downloaded update failed its checksum verification and was discarded.".into()));
     }
+    Ok(())
+}
 
-    let _ = tokio::fs::remove_file(&dest).await;
-    tokio::fs::rename(&partial, &dest).await?;
-    Ok(dest)
+/// Hash `path` and compare with `expected_hex` (case-insensitive). Used to re-check a file that
+/// sat on disk between download and install.
+pub fn verify_file_sha256(path: &Path, expected_hex: &str) -> Result<()> {
+    use std::io::Read;
+    let mut file = std::fs::File::open(path)?;
+    let mut hasher = Sha256::new();
+    let mut buf = vec![0u8; 64 * 1024];
+    loop {
+        let n = file.read(&mut buf)?;
+        if n == 0 {
+            break;
+        }
+        hasher.update(&buf[..n]);
+    }
+    if to_hex(&hasher.finalize()) == expected_hex.trim().to_ascii_lowercase() {
+        Ok(())
+    } else {
+        Err(GeniusError::Integration("The update file does not match its SHA-256 checksum.".into()))
+    }
 }
 
 fn spawn(cmd: &mut std::process::Command, what: &str) -> Result<()> {
     cmd.spawn().map(|_| ()).map_err(|e| GeniusError::Process(format!("could not launch {what}: {e}")))
 }
 
+/// Only files that [`download_into`] left in the update directory may be executed: an absolute
+/// path with `..`, a symlink pointing elsewhere or an arbitrary file on disk is refused.
+fn ensure_installable(path: &Path, dir: &Path) -> Result<()> {
+    let refuse = || GeniusError::Validation("Refusing to run an update file that is not in Genius's update download folder.".into());
+    let file = std::fs::canonicalize(path).map_err(|_| refuse())?;
+    let root = std::fs::canonicalize(dir).map_err(|_| refuse())?;
+    if file.parent() != Some(root.as_path()) || !file.is_file() {
+        return Err(refuse());
+    }
+    safe_file_name(file.file_name().and_then(|n| n.to_str()).unwrap_or_default())?;
+    Ok(())
+}
+
 /// Launch the installer for a downloaded file.
 pub fn install(path: &Path) -> Result<InstallOutcome> {
+    install_from(path, &download_dir())
+}
+
+fn install_from(path: &Path, dir: &Path) -> Result<InstallOutcome> {
+    ensure_installable(path, dir)?;
     let name = path.file_name().and_then(|n| n.to_str()).unwrap_or_default().to_lowercase();
     let display = path.display().to_string();
     let outcome = |action, message: &str| Ok(InstallOutcome { action, path: display.clone(), message: message.into() });
 
     match std::env::consts::OS {
         "windows" if name.ends_with(".exe") => {
+            // Interactive NSIS installer: the user sees it and can cancel it.
             spawn(&mut std::process::Command::new(path), "the installer")?;
             outcome(PostInstall::Exit, "The installer has started. Genius will close so it can be updated.")
         }
@@ -593,21 +690,17 @@ pub fn install(path: &Path) -> Result<InstallOutcome> {
         }
         "macos" if name.ends_with(".dmg") => {
             spawn(std::process::Command::new("open").arg(path), "the disk image")?;
-            outcome(
-                PostInstall::Exit,
-                "The disk image is open. Drag Genius into Applications to replace the old version, then start it again.",
-            )
+            outcome(PostInstall::Exit, "The disk image is open. Drag Genius into Applications to replace the old version, then start it again.")
         }
         "linux" if name.ends_with(".appimage") => {
-            let target = std::env::var_os("APPIMAGE").map(PathBuf::from).ok_or_else(|| {
-                GeniusError::Validation("Genius is not running from an AppImage, so it cannot be replaced in place.".into())
-            })?;
+            let target = std::env::var_os("APPIMAGE")
+                .map(PathBuf::from)
+                .ok_or_else(|| GeniusError::Validation("Genius is not running from an AppImage, so it cannot be replaced in place.".into()))?;
             replace_file(path, &target)?;
-            Ok(InstallOutcome {
-                action: PostInstall::Restart,
-                path: target.display().to_string(),
-                message: "Genius was updated and will restart.".into(),
-            })
+            // The downloaded copy is no longer needed; the previous AppImage stays as `.bak`
+            // until the new version has started (see [`finish_update`] / [`rollback_appimage`]).
+            let _ = std::fs::remove_file(path);
+            Ok(InstallOutcome { action: PostInstall::Restart, path: target.display().to_string(), message: "Genius was updated and will restart.".into() })
         }
         "linux" if name.ends_with(".deb") => {
             spawn(std::process::Command::new("xdg-open").arg(path), "the package installer")?;
@@ -617,23 +710,115 @@ pub fn install(path: &Path) -> Result<InstallOutcome> {
     }
 }
 
-/// Atomically replace `target` with `source`: copy to a sibling temp file, mark it
-/// executable, then rename over the original.
-fn replace_file(source: &Path, target: &Path) -> Result<()> {
+/// Run the downloaded Windows NSIS installer **silently** (`/S`, optionally into `install_dir`
+/// via `/D=`) and wait for it to finish. This exists for the automated verification workflow
+/// (`.github/workflows/updater-windows.yml`); the app itself only ever calls [`install`], which
+/// starts the interactive installer. Returns the installer's exit code.
+pub fn install_silent(path: &Path, install_dir: Option<&Path>, timeout: Duration) -> Result<i32> {
+    #[cfg(not(windows))]
+    {
+        let _ = (path, install_dir, timeout);
+        Err(GeniusError::Validation("silent installation is only implemented for the Windows NSIS installer".into()))
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        ensure_installable(path, &download_dir())?;
+        let name = path.file_name().and_then(|n| n.to_str()).unwrap_or_default().to_lowercase();
+        if !name.ends_with("-setup.exe") {
+            return Err(GeniusError::Validation(format!("{name} is not an NSIS setup executable")));
+        }
+        let mut cmd = std::process::Command::new(path);
+        cmd.arg("/S");
+        if let Some(dir) = install_dir {
+            // NSIS requires /D= to be the last argument and unquoted, even with spaces.
+            cmd.raw_arg(format!("/D={}", dir.display()));
+        }
+        let mut child = cmd.spawn().map_err(|e| GeniusError::Process(format!("could not launch the installer: {e}")))?;
+        let started = std::time::Instant::now();
+        loop {
+            match child.try_wait() {
+                Ok(Some(status)) => return Ok(status.code().unwrap_or(-1)),
+                Ok(None) if started.elapsed() > timeout => {
+                    let _ = child.kill();
+                    return Err(GeniusError::Process(format!("the installer did not finish within {} s", timeout.as_secs())));
+                }
+                Ok(None) => std::thread::sleep(Duration::from_millis(500)),
+                Err(e) => return Err(GeniusError::Process(format!("waiting for the installer failed: {e}"))),
+            }
+        }
+    }
+}
+
+fn sibling(target: &Path, prefix: &str, suffix: &str) -> Result<PathBuf> {
     let parent = target.parent().ok_or_else(|| GeniusError::Validation("invalid AppImage path".into()))?;
     let file_name = target.file_name().and_then(|n| n.to_str()).unwrap_or("Genius.AppImage");
-    let tmp = parent.join(format!(".{file_name}.genius-update"));
-    std::fs::copy(source, &tmp)?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o755))?;
-    }
-    if let Err(e) = std::fs::rename(&tmp, target) {
+    Ok(parent.join(format!("{prefix}{file_name}{suffix}")))
+}
+
+/// Where the previous AppImage is kept while an update has not been confirmed.
+pub fn backup_path(target: &Path) -> PathBuf {
+    sibling(target, "", ".bak").unwrap_or_else(|_| target.with_extension("bak"))
+}
+
+/// Atomically replace `target` with `source`: copy to a sibling temp file, check its size, mark
+/// it executable, keep a copy of the current file as `<target>.bak`, then rename over the
+/// original. Any failure before the final rename leaves `target` exactly as it was; a failing
+/// rename removes the temp file and also leaves `target` untouched.
+fn replace_file(source: &Path, target: &Path) -> Result<()> {
+    let tmp = sibling(target, ".", ".genius-update")?;
+    let result = (|| -> Result<()> {
+        std::fs::copy(source, &tmp)?;
+        if std::fs::metadata(&tmp)?.len() != std::fs::metadata(source)?.len() {
+            return Err(GeniusError::Integration("The update could not be copied completely (is the disk full?). The current version was not changed.".into()));
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o755))?;
+        }
+        if target.is_file() {
+            std::fs::copy(target, backup_path(target))
+                .map_err(|e| GeniusError::Integration(format!("Could not keep a backup of the current version, so it was not replaced: {e}")))?;
+        }
+        std::fs::rename(&tmp, target)?;
+        Ok(())
+    })();
+    if result.is_err() {
         let _ = std::fs::remove_file(&tmp);
-        return Err(e.into());
     }
-    Ok(())
+    result
+}
+
+/// Put the previous AppImage back (after the new one failed to start). Returns whether a backup
+/// existed.
+pub fn rollback_appimage(target: &Path) -> Result<bool> {
+    let bak = backup_path(target);
+    if !bak.is_file() {
+        return Ok(false);
+    }
+    std::fs::rename(&bak, target)?;
+    Ok(true)
+}
+
+/// Housekeeping once the (new) version is running: drop the AppImage backup and stale update
+/// downloads (anything in the update folder older than an hour; an installer that was just
+/// downloaded may still be running, so recent files stay). Best effort, never fails.
+pub fn finish_update() {
+    if let Some(appimage) = std::env::var_os("APPIMAGE") {
+        let _ = std::fs::remove_file(backup_path(Path::new(&appimage)));
+    }
+    remove_stale_downloads(&download_dir(), Duration::from_secs(3600));
+}
+
+fn remove_stale_downloads(dir: &Path, max_age: Duration) {
+    let Ok(entries) = std::fs::read_dir(dir) else { return };
+    for entry in entries.flatten() {
+        let old = entry.metadata().ok().filter(|m| m.is_file()).and_then(|m| m.modified().ok()).and_then(|t| t.elapsed().ok()).map(|age| age >= max_age).unwrap_or(false);
+        if old {
+            let _ = std::fs::remove_file(entry.path());
+        }
+    }
 }
 
 #[cfg(test)]
@@ -880,5 +1065,254 @@ mod tests {
 
         let short = UpdateAsset { size: body.len() as u64 + 5, sha256_url: None, sha256_api_url: None, api_url: None, ..asset };
         assert!(download_with(&short, None, &|_| {}).await.is_err(), "incomplete downloads are rejected");
+    }
+}
+
+/// Failure behaviour: what the updater leaves behind when something goes wrong.
+#[cfg(test)]
+mod failure_tests {
+    use super::*;
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    fn asset_for(server: &MockServer, size: u64, sha: Option<&str>) -> UpdateAsset {
+        UpdateAsset {
+            name: "Genius_9.0.0_amd64.AppImage".into(),
+            size,
+            url: format!("{}/dl/Genius_9.0.0_amd64.AppImage", server.uri()),
+            sha256_url: sha.map(|p| format!("{}{p}", server.uri())),
+            api_url: None,
+            sha256_api_url: None,
+        }
+    }
+
+    async fn serve(server: &MockServer, body: &[u8], sha_text: Option<String>) {
+        Mock::given(method("GET")).and(path("/dl/Genius_9.0.0_amd64.AppImage")).respond_with(ResponseTemplate::new(200).set_body_bytes(body.to_vec())).mount(server).await;
+        if let Some(t) = sha_text {
+            Mock::given(method("GET")).and(path("/dl/sha")).respond_with(ResponseTemplate::new(200).set_body_string(t)).mount(server).await;
+        }
+    }
+
+    fn leftovers(dir: &Path) -> Vec<String> {
+        let mut v: Vec<String> = std::fs::read_dir(dir).unwrap().flatten().map(|e| e.file_name().to_string_lossy().into_owned()).collect();
+        v.sort();
+        v
+    }
+
+    #[tokio::test]
+    async fn good_download_is_renamed_from_part_and_replaces_an_older_copy() {
+        let server = MockServer::start().await;
+        let body = b"new installer bytes".to_vec();
+        serve(&server, &body, Some(format!("{}  x\n", to_hex(&Sha256::digest(&body))))).await;
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("Genius_9.0.0_amd64.AppImage"), b"stale earlier download").unwrap();
+        let got = download_into(dir.path(), &asset_for(&server, body.len() as u64, Some("/dl/sha")), None, &|_| {}).await.unwrap();
+        assert_eq!(std::fs::read(&got).unwrap(), body);
+        assert_eq!(leftovers(dir.path()), vec!["Genius_9.0.0_amd64.AppImage"], "no .part left behind");
+        verify_file_sha256(&got, &to_hex(&Sha256::digest(&body))).unwrap();
+    }
+
+    #[tokio::test]
+    async fn partial_download_is_rejected_without_touching_the_previous_file() {
+        let server = MockServer::start().await;
+        let body = b"only part of the file".to_vec();
+        serve(&server, &body, Some(format!("{}\n", to_hex(&Sha256::digest(&body))))).await;
+        let dir = tempfile::tempdir().unwrap();
+        let existing = dir.path().join("Genius_9.0.0_amd64.AppImage");
+        std::fs::write(&existing, b"previous good download").unwrap();
+        // The release says the file is 1000 bytes; the server delivers fewer.
+        let e = download_into(dir.path(), &asset_for(&server, 1000, Some("/dl/sha")), None, &|_| {}).await.unwrap_err().to_string();
+        assert!(e.contains("incomplete"), "{e}");
+        assert_eq!(std::fs::read(&existing).unwrap(), b"previous good download");
+        assert_eq!(leftovers(dir.path()), vec!["Genius_9.0.0_amd64.AppImage"], "the .part file is removed");
+    }
+
+    #[tokio::test]
+    async fn connection_cut_mid_download_leaves_no_partial_file() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        // A raw server that promises 100000 bytes, sends 10 and hangs up.
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            loop {
+                let Ok((mut sock, _)) = listener.accept().await else { return };
+                tokio::spawn(async move {
+                    let mut buf = [0u8; 2048];
+                    let n = sock.read(&mut buf).await.unwrap_or(0);
+                    let req = String::from_utf8_lossy(&buf[..n]).to_string();
+                    if req.contains("/sha") {
+                        let _ = sock.write_all(format!("HTTP/1.1 200 OK\r\nContent-Length: 65\r\n\r\n{}\n", "a".repeat(64)).as_bytes()).await;
+                    } else {
+                        let _ = sock.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 100000\r\n\r\n0123456789").await;
+                    }
+                    let _ = sock.shutdown().await;
+                });
+            }
+        });
+        let asset = UpdateAsset {
+            name: "Genius_9.0.0_amd64.AppImage".into(),
+            size: 100000,
+            url: format!("http://127.0.0.1:{port}/dl/file"),
+            sha256_url: Some(format!("http://127.0.0.1:{port}/sha")),
+            api_url: None,
+            sha256_api_url: None,
+        };
+        let dir = tempfile::tempdir().unwrap();
+        let e = download_into(dir.path(), &asset, None, &|_| {}).await.unwrap_err().to_string();
+        assert!(e.contains("interrupted") || e.contains("incomplete") || e.contains("failed"), "{e}");
+        assert!(leftovers(dir.path()).is_empty(), "{:?}", leftovers(dir.path()));
+    }
+
+    #[tokio::test]
+    async fn checksum_mismatch_discards_the_download() {
+        let server = MockServer::start().await;
+        let body = b"tampered installer".to_vec();
+        serve(&server, &body, Some("0".repeat(64))).await;
+        let dir = tempfile::tempdir().unwrap();
+        let e = download_into(dir.path(), &asset_for(&server, body.len() as u64, Some("/dl/sha")), None, &|_| {}).await.unwrap_err().to_string();
+        assert!(e.contains("checksum") && e.contains("discarded"), "{e}");
+        assert!(leftovers(dir.path()).is_empty(), "neither the file nor a .part remains: {:?}", leftovers(dir.path()));
+        // A malformed checksum file is also a refusal, not a pass.
+        let server = MockServer::start().await;
+        serve(&server, &body, Some("<html>not found</html>".into())).await;
+        let e = download_into(dir.path(), &asset_for(&server, body.len() as u64, Some("/dl/sha")), None, &|_| {}).await.unwrap_err().to_string();
+        assert!(e.contains("malformed"), "{e}");
+        assert!(leftovers(dir.path()).is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_release_without_a_checksum_is_refused_before_any_download() {
+        let server = MockServer::start().await; // nothing mounted: any request would 404
+        let dir = tempfile::tempdir().unwrap();
+        let e = download_into(dir.path(), &asset_for(&server, 5, None), None, &|_| {}).await.unwrap_err().to_string();
+        assert!(e.contains("no SHA-256 checksum"), "{e}");
+        assert!(server.received_requests().await.unwrap().is_empty(), "no request was made");
+        assert!(leftovers(dir.path()).is_empty());
+    }
+
+    #[tokio::test]
+    async fn foreign_hosts_and_unsafe_names_are_refused_before_touching_disk() {
+        let dir = tempfile::tempdir().unwrap();
+        let evil = UpdateAsset { name: "Genius_setup.exe".into(), size: 1, url: "https://evil.example.com/Genius_setup.exe".into(), sha256_url: Some("https://github.com/x.sha256".into()), api_url: None, sha256_api_url: None };
+        assert!(download_into(dir.path(), &evil, None, &|_| {}).await.is_err());
+        let traversal = UpdateAsset { name: "../Genius_setup.exe".into(), url: "https://github.com/o/r/releases/download/v1/x.exe".into(), ..evil.clone() };
+        assert!(download_into(dir.path(), &traversal, None, &|_| {}).await.is_err());
+        assert!(leftovers(dir.path()).is_empty());
+    }
+
+    #[test]
+    fn verify_file_sha256_detects_tampering() {
+        let dir = tempfile::tempdir().unwrap();
+        let f = dir.path().join("a.bin");
+        std::fs::write(&f, b"abc").unwrap();
+        let good = "BA7816BF8F01CFEA414140DE5DAE2223B00361A396177A9CB410FF61F20015AD";
+        verify_file_sha256(&f, good).unwrap();
+        std::fs::write(&f, b"abd").unwrap();
+        assert!(verify_file_sha256(&f, good).is_err());
+        assert!(verify_file_sha256(&dir.path().join("missing"), good).is_err());
+    }
+
+    #[test]
+    fn install_refuses_files_outside_the_update_folder() {
+        let dir = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let ok = dir.path().join("Genius_9.0.0_amd64.deb");
+        std::fs::write(&ok, b"x").unwrap();
+        ensure_installable(&ok, dir.path()).unwrap();
+
+        let elsewhere = outside.path().join("Genius_9.0.0_amd64.deb");
+        std::fs::write(&elsewhere, b"x").unwrap();
+        assert!(ensure_installable(&elsewhere, dir.path()).is_err(), "a file in another folder");
+        let dotdot = dir.path().join("..").join(outside.path().file_name().unwrap()).join("Genius_9.0.0_amd64.deb");
+        assert!(ensure_installable(&dotdot, dir.path()).is_err(), "a .. path into another folder");
+        assert!(ensure_installable(&dir.path().join("missing.exe"), dir.path()).is_err(), "a missing file");
+        assert!(ensure_installable(dir.path(), dir.path()).is_err(), "a directory");
+        std::fs::create_dir(dir.path().join("sub")).unwrap();
+        std::fs::write(dir.path().join("sub").join("x.exe"), b"x").unwrap();
+        assert!(ensure_installable(&dir.path().join("sub").join("x.exe"), dir.path()).is_err(), "a file in a sub folder");
+        let spaced = dir.path().join("my installer.exe");
+        std::fs::write(&spaced, b"x").unwrap();
+        assert!(ensure_installable(&spaced, dir.path()).is_err(), "an unsafe file name");
+        #[cfg(unix)]
+        {
+            let link = dir.path().join("link.deb");
+            std::os::unix::fs::symlink(&elsewhere, &link).unwrap();
+            assert!(ensure_installable(&link, dir.path()).is_err(), "a symlink pointing out of the folder");
+        }
+        // The public entry point applies the same rule against the real update folder.
+        assert!(install(&elsewhere).is_err());
+        assert!(install(Path::new("/etc/hosts")).is_err());
+        assert!(install(Path::new(r"C:\Windows\System32\cmd.exe")).is_err());
+        assert!(elsewhere.exists(), "refusing leaves the file alone");
+    }
+
+    #[test]
+    fn replace_keeps_a_backup_and_rollback_restores_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let src = dir.path().join("new.AppImage");
+        let dst = dir.path().join("Genius.AppImage");
+        std::fs::write(&src, b"new version").unwrap();
+        std::fs::write(&dst, b"old version").unwrap();
+        replace_file(&src, &dst).unwrap();
+        assert_eq!(std::fs::read(&dst).unwrap(), b"new version");
+        assert_eq!(std::fs::read(backup_path(&dst)).unwrap(), b"old version");
+        assert!(!dir.path().join(".Genius.AppImage.genius-update").exists(), "temp file is gone");
+
+        assert!(rollback_appimage(&dst).unwrap());
+        assert_eq!(std::fs::read(&dst).unwrap(), b"old version");
+        assert!(!backup_path(&dst).exists());
+        assert!(!rollback_appimage(&dst).unwrap(), "nothing left to roll back");
+    }
+
+    #[test]
+    fn a_failed_replace_never_touches_the_current_installation() {
+        let dir = tempfile::tempdir().unwrap();
+        let dst = dir.path().join("Genius.AppImage");
+        std::fs::write(&dst, b"running version").unwrap();
+        // Source missing: nothing may change.
+        assert!(replace_file(&dir.path().join("missing.AppImage"), &dst).is_err());
+        assert_eq!(std::fs::read(&dst).unwrap(), b"running version");
+        assert_eq!(leftovers(dir.path()), vec!["Genius.AppImage"], "no temp file, no backup");
+
+        // Target cannot be replaced (a non-empty directory sits there): the error is reported
+        // and no temp file is left.
+        let blocked = dir.path().join("Blocked.AppImage");
+        std::fs::create_dir(&blocked).unwrap();
+        std::fs::write(blocked.join("keep"), b"x").unwrap();
+        let src = dir.path().join("new.AppImage");
+        std::fs::write(&src, b"new").unwrap();
+        assert!(replace_file(&src, &blocked).is_err());
+        assert!(blocked.join("keep").exists());
+        assert!(!dir.path().join(".Blocked.AppImage.genius-update").exists());
+        assert_eq!(std::fs::read(&dst).unwrap(), b"running version");
+    }
+
+    #[test]
+    fn stale_downloads_are_cleaned_but_recent_ones_stay() {
+        let dir = tempfile::tempdir().unwrap();
+        let old = dir.path().join("old-setup.exe");
+        let fresh = dir.path().join("fresh-setup.exe");
+        std::fs::write(&old, b"x").unwrap();
+        std::fs::write(&fresh, b"x").unwrap();
+        let two_hours_ago = std::time::SystemTime::now() - Duration::from_secs(7200);
+        std::fs::File::options().write(true).open(&old).unwrap().set_modified(two_hours_ago).unwrap();
+        remove_stale_downloads(dir.path(), Duration::from_secs(3600));
+        assert!(!old.exists());
+        assert!(fresh.exists());
+    }
+
+    #[tokio::test]
+    async fn check_tag_reads_a_specific_release_and_validates_the_tag() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path(format!("/repos/{REPO}/releases/tags/v0.3.2")))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({ "tag_name": "v0.3.2", "assets": [] })))
+            .mount(&server)
+            .await;
+        let info = check_tag_with(&server.uri(), "v0.3.2", "0.3.1", None).await.unwrap();
+        assert!(info.available);
+        assert_eq!(info.latest_version.as_deref(), Some("0.3.2"));
+        assert!(check_tag_with(&server.uri(), "../x", "0.3.1", None).await.is_err());
+        assert!(check_tag_with(&server.uri(), "", "0.3.1", None).await.is_err());
     }
 }

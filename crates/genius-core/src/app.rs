@@ -176,6 +176,7 @@ pub struct Genius {
 impl Genius {
     pub fn new(data_dir: &Path, emitter: Arc<dyn crate::events::Emitter>, secrets: Arc<dyn SecretStore>) -> Result<Arc<Self>> {
         std::fs::create_dir_all(data_dir)?;
+        crate::updater::finish_update(); // this version started: drop the AppImage backup and stale update downloads
         let db = Arc::new(Db::open(&data_dir.join("genius.db"))?);
         Self::with_db(db, data_dir, emitter, secrets)
     }
