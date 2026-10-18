@@ -33,6 +33,16 @@ impl Effort {
             Effort::Max => "max",
         }
     }
+
+    /// "fast" | "balanced" | "max" (and aliases); None for anything else, including "auto".
+    pub fn parse(s: &str) -> Option<Effort> {
+        Some(match s.trim().to_ascii_lowercase().as_str() {
+            "fast" | "low" | "quick" => Effort::Fast,
+            "balanced" | "medium" | "normal" => Effort::Balanced,
+            "max" | "high" | "maximum" => Effort::Max,
+            _ => return None,
+        })
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -62,6 +72,9 @@ pub struct Settings {
     /// "auto": Genius picks the best available model per job; "manual": always `model`.
     pub model_mode: String,
     pub effort: Effort,
+    /// Requests that don't name an effort get one from their complexity (simple → fast,
+    /// normal → balanced, complex → max), never above `effort`.
+    pub auto_effort: bool,
     /// Let reasoning models think before answering (reasoning is streamed to the UI).
     pub thinking: bool,
     pub temperature: f32,
@@ -92,6 +105,7 @@ impl Default for Settings {
             model: None,
             model_mode: "auto".into(),
             effort: Effort::Max,
+            auto_effort: true,
             thinking: true,
             temperature: 0.2,
             max_tokens: 16384,
@@ -212,6 +226,9 @@ mod tests {
         assert_eq!(v["modelMode"], "auto");
         assert_eq!(v["effort"], "max");
         assert_eq!(v["thinking"], true);
+        assert_eq!(v["autoEffort"], true);
+        assert_eq!(Effort::parse(" High "), Some(Effort::Max));
+        assert_eq!(Effort::parse("auto"), None);
         let e: Effort = serde_json::from_value(serde_json::json!("balanced")).unwrap();
         assert_eq!(e, Effort::Balanced);
     }

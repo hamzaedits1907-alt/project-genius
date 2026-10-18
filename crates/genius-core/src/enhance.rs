@@ -8,6 +8,7 @@ use tokio_util::sync::CancellationToken;
 use crate::app::Genius;
 use crate::error::{GeniusError, Result};
 use crate::events::{EventKind, EventStatus};
+use crate::model_stats::Outcome;
 use crate::nvidia::{ChatMessage, ChatOptions, ProviderError};
 
 /// Shortest idea worth improving (in characters, after trimming).
@@ -154,37 +155,64 @@ fn unquote(s: &str) -> &str {
 }
 
 impl Genius {
-    /// The model used to improve prompts. Kept in one place so it can move to a faster
-    /// model without touching the call itself.
-    fn enhance_model(&self) -> Result<String> {
-        let s = self.settings()?;
-        s.model.filter(|m| !m.trim().is_empty()).ok_or_else(|| ProviderError::NoModel.into())
+    /// Models used to improve prompts: the quick-job chain (auto mode works without a selected
+    /// model; manual mode uses the selected one first).
+    async fn enhance_models(&self) -> Result<Vec<String>> {
+        let chain = self.resolve_models(crate::router::ModelRole::Quick, crate::settings::Effort::Fast).await?;
+        if chain.is_empty() {
+            return Err(ProviderError::NoModel.into());
+        }
+        Ok(chain)
     }
 
-    /// Rewrites a rough idea into a detailed, buildable brief in the idea's language.
+    /// Rewrites a rough idea into a detailed, buildable brief in the idea's language. Moves on
+    /// to the next model when one is unavailable, failing or returns nothing usable.
     pub async fn enhance_prompt(&self, text: &str, cancel: &CancellationToken) -> Result<String> {
         let idea = validate_idea(text)?;
-        let (client, _s) = self.client()?;
-        let model = self.enhance_model()?;
+        let (client, s) = self.client()?;
+        let chain = self.enhance_models().await?;
+        let manual = !s.is_auto();
         let opts = ChatOptions { temperature: TEMPERATURE, top_p: 0.9, max_tokens: MAX_TOKENS, stream: false, thinking: Some(false), reasoning_effort: Some("low".into()) };
-        let mut ev = self.bus.start(None, None, EventKind::Ai, EventStatus::Running, format!("Improving your prompt ({model})"), json!({ "model": model, "purpose": "enhance prompt", "promptChars": idea.len() }));
-        match client.chat(&model, &enhance_messages(idea), &opts, cancel, |_| {}).await {
-            Ok(r) => {
-                let brief = clean_reply(&r.content);
-                if brief.chars().count() < MIN_CHARS {
-                    let e = GeniusError::from(ProviderError::Malformed("the model returned an empty brief".into()));
-                    ev.update(EventStatus::Failed, json!({ "error": { "kind": e.kind(), "message": e.to_string() } }));
-                    return Err(e);
+        let messages = enhance_messages(idea);
+        let mut last_err: Option<GeniusError> = None;
+        for (i, model) in chain.iter().enumerate() {
+            let last = i + 1 == chain.len();
+            let mut ev = self.bus.start(None, None, EventKind::Ai, EventStatus::Running, format!("Improving your prompt ({model})"), json!({ "model": model, "purpose": "enhance prompt", "promptChars": idea.len() }));
+            let started = std::time::Instant::now();
+            match client.chat(model, &messages, &opts, cancel, |_| {}).await {
+                Ok(r) => {
+                    let brief = clean_reply(&r.content);
+                    if brief.chars().count() < MIN_CHARS {
+                        self.record_model_outcome(model, Outcome::Failed);
+                        let e = GeniusError::from(ProviderError::Malformed("the model returned an empty brief".into()));
+                        ev.update(EventStatus::Failed, json!({ "error": { "kind": e.kind(), "message": e.to_string() } }));
+                        last_err = Some(e);
+                        if manual || last {
+                            break;
+                        }
+                        continue;
+                    }
+                    self.record_model_outcome(model, Outcome::Success { latency_ms: started.elapsed().as_millis() as u64 });
+                    ev.update(EventStatus::Completed, json!({ "outputChars": brief.len(), "finishReason": r.finish_reason }));
+                    return Ok(brief);
                 }
-                ev.update(EventStatus::Completed, json!({ "outputChars": brief.len(), "finishReason": r.finish_reason }));
-                Ok(brief)
-            }
-            Err(e) => {
-                let e = GeniusError::from(e);
-                ev.update(if e.kind() == "cancelled" { EventStatus::Cancelled } else { EventStatus::Failed }, json!({ "error": { "kind": e.kind(), "message": e.to_string() } }));
-                Err(e)
+                Err(e) => {
+                    self.record_provider_error(model, &e, Some(idea.len()));
+                    let model_specific = crate::model_stats::outcome_for_error(&e).is_some();
+                    if matches!(e, ProviderError::ModelUnavailable { .. }) {
+                        self.mark_model_failed(model);
+                    }
+                    let unavailable = matches!(e, ProviderError::ModelUnavailable { .. });
+                    let e = GeniusError::from(e);
+                    ev.update(if e.kind() == "cancelled" { EventStatus::Cancelled } else { EventStatus::Failed }, json!({ "error": { "kind": e.kind(), "message": e.to_string() } }));
+                    if last || !model_specific || (manual && !unavailable) {
+                        return Err(e);
+                    }
+                    last_err = Some(e);
+                }
             }
         }
+        Err(last_err.unwrap_or_else(|| ProviderError::NoModel.into()))
     }
 }
 
@@ -265,7 +293,8 @@ mod tests {
 
         let out = g.enhance_prompt("  recipe site ", &CancellationToken::new()).await.unwrap();
         assert_eq!(out, "A recipe site for home cooks.\nKey features: tags, search");
-        let req = &server.received_requests().await.unwrap()[0];
+        let reqs = server.received_requests().await.unwrap();
+        let req = reqs.iter().find(|r| r.url.path().ends_with("/chat/completions")).unwrap();
         let body: serde_json::Value = serde_json::from_slice(&req.body).unwrap();
         assert!((body["temperature"].as_f64().unwrap() - 0.4).abs() < 1e-6);
         assert!(body["messages"][1]["content"].as_str().unwrap().contains("<<<IDEA\nrecipe site\nIDEA>>>"));
