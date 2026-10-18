@@ -64,6 +64,10 @@ jobs:
               echo "::error::v$version is already published. Bump the version instead of re-releasing it."
               exit 1
             fi
+            # An unpublished draft from an earlier run is rebuilt from scratch from THIS commit,
+            # so its assets can never be mixed with another commit's (verify-artifacts checks this).
+            echo "Removing the stale draft of v$version; this run rebuilds it from ${GITHUB_SHA:0:12}."
+            gh release delete "v$version" -R "$GITHUB_REPOSITORY" --yes
           fi
           echo "version=$version" >> "$GITHUB_OUTPUT"
           # The CHANGELOG.md section for this version becomes the release notes shown in the app.
