@@ -1435,6 +1435,9 @@ impl Session {
                     run_error: None,
                     last_url: String::new(),
                 };
+                // The time limit covers the run itself; a slow browser start must not eat into it.
+                s.started = Instant::now();
+                s.deadline = s.started + total;
                 s.set_viewport(1280).await?;
                 Ok(s)
             }
