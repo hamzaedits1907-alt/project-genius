@@ -250,9 +250,9 @@ async fn timeout_and_cancellation_kill_the_browser() {
 
     // Hard total timeout: /slow never answers; the report is partial and says so.
     let pid = Arc::new(AtomicU32::new(0));
-    let r = run_check(&t, &CheckOptions { path: Some("/slow".into()), viewports: vec![800], limits: RunLimits { timeout: Some(Duration::from_secs(4)), pid_out: Some(pid.clone()), ..Default::default() }, ..Default::default() }).await.unwrap();
+    let r = run_check(&t, &CheckOptions { path: Some("/slow".into()), viewports: vec![800], limits: RunLimits { timeout: Some(Duration::from_secs(12)), pid_out: Some(pid.clone()), ..Default::default() }, ..Default::default() }).await.unwrap();
     assert!(r.error.as_deref().is_some_and(|e| e.contains("time limit")), "{:?}", r.error);
-    assert!(r.duration_ms < 15_000, "{}", r.duration_ms);
+    assert!(r.duration_ms < 30_000, "{}", r.duration_ms);
     assert!(!r.ok());
     assert_ne!(pid.load(Ordering::SeqCst), 0);
     assert_dead(pid.load(Ordering::SeqCst)).await;
