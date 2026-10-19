@@ -1,0 +1,17 @@
+# Settings for the Supabase CLI (`supabase start`, `supabase db push`). Hosted projects are configured in the dashboard.
+project_id = "genius-web"
+
+[api]
+enabled = true
+
+[db]
+major_version = 15
+
+[auth]
+enabled = true
+site_url = "http://localhost:1430/app"
+additional_redirect_urls = ["http://localhost:1430/app"]
+enable_signup = true
+
+[auth.email]
+enable_confirmations = true

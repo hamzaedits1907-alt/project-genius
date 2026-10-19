@@ -1,5 +1,20 @@
 # Changelog
 
+## [Unreleased] — Genius Web and core repairs
+
+- **Genius Web.** A real browser version of Genius with accounts (Supabase), synced conversations, Chat, Research, Code (a code assistant that writes and previews code but cannot run it), Agent Mode (web tools only), Projects, Settings and an owner admin panel. Your provider key stays in the browser tab; OpenAI, Anthropic and Gemini are called directly, NVIDIA through a relay that stores nothing. See `docs/DEPLOY-NETLIFY-SUPABASE.md`.
+- **Public site.** A landing and download page with real release links, provider instructions, changelog, FAQ and honest limits.
+- **Fixed: malformed tool calls.** Calls written as `<web_search {"query": "…"}>`, `<websearch {…}` (no closing bracket) or `<todo>{…}</todo>` are now read as real calls; URLs in Markdown links are cleaned; raw tool markup can no longer appear in an answer (one correction round, then it is removed); repeated identical failures are blocked.
+- **Fixed: research citations.** Citation numbers no longer become in-page anchors that the desktop WebView turned into `http://tauri.localhost/#src-1`; they link to the page that was really fetched, or are plain text. Links that point at the app or the computer are never shown as sources.
+- **Fixed: identity.** The product creator is a setting (default Hamza) and is never confused with the user; the assistant keeps earlier conversation facts.
+- **Research on URLs.** Script-built pages are labelled as such instead of guessed at (no invented logins or databases); metadata is included.
+- **Agent Mode.** A new screen: describe a goal, Genius plans and starts it, shows steps, tool activity and approvals, and ends with a report that says *Completed, not verified* unless a real build or test passed. A live mission against NVIDIA was run (plan → isolated copy → approval → real file).
+- **Interface refresh.** New visual system, model chip with provider diagnostics in the composer, Projects page, keyboard shortcuts (Ctrl+/).
+- **Files.** Excel (.xlsx) files are read as tables.
+- **Providers.** Auto model choice for OpenAI, Anthropic and Gemini (contract-tested only; no live call).
+- **Project Brain.** Call relations: where a symbol is defined, which files use it, what a file calls.
+- Tests: 18 row-level-security tests on a real PostgreSQL engine, proxy/relay SSRF tests against a real local server, web engine and runtime tests.
+
 ## [0.5.0]
 
 Genius is a general-purpose assistant first; building apps is one of its tools.
@@ -65,7 +80,7 @@ Genius gets a new brain: faster, far more reliable, and it checks its own work.
 - **New specialist agents:** Explorer (maps big codebases) and Debugger (finds root causes).
 - **Adds packages for you** (`add_dependency`) and installs them before checking.
 
-**Chat like with Claude**
+**Chat like a modern assistant**
 - **Slash commands:** /fix, /review, /test, /feature, /design, /explain, /refactor, /optimize, /a11y, /responsive, /seo, /darkmode, /docs, /security, /init, plus /plan, /effort, /autopilot, /undo, /compact, /clear, /model and /help.
 - **@file mentions** pin files into the request.
 - **Steer while it works:** send messages mid-task; Genius reads them after its current step.

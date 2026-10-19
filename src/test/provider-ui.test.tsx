@@ -20,7 +20,7 @@ const caps = (p: ProviderCapabilities['provider'], label: string, verification: 
 const CAPS = [caps('nvidia', 'NVIDIA NIM', 'live'), caps('openai', 'OpenAI', 'contract-tests'), caps('anthropic', 'Anthropic', 'contract-tests'), caps('gemini', 'Google Gemini', 'contract-tests'), caps('custom', 'OpenAI-compatible endpoint', 'contract-tests')];
 
 describe('provider card', () => {
-  it('switching provider saves its default address, forces manual model choice and clears the model', async () => {
+  it('switching provider saves its default address, keeps Auto where models are picked by family, forces manual for custom endpoints and clears the model', async () => {
     installIpc({ provider_capabilities: () => CAPS });
     const saved: Settings[] = [];
     const save = async (s: Settings) => (saved.push(s), true);
@@ -29,7 +29,9 @@ describe('provider card', () => {
     expect(screen.getByText('verified live')).toBeTruthy();
     fireEvent.click(screen.getByRole('radio', { name: 'Anthropic' }));
     expect(saved).toHaveLength(1);
-    expect(saved[0]).toMatchObject({ provider: 'anthropic', baseUrl: 'https://api.anthropic.com/v1', modelMode: 'manual', model: null });
+    expect(saved[0]).toMatchObject({ provider: 'anthropic', baseUrl: 'https://api.anthropic.com/v1', modelMode: 'auto', model: null });
+    fireEvent.click(screen.getByRole('radio', { name: /OpenAI-compatible/ }));
+    expect(saved[1]).toMatchObject({ provider: 'custom', modelMode: 'manual', model: null });
   });
 
   it('is honest that non-NVIDIA providers are only contract-tested', async () => {

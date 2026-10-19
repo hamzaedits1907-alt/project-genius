@@ -9,3 +9,8 @@ node_modules
 src-tauri/gen/schemas
 *.bundle
 .claude/
+dist-web
+.env
+.env.local
+.env.*.local
+.netlify

@@ -9,7 +9,9 @@ import type { AuthStatus, Effort, ModelList, ModelMode, ModelRole, Policy, Resol
 import { useApp, type SettingsTab } from '../store/app';
 import { Badge, Button, Callout, Field, Segmented, Spinner, Switch } from '../components/ui';
 import { GeniusAvatar } from '../components/GeniusAvatar';
-import { DiagnosticsCard, KEY_LINK, KEY_PLACEHOLDER, LimitsCard, ProviderCard } from './ProviderPanels';
+import { DiagnosticsCard, KEY_LINK, KEY_PLACEHOLDER, LimitsCard, ProviderCard, RelayConsentCard } from './ProviderPanels';
+import { isWeb } from '../lib/platform';
+import { extraViews } from '../lib/extraViews';
 
 const TABS: { id: SettingsTab; label: string; icon: React.ReactNode }[] = [
   { id: 'ai', label: 'AI provider', icon: <Sparkles size={15} /> },
@@ -19,7 +21,11 @@ const TABS: { id: SettingsTab; label: string; icon: React.ReactNode }[] = [
   { id: 'workspace', label: 'Workspace & tools', icon: <FolderCog size={15} /> },
   { id: 'appearance', label: 'Appearance', icon: <Palette size={15} /> },
   { id: 'updates', label: 'Updates & about', icon: <ArrowDownCircle size={15} /> },
+  { id: 'account', label: 'Account', icon: <KeyRound size={15} /> },
 ];
+/** Tabs that need a local computer (GitHub CLI, project folders, updates) are not offered in the browser. */
+const WEB_TABS: SettingsTab[] = ['ai', 'appearance', 'account'];
+const visibleTabs = () => TABS.filter((t) => (isWeb ? WEB_TABS.includes(t.id) : t.id !== 'account'));
 
 export default function SettingsView({ initialTab }: { initialTab?: SettingsTab }) {
   const [tab, setTab] = useState<SettingsTab>(initialTab ?? 'ai');
@@ -30,7 +36,7 @@ export default function SettingsView({ initialTab }: { initialTab?: SettingsTab 
         <h1>Settings</h1>
         <div className="settings">
           <nav aria-label="Settings sections">
-            {TABS.map((t) => (
+            {visibleTabs().map((t) => (
               <button key={t.id} className={tab === t.id ? 'on' : ''} onClick={() => setTab(t.id)}>
                 {t.icon}
                 {t.label}
@@ -48,6 +54,7 @@ export default function SettingsView({ initialTab }: { initialTab?: SettingsTab 
               {tab === 'workspace' && <WorkspaceSettings />}
               {tab === 'appearance' && <AppearanceSettings />}
               {tab === 'updates' && <UpdateSettings />}
+              {tab === 'account' && extraViews.account && (() => { const A = extraViews.account; return <A />; })()}
             </div>
           )}
         </div>
@@ -177,6 +184,8 @@ function AiSettings() {
       </div>
 
       <ProviderCard settings={settings} save={save} />
+
+      {isWeb && <RelayConsentCard settings={settings} save={save} />}
 
       <InternetCard />
 

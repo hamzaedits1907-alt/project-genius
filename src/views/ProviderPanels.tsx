@@ -4,6 +4,7 @@ import { api, errorMessage } from '../lib/api';
 import type { DiagReport, DiagStep, ProviderCapabilities, ProviderId, Settings, TaskLimits } from '../lib/types';
 import { useApp } from '../store/app';
 import { Badge, Button, Callout, Field } from '../components/ui';
+import { capabilities } from '../lib/platform';
 
 export const DEFAULT_BASE_URL: Record<ProviderId, string> = {
   nvidia: 'https://integrate.api.nvidia.com/v1',
@@ -22,6 +23,27 @@ export const KEY_LINK: Partial<Record<ProviderId, string>> = {
 
 export const KEY_PLACEHOLDER: Record<ProviderId, string> = { nvidia: 'nvapi-…', openai: 'sk-…', anthropic: 'sk-ant-…', gemini: 'AIza…', custom: 'API key of your endpoint' };
 
+/** Providers whose API blocks calls from a web page (checked against the real endpoints). */
+const BLOCKS_BROWSERS: ProviderId[] = ['nvidia', 'custom'];
+
+/** Genius Web only: permission to pass requests through the relay for providers that refuse browsers. */
+export function RelayConsentCard({ settings, save }: { settings: Settings; save: (next: Settings, quiet?: boolean) => Promise<boolean> }) {
+  if (!BLOCKS_BROWSERS.includes(settings.provider)) return null;
+  return (
+    <div className="card pad col" style={{ gap: 8 }}>
+      <strong>Browser access for this provider</strong>
+      <p className="muted small" style={{ margin: 0 }}>
+        {settings.provider === 'nvidia' ? 'NVIDIA does not allow web pages to call its API directly.' : 'A custom endpoint usually does not allow web pages to call it directly.'} To use it here, Genius Web can pass each request through its relay: a small server function that forwards the request to the provider with <b>your own key</b>, over HTTPS, and keeps nothing — no key, no prompt, no answer is stored or logged. Only the provider you chose can receive it.
+      </p>
+      <label className="row" style={{ gap: 8 }}>
+        <input type="checkbox" checked={!!settings.relayConsent} onChange={(e) => void save({ ...settings, relayConsent: e.target.checked }, true)} />
+        <span>Allow the relay for {settings.provider === 'nvidia' ? 'NVIDIA' : 'my endpoint'}</span>
+      </label>
+      {!settings.relayConsent && <Callout tone="warn">Without this permission requests to this provider are not sent. Alternatively use OpenAI, Anthropic or Gemini, which are called directly from your browser.</Callout>}
+    </div>
+  );
+}
+
 /** Which provider the saved key belongs to. Every provider has its own key slot. */
 export function ProviderCard({ settings, save }: { settings: Settings; save: (next: Settings, quiet?: boolean) => Promise<boolean> }) {
   const [caps, setCaps] = useState<ProviderCapabilities[]>([]);
@@ -31,9 +53,8 @@ export function ProviderCard({ settings, save }: { settings: Settings; save: (ne
   const current = caps.find((c) => c.provider === settings.provider);
   const choose = (provider: ProviderId) => {
     if (provider === settings.provider) return;
-    const nv = provider === 'nvidia';
-    // Auto routing is tuned for NVIDIA's model families: every other provider runs the model you pick.
-    void save({ ...settings, provider, baseUrl: DEFAULT_BASE_URL[provider] || settings.baseUrl, modelMode: nv ? settings.modelMode : 'manual', model: null }, true);
+    // Auto picks by model family for NVIDIA, OpenAI, Anthropic and Gemini; a custom endpoint runs the model you pick.
+    void save({ ...settings, provider, baseUrl: DEFAULT_BASE_URL[provider] || settings.baseUrl, modelMode: provider === 'custom' ? 'manual' : settings.modelMode, model: null }, true);
   };
   return (
     <div className="card pad col" style={{ gap: 10 }}>
@@ -54,7 +75,7 @@ export function ProviderCard({ settings, save }: { settings: Settings; save: (ne
           {n}
         </div>
       ))}
-      <div className="faint small">You bring your own key. It is stored in this computer's credential store, one slot per provider, and is only ever sent to that provider.</div>
+      <div className="faint small">{capabilities.secureKeyStore ? "You bring your own key. It is stored in this computer's credential store, one slot per provider, and is only ever sent to that provider." : 'You bring your own key. In the browser it is kept only for this tab (closing the tab forgets it), is never sent to Genius accounts or databases, and goes only to the provider you choose.'}</div>
     </div>
   );
 }

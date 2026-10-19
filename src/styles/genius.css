@@ -213,3 +213,4 @@ sup.cite .cite-plain { background: var(--bg-3); color: var(--text-2); }
   .gx-body, .gx-bubble { font-size: 14.5px; }
   .am-main { padding: 18px 12px 40px; }
 }
+.gx-account-row:empty { display: none; } .gx-account-row { padding: 0 0 6px; }

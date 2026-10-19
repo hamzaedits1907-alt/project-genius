@@ -116,3 +116,14 @@ Run heavy suites one after another, not in parallel (a full parallel run can exh
 | `npm test` (161) | UI incl. provider card, diagnostics, limits, Brain panel, blocked report | mocked IPC (jsdom), not the packaged app |
 
 Not covered by any automated test: the packaged Tauri window, live OpenAI/Anthropic/Gemini, live web search. The Windows updater was tested **manually by the user** (reported successful); CI covers it separately (`updater-windows.yml`).
+
+## 7. Genius Web and the database (this branch)
+
+| Command | What it proves | What it does not |
+|---|---|---|
+| `npx vitest run` (frontend) | Interface, Agent Mode screen, citations, web engine (`web-engine`), conversation loop with a scripted model (`web-chat`), runtime commands, key vault, relay consent, missions (`web-runtime`) | Any live model or provider. On a small machine the whole suite can run out of memory: `maxWorkers` is capped at 2; run files one at a time if needed. |
+| `npm run test:db` | **Real PostgreSQL (PGlite)** with the real migrations: row level security, admin functions, audit; plus `tests/netlify`: SSRF rules, redirects, size limits against a real local HTTP server, session and kill-switch checks with a stand-in Supabase, Netlify configuration | A live Supabase project, emails, the functions running on Netlify |
+| `npm run build:web` | Type check, production build of landing + app, Netlify function type check | The deployed site |
+| `NVIDIA_API_KEY=… cargo test -p genius-core --test live_mission -- --nocapture` | **Live** Agent Mode mission (opt-in, uses your quota) | Other providers |
+
+Rust: run suites one at a time with `CARGO_BUILD_JOBS=2` (memory).

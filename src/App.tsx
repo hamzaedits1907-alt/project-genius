@@ -16,6 +16,7 @@ import ApprovalDialog from './views/ApprovalDialog';
 import UpdateDialog from './views/UpdateDialog';
 import AgentsView from './views/agents/AgentsView';
 import ProjectsView from './views/ProjectsView';
+import { extraViews } from './lib/extraViews';
 import { ShortcutsDialog } from './components/ShortcutsDialog';
 import CommandPalette from './components/CommandPalette';
 import { Sidebar, startNewChat } from './components/Sidebar';
@@ -150,6 +151,7 @@ export default function App() {
           {route.name === 'project' && <Workspace projectId={route.id} />}
           {route.name === 'agents' && <AgentsView initialTab={route.tab} />}
           {route.name === 'projects' && <ProjectsView />}
+          {extraViews[route.name] && (() => { const V = extraViews[route.name]; return <V />; })()}
         </ErrorBoundary>
       </main>
       {approvals.length > 0 && <ApprovalDialog request={approvals[0]} remaining={approvals.length - 1} />}

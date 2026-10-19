@@ -24,6 +24,8 @@ export interface Settings {
   internetAccess: boolean;
   assistantName: string;
   productCreator: string;
+  /** Genius Web only: the user allowed requests to a provider that blocks browsers to pass through the Genius relay. */
+  relayConsent?: boolean;
   provider: ProviderId;
   limits: TaskLimits;
 }
@@ -912,7 +914,7 @@ export interface ChatConversation extends Conversation {
   mode: ChatMode;
   snippet: string;
   /** After "Start a project": `{ projectId, projectName, conversationId }`. */
-  origin: { projectId?: string; projectName?: string; conversationId?: string } | null;
+  origin: { projectId?: string; projectName?: string; conversationId?: string; flavor?: 'code' } | null;
 }
 
 export interface ChatRequest {

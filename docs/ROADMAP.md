@@ -15,7 +15,17 @@ Status words (grounded in evidence, see [STATUS.md](STATUS.md) and [TESTING.md](
 - Not implemented: **49**
 - Blocked: **0**
 
-## Foundations (this release)
+## Genius Web (branch `genius-web-launch`)
+
+| Area | Status |
+|---|---|
+| Browser app: Chat, Research (cited), Code (writes and previews code; runs nothing), Agent Mode (web tools only), Projects, Settings, Account | Implemented; engine and runtime tested with a scripted model and stand-in tools (`web-engine`, `web-chat`, `web-runtime`); the UI was looked at in a real browser in local-only mode. **Not yet run against a configured Supabase project or a live provider from the browser** |
+| Accounts, synced history, preferences, entitlements, feature flags, early access, owner admin | Implemented as migrations + admin functions; **18 row-level-security tests pass on a real PostgreSQL engine (PGlite)**; not yet run on a live Supabase project |
+| Web proxy (search, page reading) and provider relay (Netlify functions) | Implemented; SSRF rules and redirect handling tested against a real local HTTP server (`tests/netlify`); not deployed yet |
+| Public landing / download site | Implemented; download links resolve to real release assets |
+| Billing | **Not implemented on purpose** (no live billing until you authorise it) |
+
+## Foundations (previous release)
 
 | Foundation | Status |
 |---|---|
@@ -33,13 +43,13 @@ Status words (grounded in evidence, see [STATUS.md](STATUS.md) and [TESTING.md](
 | # | Capability | Status | Evidence / what is missing |
 |---|---|---|---|
 | 1 | Genius Autopilot | Implemented but incompletely verified | Autopilot mode applies edits as checkpoints and verifies with real checks; covered by mock-model + real-tool tests (`dashboard`, `agent`). No live-model end-to-end site build was run in this release. |
-| 2 | Auto/Max | Implemented and verified | Auto routing and effort levels: unit tests plus live NVIDIA (`live_nvidia`: Auto chains for Fast/Max from the key's 81 models). NVIDIA only; other providers run the model you choose. |
+| 2 | Auto/Max | Implemented and verified | Auto routing and effort levels: unit tests plus live NVIDIA (`live_nvidia`). NVIDIA is tuned (families, observed latency and failures); OpenAI, Anthropic and Gemini now pick the best known family among the models the key lists (`router.rs` unit tests, contract-level only: no live call to those providers). Custom endpoints run the model you choose. |
 | 3 | Self-Healing Engine | Implemented but incompletely verified | Build Doctor and diagnostics repair real compiler errors in `dashboard` tests (6 repair scenarios) with a scripted model; not exercised with a live model. |
 | 4 | Vision Loop | Implemented but incompletely verified | Real headless-browser inspection (console, network, interactions, responsive, a11y) passes `browser` tests; live image understanding verified once; the screenshot→vision-model→fix loop was not run live. |
 | 5 | Website Factory | Partially implemented | Generates Vite + React + TypeScript projects with routes; one project type only. |
 | 6 | Agent Swarm | Implemented but incompletely verified | Custom agents, teams and missions with dependencies: `missions` tests and 22 UI tests (scripted model). No live multi-agent mission. |
 | 7 | Tool Intelligence | Implemented and verified | Strict argument validation, alias normalization, bounded recovery: unit tests; live tool call verified (`live_nvidia`, provider deep check). New `project_brain` tool follows the same schema path. |
-| 8 | Project Brain | Partially implemented | v1 in 0.5.0: incremental pattern-scan index (TS/JS/Python/Rust), entry points, commands, symbols, import graph, ranked retrieval, change impact, memory/changes/Git history kept separate and flagged when stale. Not a compiler analysis; no call graph, no embeddings. |
+| 8 | Project Brain | Partially implemented | v1 (0.5.0): incremental pattern-scan index (TS/JS/Python/Rust), entry points, commands, symbols, import graph, ranked retrieval, change impact, memory/changes/Git history kept separate and flagged stale. v2 (this branch): call relations — which files use a symbol and which symbols a file uses, preferring files that import the definition, with scope-aware answers (`brain.rs`, `tests/brain.rs`). Still a text-pattern scan: no types, macros or dynamic dispatch, no embeddings. |
 | 9 | Time Machine | Implemented and verified | Changesets, diffs, revert, restore-to-point, stale-proposal refusal: unit and e2e tests on real files. |
 | 10 | Visual Design Studio | Partially implemented | Element picker exists; it does not map to a source line. |
 | 11 | Anything-to-App | Partially implemented | Building blocks only (image understanding + code generation). No dedicated reference-to-app workflow. |
@@ -47,11 +57,11 @@ Status words (grounded in evidence, see [STATUS.md](STATUS.md) and [TESTING.md](
 | 13 | Full-Stack Autopilot | Partially implemented | Frontend generation plus Supabase status/keys; no backend, auth or database generation. |
 | 14 | One-Click Launch | Partially implemented | Publish to GitHub exists (fake-`gh` tests); no deployment. |
 | 15 | Security Sentinel | Partially implemented | Secret scanning and SSRF hardening exist; no dependency/licence audit. |
-| 16 | Research Brain | Implemented but incompletely verified | Research mode with sources ledger and citation validation: `chat_research` tests with mock pages; live internet not verified. |
+| 16 | Research Brain | Implemented but incompletely verified | Research mode with sources ledger and citation validation (`chat_research` tests with mock pages, plus the same loop in Genius Web: `web-chat` tests). New: loose tool dialects (`<websearch {…}`, `<todo>{…}</todo>`) are parsed as calls, raw tool markup never reaches an answer, citations link to the fetched page (never `tauri.localhost`), script-built pages are labelled instead of guessed at. The live internet path was not exercised by these tests. |
 | 17 | Codebase Rescue | Partially implemented | Build Doctor repairs existing projects; Project Brain now maps them; no dedicated import-and-rescue flow. |
-| 18 | Mission Control | Implemented but incompletely verified | Mission board, controls, approvals: UI + `missions` tests with a scripted model; control-centre visuals are not an Agent City. |
+| 18 | Mission Control | Implemented but incompletely verified | Mission board, controls, approvals: UI + `missions` tests with a scripted model. New Agent Mode screen (automatic start, approval card, activity log, honest report) and an opt-in **live** mission against NVIDIA (`live_mission`: plan in 2.5 s, one task, isolated copy, approval, real file created, 'verification unknown' reported). Control-centre visuals are not an Agent City. |
 | 19 | Living Memory | Partially implemented | Project memory with provenance (user / repo / agent); Brain flags stale entries. No conflict resolution. |
-| 20 | Genius Core | Partially implemented | Evidence-based lifecycle in reports: verified, completed_unverified, answered, failed, blocked (new: stopped by a budget); task events add running, awaiting approval, cancelled. No `requested`/`planned` states, no resumable task state. |
+| 20 | Genius Core | Partially implemented | Evidence-based lifecycle: verified, completed_unverified, answered, failed, blocked; the Agent Mode UI shows *Completed, not verified* unless a real build or test passed (`agent-mode` tests). Genius Web shares the same engine rules (tool protocol, ledger, limits). |
 
 ## Capabilities 21–40: Broader product
 
@@ -120,7 +130,7 @@ Status words (grounded in evidence, see [STATUS.md](STATUS.md) and [TESTING.md](
 | 71 | Genius Privacy Shield | Partially implemented | Secret redaction in logs/events, secret scan, `.env` never sent; no PII detection. |
 | 72 | Genius Memory Doctor | Partially implemented | Stale-memory flags in Brain answers (missing files, old agent inference); no conflict detection or cleanup UI. |
 | 73 | Agent Certification Lab | Not implemented | — |
-| 74 | Genius Connection Doctor | Implemented but incompletely verified | New provider diagnostics: live NVIDIA passes (`live_provider_diagnostics…`); Anthropic/Gemini/OpenAI by contract tests only. |
+| 74 | Genius Connection Doctor | Implemented but incompletely verified | Provider diagnostics: live NVIDIA passes; Anthropic/Gemini/OpenAI by contract tests only. Genius Web adds browser-access facts verified against the real endpoints (preflight 2026-10-19): OpenAI, Anthropic and Gemini allow browser calls, NVIDIA does not (relay required). |
 | 75 | Genius Design DNA | Not implemented | — |
 | 76 | Genius Model Tournament | Not implemented | — |
 | 77 | Genius Learn Mode | Not implemented | — |
@@ -137,7 +147,7 @@ Status words (grounded in evidence, see [STATUS.md](STATUS.md) and [TESTING.md](
 | 83 | Genius Intent Router | Partially implemented | Request complexity → effort and tool use by the model; no explicit router. |
 | 84 | Genius Action Preview | Partially implemented | File changes and dependency installs are previewed/approved; other actions are not. |
 | 85 | Genius Model Handoff | Partially implemented | Conversations are provider-independent and tools are text-based, so switching provider continues a conversation; not tested mid-conversation. |
-| 86 | Genius Universal Search | Partially implemented | Conversation search, file search and quick open; not unified. |
+| 86 | Genius Universal Search | Partially implemented | Conversation search (titles and message text, desktop and web), file search and quick open; not unified. |
 | 87 | Genius Decision Ledger | Partially implemented | Memory entries of kind decision are recalled by the Brain; no dedicated ledger. |
 | 88 | Genius Screen Understanding | Partially implemented | Screenshots to vision models; not combined with accessible UI info. |
 | 89 | Genius Golden Journeys | Not implemented | — |
@@ -149,7 +159,7 @@ Status words (grounded in evidence, see [STATUS.md](STATUS.md) and [TESTING.md](
 | 95 | Genius Permission Simulator | Not implemented | Permissions are enforced and tested, not simulated. |
 | 96 | Genius Model Economics Advisor | Not implemented | Stats exist; no advisor. |
 | 97 | Genius Quality Profiles | Partially implemented | Fast/Balanced/Max set verification rounds; no custom profiles. |
-| 98 | Genius Provider Resilience | Partially implemented | Retries, model fallback chains, rejected-parameter memory, classified errors; no cross-provider failover. |
+| 98 | Genius Provider Resilience | Partially implemented | Retries, model fallback chains (also in Genius Web), rejected-parameter memory, classified errors; no cross-provider failover. |
 | 99 | Genius Release Intelligence | Not implemented | Changelog is written by hand. |
 | 100 | Genius Outcome Benchmark | Not implemented | — |
 

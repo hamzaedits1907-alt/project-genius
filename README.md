@@ -6,6 +6,18 @@
 >
 > Status: working MVP. See [docs/STATUS.md](docs/STATUS.md) for exactly what is verified, what is mocked in tests, and what is not done yet.
 
+## Genius Web (browser version)
+
+Genius also runs in the browser: accounts, synced conversations, Chat, Research with real citations, a Code assistant, Agent Mode (web tools), Projects and an owner admin panel. It uses **your own** provider key, kept only in the browser tab. Setup and the exact Netlify/Supabase steps: [docs/DEPLOY-NETLIFY-SUPABASE.md](docs/DEPLOY-NETLIFY-SUPABASE.md) (Turkish quick guide: [docs/KURULUM-TR.md](docs/KURULUM-TR.md)).
+
+```bash
+npm run dev:web      # http://localhost:1430 (landing) and /app/index.html (app)
+npm run build:web    # dist-web/ — what Netlify publishes
+npm run test:db      # row level security on a real PostgreSQL engine + proxy/relay tests
+```
+
+What a browser cannot do, Genius Web says so: no local project folders, terminal, Git or builds (use Genius Desktop for those).
+
 ## What it does
 
 - **Describe → Plan → Generate → Run.** A structured, editable plan (features, pages, data models, architecture, dependencies, tests, risks, assumptions); then real files for a Vite + React + TypeScript app, written live into the editor.

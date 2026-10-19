@@ -1,0 +1,168 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Project Genius — your own AI assistant</title>
+    <meta name="description" content="Genius is an AI assistant for chat, source-grounded research, images and files, data, and agents. Bring your own API key. Desktop app for Windows and a web app in your browser." />
+    <meta property="og:title" content="Project Genius" />
+    <meta property="og:description" content="Chat, research with real sources, files and images, agents. Bring your own key. Desktop and web." />
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+    <link rel="stylesheet" href="/site.css" />
+  </head>
+  <body>
+    <a class="skip" href="#main">Skip to content</a>
+    <header class="top">
+      <a class="brand" href="/"><img src="/favicon.svg" alt="" width="26" height="26" /> <span>Genius</span></a>
+      <nav aria-label="Main">
+        <a href="#features">Features</a>
+        <a href="#get">Download</a>
+        <a href="#providers">Providers</a>
+        <a href="#changelog">Changelog</a>
+        <a href="#faq">FAQ</a>
+        <a class="btn primary" href="/app/chat">Open Genius Web</a>
+      </nav>
+    </header>
+
+    <main id="main">
+      <section class="hero">
+        <p class="eyebrow">Bring your own key · Desktop and browser</p>
+        <h1>An AI assistant that shows its work.</h1>
+        <p class="lead">Genius chats, researches the web with sources it really read, understands your images and files, does exact maths, and runs multi-step missions — with your own provider account, and honest about what it did and did not verify.</p>
+        <div class="cta">
+          <a class="btn primary lg" href="/app/chat">Open Genius Web</a>
+          <a class="btn lg" id="dl-win" href="https://github.com/hamzaedits1907-alt/project-genius/releases/latest">Download for Windows</a>
+        </div>
+        <p class="fine" id="dl-note">Windows 10/11 · free · you pay only your own AI provider</p>
+        <figure class="shot"><img src="/screens/chat-welcome.png" alt="Genius chat: a welcome screen with a message box, model picker and four starting ideas" width="1400" height="900" /><figcaption>The Genius interface (screenshot with sample sidebar history).</figcaption></figure>
+      </section>
+
+      <section id="features" class="band">
+        <h2>What works today</h2>
+        <p class="sub">Everything here exists in the current release. Where something is limited, it says so.</p>
+        <div class="grid">
+          <article><h3>Chat</h3><p>Multi-turn conversations with saved history, search, Markdown, code, tables and mathematics. The assistant introduces itself as Genius and only talks about its underlying model when you ask — from measured facts.</p></article>
+          <article><h3>Research with real sources</h3><p>Genius searches, opens the pages and writes a report where every claim cites a page it actually fetched. A validator flags uncited claims; the Sources list comes from the fetch log, never from the model.</p></article>
+          <article><h3>Images and files</h3><p>Screenshots go to a vision-capable model as real pixels. Text, Markdown, CSV, JSON, code, PDF (text layer), Word and Excel files are read; scanned PDFs are not pretended to be readable.</p></article>
+          <article><h3>Exact numbers</h3><p>Arithmetic and table statistics are computed by tools, not guessed by the model.</p></article>
+          <article><h3>Agent Mode</h3><p>Describe a goal; Genius plans steps, runs them with real tools, shows each tool call, and ends with a report that separates <em>completed</em> from <em>verified</em>. On the desktop, agents work in an isolated copy of your project and ask before changes land.</p></article>
+          <article><h3>Project Brain (desktop)</h3><p>A map of your code: entry points, symbols, imports, who calls what, what a change may affect and which tests to run. A pattern scan, not a compiler.</p></article>
+          <article><h3>Code (desktop and web)</h3><p>Desktop: real projects, builds, previews, Git. Web: a code assistant that writes files you can copy, download and preview — it cannot run or test them.</p></article>
+          <article><h3>Your key, your bill</h3><p>OpenAI, Anthropic, Google Gemini, NVIDIA NIM and OpenAI-compatible endpoints. Genius sells capabilities, never model tokens.</p></article>
+        </div>
+        <div class="shots">
+          <figure><img src="/screens/chat-answer.png" alt="An answer with a formula, code and a table" loading="lazy" width="1400" height="900" /><figcaption>An answer with mathematics, code and a table.</figcaption></figure>
+          <figure><img src="/screens/research.png" alt="A research report with numbered citations and a sources panel" loading="lazy" width="1400" height="900" /><figcaption>Research: numbered citations and a sources panel.</figcaption></figure>
+        </div>
+      </section>
+
+      <section class="band alt">
+        <h2>Desktop or web?</h2>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th></th><th>Genius Desktop (Windows)</th><th>Genius Web</th></tr></thead>
+            <tbody>
+              <tr><th>Chat, Research, files, images</th><td>Yes</td><td>Yes</td></tr>
+              <tr><th>Agent Mode</th><td>Real tools in an isolated project copy, approvals, builds and tests</td><td>Web tools only (search, pages, calculation); cannot change files, never “verified” by a build</td></tr>
+              <tr><th>Code</th><td>Local projects, terminal, Git, live preview</td><td>Writes and previews code; nothing runs</td></tr>
+              <tr><th>Your provider key</th><td>Windows credential store</td><td>This browser tab only; gone when you close it</td></tr>
+              <tr><th>Account and sync</th><td>None (local data)</td><td>Account; conversations kept in your private account area</td></tr>
+              <tr><th>NVIDIA NIM</th><td>Direct</td><td>Through a relay that stores nothing (NVIDIA blocks browsers)</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <section id="get" class="band">
+        <h2>Download for Windows</h2>
+        <div class="card">
+          <p><a class="btn primary" id="dl-exe" href="https://github.com/hamzaedits1907-alt/project-genius/releases/download/v0.5.0/Genius_0.5.0_x64-setup.exe">Genius_0.5.0_x64-setup.exe</a> <a class="btn" id="dl-msi" href="https://github.com/hamzaedits1907-alt/project-genius/releases/download/v0.5.0/Genius_0.5.0_x64_en-US.msi">MSI installer</a> <a class="btn ghost" id="dl-all" href="https://github.com/hamzaedits1907-alt/project-genius/releases/latest">All platforms and checksums</a></p>
+          <ul>
+            <li><b>Requirements:</b> Windows 10 or 11 (64-bit) with WebView2 (preinstalled). For the Code workspace you also need Node.js 20+ and, optionally, Git.</li>
+            <li><b>Setup:</b> run the installer. Windows may show a warning because the installer is <b>not code-signed yet</b>: install only from this project's GitHub release and compare the published SHA-256 file next to the download.</li>
+            <li><b>First start:</b> open Settings → AI provider, choose your provider, paste your key, pick Auto or a model, press Test connection.</li>
+            <li><b>Updates:</b> Genius checks GitHub Releases and can update itself (the Windows updater was tested by hand by the author).</li>
+          </ul>
+          <p class="fine">macOS and Linux builds are published on the same release page; they are less tested than Windows.</p>
+        </div>
+      </section>
+
+      <section id="providers" class="band alt">
+        <h2>Providers and API keys</h2>
+        <p class="sub">You create the key in your own provider account and pay the provider directly. Keys are never stored on Genius servers.</p>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Provider</th><th>Get a key</th><th>In the browser</th><th>Verified</th></tr></thead>
+            <tbody>
+              <tr><th>NVIDIA NIM</th><td><a href="https://build.nvidia.com/">build.nvidia.com</a></td><td>Via the relay (you allow it in Settings)</td><td>Live on desktop</td></tr>
+              <tr><th>OpenAI</th><td><a href="https://platform.openai.com/api-keys">platform.openai.com</a></td><td>Direct</td><td>Contract tests only</td></tr>
+              <tr><th>Anthropic</th><td><a href="https://console.anthropic.com/settings/keys">console.anthropic.com</a></td><td>Direct</td><td>Contract tests only</td></tr>
+              <tr><th>Google Gemini</th><td><a href="https://aistudio.google.com/app/apikey">aistudio.google.com</a></td><td>Direct</td><td>Contract tests only</td></tr>
+              <tr><th>OpenAI-compatible</th><td>Your server's docs</td><td>Via the relay unless the server allows browsers</td><td>Not verified against any server</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <p class="fine">“Contract tests only” means the adapter is tested against a stand-in that copies the provider's documented format; no live call has been made yet. Use <b>Settings → AI provider → Test connection</b> to check your own key.</p>
+      </section>
+
+      <section class="band">
+        <h2>Privacy, security and known limits</h2>
+        <div class="grid two">
+          <article><h3>What we keep</h3><ul><li>Web: your conversations, sources and attachments live in your account, readable only by you (database row-level security).</li><li>Your provider key: never saved to an account or database.</li><li>Desktop: everything stays on your computer.</li></ul></article>
+          <article><h3>What to know</h3><ul><li>Models can be wrong; research reports flag claims without a source, but check anything important.</li><li>Web pages are treated as untrusted data; private and local addresses are blocked.</li><li>Genius Pro will sell Genius capabilities (Agent Mode, custom agents, bigger task budgets), not model usage. No live billing exists yet.</li></ul></article>
+        </div>
+      </section>
+
+      <section id="changelog" class="band alt">
+        <h2>Changelog</h2>
+        <div class="card" id="changelog-body">
+          <h3>Next release (this web build)</h3>
+          <ul>
+            <li>Genius Web: the browser app with accounts, synced conversations, Research, Code, Agent Mode (web tools), Projects and an owner admin panel.</li>
+            <li>Fixed malformed tool calls such as <code>&lt;web_search {…}&gt;</code>; raw tool markup never reaches an answer.</li>
+            <li>Fixed research citations that pointed at <code>tauri.localhost</code>; citations now link to the page that was fetched.</li>
+            <li>New Agent Mode screen, XLSX files, automatic model choice for OpenAI, Anthropic and Gemini, call relations in Project Brain.</li>
+          </ul>
+          <h3>0.5.0</h3>
+          <ul>
+            <li>Conversation-first interface, Markdown, tables and mathematics.</li>
+            <li>Project Brain, task limits, provider diagnostics, adapters for Anthropic, Gemini and OpenAI.</li>
+            <li>Faster image analysis; accurate task states (<em>verified</em> vs <em>completed, not verified</em>).</li>
+          </ul>
+          <p><a href="https://github.com/hamzaedits1907-alt/project-genius/blob/main/CHANGELOG.md">Full changelog on GitHub</a></p>
+        </div>
+      </section>
+
+      <section class="band">
+        <h2>Roadmap, honestly</h2>
+        <p class="sub">Genius has a long list of ideas. Each has a status in the <a href="https://github.com/hamzaedits1907-alt/project-genius/blob/main/docs/ROADMAP.md">public roadmap</a>: implemented, partial, unverified, deferred or not started. Voice is deliberately deferred. Next: more providers verified live, interactive charts and artifacts, resumable tasks, a deeper Project Brain.</p>
+      </section>
+
+      <section id="faq" class="band alt">
+        <h2>FAQ and troubleshooting</h2>
+        <details><summary>Do I need to pay for Genius?</summary><p>The desktop app and Genius Web are free to use today. You pay your AI provider for the models you use. A Pro plan for Genius capabilities is planned; no billing is live.</p></details>
+        <details><summary>“The provider rejected the key”</summary><p>Check that the key belongs to the provider selected in Settings, has no extra spaces, and has access to the chosen model. Press Test connection for a step-by-step report.</p></details>
+        <details><summary>NVIDIA does not work in the browser</summary><p>NVIDIA blocks calls from web pages. In Settings → AI provider allow the relay for NVIDIA, or use the desktop app, which calls NVIDIA directly.</p></details>
+        <details><summary>I closed the tab and my key is gone</summary><p>That is deliberate: in the browser the key lives only in the tab. Paste it again. The desktop app stores it in the Windows credential store.</p></details>
+        <details><summary>Windows says the installer is unsafe</summary><p>The installer is not code-signed yet. Download only from this project's GitHub release and compare the SHA-256 file published next to it.</p></details>
+        <details><summary>A scanned PDF cannot be read</summary><p>Genius reads PDF text layers. For scans, attach the pages as images to a vision-capable model.</p></details>
+        <details><summary>Agent Mode in the browser did not change my files</summary><p>Correct: a browser cannot touch your computer. Use Genius Desktop for missions that edit a project.</p></details>
+      </section>
+    </main>
+
+    <footer>
+      <div>
+        <b>Project Genius</b>
+        <p class="fine">An independent project. Not affiliated with any AI provider.</p>
+      </div>
+      <nav aria-label="Footer">
+        <a href="https://github.com/hamzaedits1907-alt/project-genius">GitHub</a>
+        <a id="discord" href="#" hidden>Discord</a>
+        <a href="https://github.com/hamzaedits1907-alt/project-genius/issues">Report a problem</a>
+        <a href="/app/chat">Open Genius Web</a>
+      </nav>
+    </footer>
+    <script src="/site-config.js"></script>
+    <script src="/site.js"></script>
+  </body>
+</html>

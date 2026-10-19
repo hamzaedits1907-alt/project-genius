@@ -62,7 +62,7 @@ export function Sidebar() {
 
   const groups = useMemo(() => groupByRecency(all), [all]);
   const open = (c: ChatConversation) => {
-    navigate({ name: c.mode });
+    navigate(c.origin?.flavor === 'code' ? { name: 'code' } : { name: c.mode });
     void useChat.getState().select(c.mode, c.id);
   };
   const activeId = route.name === 'chat' ? active.chat : route.name === 'research' ? active.research : null;
@@ -71,10 +71,10 @@ export function Sidebar() {
   const nav = [
     { key: 'chat', label: 'Chat', icon: <MessageSquare size={16} />, on: route.name === 'chat', go: () => navigate({ name: 'chat' }) },
     { key: 'research', label: 'Research', icon: <Globe2 size={16} />, on: route.name === 'research', go: () => navigate({ name: 'research' }) },
-    { key: 'code', label: 'Code', icon: <Code2 size={16} />, on: ['home', 'create', 'project'].includes(route.name), go: () => navigate({ name: 'home' }), badge: approvals.length },
+    { key: 'code', label: 'Code', icon: <Code2 size={16} />, on: ['home', 'create', 'project', 'code'].includes(route.name), go: () => navigate(capabilities.localProjects ? { name: 'home' } : { name: 'code' }), badge: approvals.length },
     { key: 'agents', label: 'Agents', icon: <Bot size={16} />, on: route.name === 'agents', go: () => navigate({ name: 'agents' }), badge: agentApprovals },
     { key: 'projects', label: 'Projects', icon: <FolderKanban size={16} />, on: route.name === 'projects', go: () => navigate({ name: 'projects' }) },
-  ].filter((n) => capabilities.localProjects || n.key !== 'code');
+  ];
   const updateReady = !!update?.available && update.latestVersion !== skipped;
 
   if (collapsed) {
@@ -198,6 +198,7 @@ export function Sidebar() {
         )}
       </div>
 
+      <div className="gx-account-row"><AccountBlock /></div>
       <div className="gx-side-foot">
         <button onClick={() => setFiles(true)} aria-label="Saved files" title="Files you attached in Chat and Research">
           <Paperclip size={15} /> <span>Files</span>
@@ -211,7 +212,6 @@ export function Sidebar() {
           </button>
         )}
         <span className="spacer" />
-        <AccountBlock />
         <button className={route.name === 'settings' ? 'on' : ''} onClick={() => navigate({ name: 'settings' })} aria-label="Settings" title="Settings (Ctrl+,)">
           <SettingsIcon size={15} /> <span>Settings</span>
         </button>

@@ -1,5 +1,29 @@
 # Status
 
+## Unreleased (branch `genius-web-launch`) — Genius Web and core repairs
+
+Evidence levels as below: **tested (mock)**, **contract**, **live**, **user-reported**, **not verified**. New here: **real engine** = run against a real local component (PostgreSQL via PGlite, a real local HTTP server, a real browser).
+
+| Area | State | Evidence / limits |
+|---|---|---|
+| Malformed tool calls (`<web_search {…}>`, `<websearch {…}` without `>`, `<todo>{…}</todo>`, Markdown-link URLs) | fixed | Rust: `toolcall` unit tests + `chat_research` integration tests; TypeScript twin in Genius Web (`web-engine`, `web-chat`). Raw markup never reaches an answer (one correction round, then stripped); identical failing calls are blocked. Mock models only: no live model was asked to produce these dialects. |
+| Citation links (`tauri.localhost/#src-1`) | fixed | Anchors replaced by links to the fetched page or plain text; local/app links never rendered as sources (`citations` UI tests, `strip_app_links` tests, ledger tests). |
+| Identity / creator | fixed | `product_creator` setting (default Hamza), "never assume the user is the creator", conversation facts kept (`chat_identity` tests). |
+| Research on a URL (script-built pages) | improved | Page note + metadata (unit and local-server tests). A live fetch of the Lufthansa example page was **not** run. |
+| Agent Mode | UI rebuilt; engine verified | The mission engine already worked: opt-in **live** run against NVIDIA (`live_mission`): plan 2.5 s, one task in an isolated copy, approval, real `docs/inventory.md`, completed with verification *unknown* (reported as such). The failures were product flow (a project was required, manual start, buried approval). UI: automatic start, approval card, activity log, report (`agent-mode` tests). |
+| XLSX files | implemented | Unit test with a constructed workbook; first sheet as table, others named in a note. Scanned PDFs are still not OCR'd (honest message: attach pages as images). |
+| Auto model choice (OpenAI/Anthropic/Gemini) | implemented | `router` unit tests with model lists; **no live call**. |
+| Project Brain call relations | implemented | `tests/brain.rs`. Pattern scan only. |
+| UI redesign (desktop and web) | implemented | Visual system, model chip, Projects, Agent Mode, shortcuts; Vitest suites and screenshots of the real interface in headless Chrome. **Not** run inside the packaged Tauri window. |
+| Genius Web runtime/engine | implemented | `web-engine` 14, `web-chat` 8, `web-runtime` 9 tests with a scripted model and stand-in tools; interface rendered in a real browser (local-only mode). **No live provider call from the browser; no configured Supabase project yet.** |
+| Supabase schema, RLS, admin functions | implemented | **real engine**: 18 tests on PostgreSQL (PGlite) with the real migrations: owner isolation, no self-escalation, no client path to plans/flags/admin, secret rejection in preferences, kill switch, rollout, cohorts, grants, suspension, audit. **Not verified on a live Supabase project** (auth emails, redirect URLs, storage). |
+| Web proxy and provider relay | implemented | **real engine**: 12 tests incl. SSRF forms, redirect hops, size/type limits against a local server. Not deployed. |
+| Browser access of providers | measured | Preflight on 2026-10-19: OpenAI yes, Anthropic yes (browser header), Gemini yes, NVIDIA no (no CORS headers) → relay with explicit user consent. |
+| Billing | not implemented | By design. |
+| Windows updater | **user-reported OK** | Tested by hand by the user; not re-run. |
+
+Known gaps: custom agents/teams in the browser, pause/resume of web missions, charts/artifacts, resumable tasks, scanned-PDF OCR, live verification of non-NVIDIA providers, Netlify long-stream limits.
+
 ## 0.5.0 — Genius Core: general-purpose assistant, Project Brain, budgets, providers
 
 Verification levels: **tested (mock)** = automated test against a scripted stand-in (model or HTTP server); **contract** = adapter tested against a stand-in server that mimics the provider's documented request/response shapes; **live** = run against the real API with the author's NVIDIA key; **user-reported** = tested by the user by hand; **not verified** = not run.

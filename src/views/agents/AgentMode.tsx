@@ -9,6 +9,7 @@ import type { AgentTaskLog, Mission, MissionTask } from '../../lib/types';
 import { useAgents } from '../../store/agents';
 import { useApp } from '../../store/app';
 import { api, errorMessage } from '../../lib/api';
+import { GATE_TEXT, useFeature } from '../../lib/access';
 import { Badge, Button, Callout, Modal } from '../../components/ui';
 import ReviewView from '../workspace/ReviewView';
 
@@ -235,12 +236,13 @@ export default function AgentMode() {
   const [goal, setGoal] = useState('');
   const [projectId, setProjectId] = useState<string>('new');
   const [busy, setBusy] = useState(false);
+  const gate = useFeature('agent_mode');
   const connected = !!keyStatus?.stored;
   const hasModel = connected && (!!settings?.model || settings?.modelMode === 'auto');
   const list = useMemo(() => [...missions].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)), [missions]);
   const mission = missions.find((m) => m.id === selectedId) ?? null;
   const box = useRef<HTMLTextAreaElement>(null);
-  const canStart = goal.trim().length >= 8 && hasModel && !busy;
+  const canStart = goal.trim().length >= 8 && hasModel && !busy && gate.available;
 
   useEffect(() => {
     const el = box.current;
@@ -307,6 +309,7 @@ export default function AgentMode() {
                 </button>
               </div>
             </div>
+            {!gate.available && <Callout tone="warn" title={gate.reason === 'loading' ? 'Checking your access' : 'Agent Mode is not available to you right now'}>{GATE_TEXT[gate.reason] ?? 'Not available.'}</Callout>}
             {!hasModel && <Callout tone="warn" title="Connect a provider first">Agent Mode needs your own provider key. Add it in Settings → AI provider.</Callout>}
             {!mission && (
               <div className="gx-ideas" aria-label="Examples">

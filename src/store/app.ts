@@ -8,11 +8,13 @@ export type Route =
   | { name: 'chat' }
   | { name: 'research' }
   | { name: 'projects' }
+  | { name: 'code' }
+  | { name: 'admin' }
   | { name: 'settings'; tab?: SettingsTab }
   | { name: 'project'; id: string }
   | { name: 'agents'; tab?: 'run' | 'agents' | 'missions' | 'teams' };
 
-export type SettingsTab = 'ai' | 'github' | 'integrations' | 'approvals' | 'workspace' | 'appearance' | 'updates';
+export type SettingsTab = 'ai' | 'github' | 'integrations' | 'approvals' | 'workspace' | 'appearance' | 'updates' | 'account';
 
 export interface Toast {
   id: number;

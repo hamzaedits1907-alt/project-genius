@@ -10,6 +10,9 @@ import { useApp } from '../store/app';
 import { Badge, Button, Callout, Empty, Modal, Spinner, StatusBadge } from '../components/ui';
 import { GeniusAvatar } from '../components/GeniusAvatar';
 import { markAutoBuild } from '../store/workspace';
+import { KEY_LINK, KEY_PLACEHOLDER } from './ProviderPanels';
+import { isWeb } from '../lib/platform';
+import type { ProviderId } from '../lib/types';
 import { BlueprintGallery } from '../components/BlueprintGallery';
 import { EnhanceButton } from '../components/EnhanceButton';
 import { blueprintById, type Blueprint } from '../lib/blueprints';
@@ -470,9 +473,19 @@ export function QuickSetup() {
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
+  const settings = useApp((s) => s.settings);
+  const provider: ProviderId = settings?.provider ?? 'nvidia';
+  const providerLabel = { nvidia: 'NVIDIA', openai: 'OpenAI', anthropic: 'Anthropic', gemini: 'Google Gemini', custom: 'your endpoint' }[provider];
+
   const pickModel = async () => {
     setBusy('Finding the best model for you…');
     const list = await api.listModels(true);
+    if (provider !== 'nvidia' && provider !== 'custom') {
+      // Auto picks among the models this key lists; the key is proven by the listing above
+      setSettings(await api.saveSettings({ ...(settings as NonNullable<typeof settings>), modelMode: 'auto', model: null }));
+      toast('ok', `Connected: ${list.models.length} models are available. Genius picks one for each request; you can choose one in Settings.`);
+      return;
+    }
     const best = recommendModel(list.models);
     if (!best) throw new Error('No chat models are available for this key. Choose one in Settings → AI provider.');
     setSettings(await api.selectModel(best));
@@ -507,11 +520,24 @@ export function QuickSetup() {
                 'Your key is saved. Genius will pick a strong coding model for you.'
               ) : (
                 <>
-                  Paste a free NVIDIA API key from{' '}
-                  <a href="#" onClick={(e) => (e.preventDefault(), void openUrl('https://build.nvidia.com/'))}>
-                    build.nvidia.com
-                  </a>
-                  . It's stored in your system's secure credential store, never in a file.
+                  {isWeb && (
+                    <select className="select" style={{ marginRight: 8 }} aria-label="Provider" value={provider} onChange={(e) => settings && void api.saveSettings({ ...settings, provider: e.target.value as ProviderId, baseUrl: '', model: null }).then(setSettings)}>
+                      <option value="openai">OpenAI</option>
+                      <option value="anthropic">Anthropic</option>
+                      <option value="gemini">Google Gemini</option>
+                      <option value="nvidia">NVIDIA NIM</option>
+                    </select>
+                  )}
+                  Paste your {providerLabel} API key
+                  {KEY_LINK[provider] && (
+                    <>
+                      {' '}from{' '}
+                      <a href="#" onClick={(e) => (e.preventDefault(), void openUrl(KEY_LINK[provider]!))}>
+                        {KEY_LINK[provider]!.replace('https://', '').replace(/\/$/, '')}
+                      </a>
+                    </>
+                  )}
+                  . {isWeb ? 'It stays in this browser tab only and is never saved to your account.' : "It's stored in your system's secure credential store, never in a file."}
                 </>
               )}
             </div>
@@ -523,8 +549,8 @@ export function QuickSetup() {
                 type="password"
                 autoComplete="off"
                 spellCheck={false}
-                placeholder="nvapi-…"
-                aria-label="NVIDIA API key"
+                placeholder={KEY_PLACEHOLDER[provider]}
+                aria-label={`${providerLabel} API key`}
                 value={key}
                 onChange={(e) => setKey(e.target.value)}
                 onKeyDown={(e) => e.key === 'Enter' && key.trim() && void connect()}
