@@ -27,6 +27,7 @@ pub mod github;
 pub mod inspection;
 pub mod inspector;
 pub mod integrations;
+pub mod integrity;
 pub mod isolation;
 pub mod missions;
 pub mod model_stats;

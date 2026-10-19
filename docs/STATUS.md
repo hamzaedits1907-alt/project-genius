@@ -1,6 +1,21 @@
 # Status
 
-## Unreleased (branch `genius-web-launch`) — Genius Web and core repairs
+## 0.6.0 — Code Mode repair, desktop accounts, advanced admin
+
+Evidence words: **real pipeline** = real npm / tsc / Vite / Vitest / headless Chrome against a real project folder (only the model is scripted); **real engine** = real PostgreSQL (PGlite) with the real migrations; **tested (mock)**; **not verified**.
+
+| Area | State | Evidence / limits |
+|---|---|---|
+| Code Mode: generated app shown as built while the preview showed the starter page | **fixed** | Root causes found by reading the pipeline: (1) cut-off or forgotten files (usually `src/App.tsx`, written last) were dropped silently; (2) the generate task counted as *completed* when it only proposed files or its build failed, and the UI then jumped to a preview of the old disk state; (3) verification built the starter template and reported success; (4) in review mode a build ran on the OLD files and counted as verification of the staged ones. Fix: output integrity checks (`integrity.rs`) + bounded targeted completion rounds, starter-only projects apply directly, an explicit state machine (`awaiting_review`, `incomplete`, `build_failed`, `built`, `runtime_errors`, `verified`), placeholder guard in build/verify/agent checks, banner + status badges in the UI. |
+| Personal Finance Tracker regression | passes | **real pipeline**: `tests/finance.rs` — first model answer cut off and without App.tsx → Genius asks again naming the files → apply → npm install → tsc + vite build → Vitest → dev server serves the generated App → headless Chrome: dashboard totals, add/edit/delete, search/filter, navigation, localStorage persistence after reload, 375/768 px layouts, no console errors → regeneration waits for review, apply → follow-up change visible in the running preview. A second test asserts a model that never writes App.tsx FAILS (no build is run, nothing reported as built). 46 s. Model output is scripted: this proves the pipeline, not any live model's code quality. |
+| Draft/apply distinction | implemented | Files marked "not applied" / "cut off — not saved", banner with Apply / Review / Discard, `pendingChangeset` in project status; 5 UI tests (`generation-banner`). |
+| Desktop sign-up / sign-in (Supabase) | implemented | Same project as Genius Web; optional; settings → Account; public-key check refuses service-role/secret keys. **Not verified against a live Supabase project** (needs the project URL/anon key and the dashboard setting below). |
+| E-mail confirmation | **owner action** | Must be switched off in the Supabase dashboard (cannot be done by code). The app handles both settings. Admin never depends on e-mail. |
+| Provider key persistence | implemented | Desktop: OS credential store (already). Web: "Remember this key on this device" — AES-GCM + non-exportable key in IndexedDB; 6 tests with real Web Crypto and a stand-in IndexedDB. Not a defence against XSS (documented). Real IndexedDB in a real browser: not run. |
+| Owner admin panel | rebuilt | users (filters, sort, paging, bulk, drawer, notes, CSV), usage charts, plan limits, maintenance, registrations switch, announcements, audit filters, read-only admin list, system checks. **real engine**: 9 new tests (27 in total in `rls.test.ts`). The React panel itself is typechecked and linted, **not** exercised in a browser against a database. |
+| Public site | updated | NVIDIA key guide (steps from NVIDIA's documented flow; limits are NVIDIA's and may change), Discord invite, no GitHub repository links. |
+
+## 0.6.0 (continued) — Genius Web and core repairs
 
 Evidence levels as below: **tested (mock)**, **contract**, **live**, **user-reported**, **not verified**. New here: **real engine** = run against a real local component (PostgreSQL via PGlite, a real local HTTP server, a real browser).
 

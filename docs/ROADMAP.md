@@ -23,6 +23,9 @@ Status words (grounded in evidence, see [STATUS.md](STATUS.md) and [TESTING.md](
 | Accounts, synced history, preferences, entitlements, feature flags, early access, owner admin | Implemented as migrations + admin functions; **18 row-level-security tests pass on a real PostgreSQL engine (PGlite)**; not yet run on a live Supabase project |
 | Web proxy (search, page reading) and provider relay (Netlify functions) | Implemented; SSRF rules and redirect handling tested against a real local HTTP server (`tests/netlify`); not deployed yet |
 | Public landing / download site | Implemented; download links resolve to real release assets |
+| Owner admin: users, bulk actions, limits, maintenance, announcements, audit | Implemented (0.6.0); **27 database tests on real PostgreSQL**; panel not yet exercised in a browser against a live database |
+| Desktop account (optional, same login as web) | Implemented (0.6.0); mock/unit level; not run against a live Supabase project |
+| Code workspace generation pipeline (completion rounds, starter-page guard, review state, real-browser check) | Implemented and **verified on a real pipeline** with a scripted model (`tests/finance.rs`); not yet run with a live model in this release |
 | Billing | **Not implemented on purpose** (no live billing until you authorise it) |
 
 ## Foundations (previous release)

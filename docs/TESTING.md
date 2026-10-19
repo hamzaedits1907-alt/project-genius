@@ -1,5 +1,25 @@
 # Testing
 
+## 0.6.0 run (this workstation, Windows 11, Node 22, Chrome installed)
+
+Run one suite at a time (the machine runs out of resources if many `npm install`s start at once: the 8 dashboard tests need `--test-threads=2`).
+
+| Suite | Result | Kind |
+|---|---|---|
+| `cargo test -p genius-core --lib` | 311 passed | unit |
+| `--test finance` (Personal Finance Tracker: plan → generate with a cut-off answer and no App.tsx → completion round → apply → npm install → tsc/vite → vitest → dev server → headless Chrome interactions → review/apply → follow-up; and the never-writes-App.tsx failure case) | 2 passed (46 s) | **real pipeline**, scripted model |
+| `--test e2e` | 2 passed | real pipeline, mock model |
+| `--test dashboard -- --test-threads=2` | 8 passed | real pipeline, mock model |
+| `--test agent`, `missions` | 9 + 5 passed | real agent/mission engine, isolated copies, mock model |
+| `--test chat_research`, `chat_identity`, `providers`, `brain`, `web_ssrf`, `browser` | 15, 10, 16, 7, 5, 6 passed | mock/contract; `browser` is a real headless browser |
+| `cargo clippy` (CI flags), `cargo test -p genius` | clean, passed | |
+| `npm run typecheck`, `npm run lint`, `npm test` | clean, 215 passed (24 files) | jsdom UI tests |
+| `npm run build`, `npm run build:web` | pass | |
+| `npm run test:db` (PGlite + Netlify config/proxy) | 44 passed | **real engine** |
+
+Not run: live NVIDIA/OpenAI/Anthropic/Gemini calls in this release (opt-in `live_*` tests), a live Supabase project, the deployed Netlify site, the packaged Tauri window, the React admin panel against a database, real IndexedDB in a browser.
+
+
 Three layers, all runnable locally. Live NVIDIA and live GitHub are **not** exercised by automated tests (no credentials in CI); everything else uses real tools.
 
 ## 1. Rust unit tests — `cargo test -p genius-core --lib`

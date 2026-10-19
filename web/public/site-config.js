@@ -1,3 +1,2 @@
-// Public site settings. Add the project's Discord invite link here to show it in the footer
-// (leave empty to hide it; the site never invents links).
-window.GENIUS_SITE = { discordUrl: '' };
+// Public site settings.
+window.GENIUS_SITE = { discordUrl: 'https://discord.gg/AVBTnCN5D6' };

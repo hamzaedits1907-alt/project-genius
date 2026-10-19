@@ -348,12 +348,23 @@ export const useWorkspace = create<WorkspaceState>((set, get) => ({
         } else set({ stage: 'plan' });
       }
       if (ev.detail.taskKind === 'generate' && ev.status === 'completed') {
-        set({ stage: 'preview' });
-        // Simple mode: show the freshly built app right away.
-        const pid = ev.projectId;
-        if (pid && useApp.getState().settings?.uiMode !== 'advanced' && get().preview.status === 'stopped') {
-          runApp(pid).catch((e) => useApp.getState().toast('bad', `Could not start the app: ${errorMessage(e)}`));
+        // A completed task is not a working app: the engine reports how far it really got.
+        const state = (ev.detail.result as { state?: string } | undefined)?.state;
+        if (state === 'awaiting_review') {
+          set({ stage: 'code' }); // the files exist only as drafts: show them, not the stale preview
+          useApp.getState().toast('info', 'The generated files are drafts and are NOT in your project yet. Apply them to build the app.');
+        } else {
+          set({ stage: 'preview' });
+          // Simple mode: show the freshly built app right away, but only when it was really built.
+          const pid = ev.projectId;
+          const built = state === 'verified' || state === 'built' || state === 'runtime_errors';
+          if (pid && built && useApp.getState().settings?.uiMode !== 'advanced' && get().preview.status === 'stopped') {
+            runApp(pid).catch((e) => useApp.getState().toast('bad', `Could not start the app: ${errorMessage(e)}`));
+          }
         }
+      }
+      if (ev.detail.taskKind === 'generate' && ev.status === 'failed') {
+        set({ stage: 'plan' }); // never jump to a preview of the starter page after a failed generation
       }
       if (ev.status !== 'running') {
         void s.refreshProject();

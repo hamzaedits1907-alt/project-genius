@@ -79,7 +79,11 @@ export default function FileExplorer() {
             {n.entry?.sensitive ? <Lock size={12} color="var(--text-3)" /> : <FileText size={13} color="var(--text-3)" />}
             <span className="ellipsis">{n.name}</span>
             {draft && draft.status === 'streaming' && <span className="tag draft">writing…</span>}
-            {draft && draft.status !== 'streaming' && <span className="tag draft">{draft.status === 'delete' ? 'delete?' : 'draft'}</span>}
+            {draft && draft.status !== 'streaming' && (
+              <span className="tag draft" title="Written by the AI but not saved to the project yet">
+                {draft.status === 'delete' ? 'delete pending' : draft.status === 'incomplete' ? 'cut off — not saved' : 'not applied'}
+              </span>
+            )}
             {dirty && <span className="tag mod">●</span>}
           </button>
           {onDisk && (

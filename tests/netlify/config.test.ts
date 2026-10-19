@@ -39,6 +39,6 @@ describe('built output (after npm run build:web)', () => {
     const app = readFileSync(join(dist, 'app', 'index.html'), 'utf8');
     expect(app).toMatch(/<script type="module" crossorigin src="\/assets\//);
     expect(app).not.toMatch(/<script>[^<]+<\/script>/); // no inline scripts: the CSP forbids them
-    expect(readFileSync(join(dist, 'index.html'), 'utf8')).not.toMatch(/sk-[a-z0-9]{20}|nvapi-/i);
+    expect(readFileSync(join(dist, 'index.html'), 'utf8')).not.toMatch(/sk-[a-z0-9]{20}|nvapi-[a-z0-9_-]{20,}/i);
   });
 });

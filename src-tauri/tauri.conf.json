@@ -29,7 +29,7 @@
         "style-src": "'self' 'unsafe-inline'",
         "img-src": "'self' data: blob:",
         "font-src": "'self' data:",
-        "connect-src": "ipc: http://ipc.localhost",
+        "connect-src": "ipc: http://ipc.localhost https://*.supabase.co",
         "frame-src": "http://127.0.0.1:*",
         "object-src": "'none'",
         "base-uri": "'self'",

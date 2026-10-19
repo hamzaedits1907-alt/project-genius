@@ -4,6 +4,9 @@ import App from './App';
 import './styles/global.css';
 import './styles/chat.css';
 import './styles/genius.css';
+import { initDesktopAccount } from './web/desktopAccount';
+
+initDesktopAccount();
 
 // Block the webview's default context menu outside text fields (desktop-app feel).
 document.addEventListener('contextmenu', (e) => {

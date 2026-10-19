@@ -44,18 +44,19 @@ Without Supabase you can try the interface with `VITE_GENIUS_LOCAL=1 npm run dev
 
 1. Use the organization you already have: create a project in it (or reuse one).
 2. Apply the migrations in `supabase/migrations` in order (SQL Editor → paste each file → Run, or `supabase link` + `supabase db push`):
-   `20261019000000_genius_web.sql`, `20261019000100_genius_web_storage.sql`, `20261019000200_missions.sql`.
+   `20261019000000_genius_web.sql`, `20261019000100_genius_web_storage.sql`, `20261019000200_missions.sql`, `20261020000000_admin_advanced.sql` (advanced admin: settings, limits, maintenance, announcements, quotas, bulk actions).
 3. Authentication → URL Configuration:
    - **Site URL**: `https://<your-site>.netlify.app/app`
    - **Redirect URLs**: `https://<your-site>.netlify.app/app` (add your own domain too if you use one). Do not add wildcards such as `*`.
-4. Authentication → Providers → Email: enabled. Keep **Confirm email** on.
-5. Become the owner: sign up in Genius Web with your email, then in the SQL Editor run
-   `insert into public.admin_users (user_id) select id from auth.users where email = 'YOUR-EMAIL';`
-   (Only this SQL path can create administrators; no client can.)
+4. Authentication → Sign In / Providers → Email: enabled. **Confirm email: switch it OFF** if you want sign-up to open the app immediately (desktop and web). This is a Supabase setting that application code cannot change. Genius also works with it on (the sign-up screen then asks the user to open the e-mailed link). Administrators are never derived from e-mail addresses, so turning it off does not weaken the admin boundary.
+5. Become the owner (one time, by user id — see `docs/ADMIN-BOOTSTRAP.md`): sign up, copy your **User UID** (Authentication → Users) and run
+   `insert into public.admin_users (user_id) values ('USER-UID');`
+   (Only this SQL path can create administrators; no client can. An existing row stays valid.)
+6. Desktop sign-in uses the same project: set the GitHub repository **variables** `VITE_SUPABASE_URL` and `VITE_SUPABASE_ANON_KEY` (Settings → Secrets and variables → Actions → Variables) before cutting a release, or let users paste them once in the app (Settings → Account).
 
 ## What stays private
 
-- AI provider keys: never stored in Supabase or Netlify; they live in the user's browser tab (sessionStorage) and are sent only to the provider (directly, or through `/api/relay` for NVIDIA/custom endpoints, which forwards and stores nothing).
+- AI provider keys: never stored in Supabase or Netlify; in the browser they live in the tab (sessionStorage) or — if the user ticks "Remember this key on this device" — encrypted (AES-GCM, non-exportable Web Crypto key) in that browser's IndexedDB, never synced; on the desktop in the OS credential store. They are sent only to the provider (directly, or through `/api/relay` for NVIDIA/custom endpoints, which forwards and stores nothing).
 - Conversations, sources, files, preferences: stored per user; row level security allows only the owner to read or change them (tested on real PostgreSQL in `tests/db/rls.test.ts`).
 - Administrators: the `admin_users` table has no client policy at all; all admin actions are database functions that re-check the caller and write `admin_audit`.
 

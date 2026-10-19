@@ -24,8 +24,24 @@ const TABS: { id: SettingsTab; label: string; icon: React.ReactNode }[] = [
   { id: 'account', label: 'Account', icon: <KeyRound size={15} /> },
 ];
 /** Tabs that need a local computer (GitHub CLI, project folders, updates) are not offered in the browser. */
+const REMEMBER_KEY = 'genius.rememberKey';
+const readRememberPref = (): boolean => {
+  try {
+    return localStorage.getItem(REMEMBER_KEY) === '1';
+  } catch {
+    return false;
+  }
+};
+const writeRememberPref = (on: boolean) => {
+  try {
+    localStorage.setItem(REMEMBER_KEY, on ? '1' : '0');
+  } catch {
+    /* preference not saved */
+  }
+};
+
 const WEB_TABS: SettingsTab[] = ['ai', 'appearance', 'account'];
-const visibleTabs = () => TABS.filter((t) => (isWeb ? WEB_TABS.includes(t.id) : t.id !== 'account'));
+const visibleTabs = () => TABS.filter((t) => (isWeb ? WEB_TABS.includes(t.id) : true));
 
 export default function SettingsView({ initialTab }: { initialTab?: SettingsTab }) {
   const [tab, setTab] = useState<SettingsTab>(initialTab ?? 'ai');
@@ -112,10 +128,12 @@ function AiSettings() {
     void loadModels(false);
   }, []);
 
+  // Web only: remember the key (encrypted) on this device. Defaults to the last choice.
+  const [remember, setRemember] = useState<boolean>(() => keyStatus?.remembered ?? (isWeb ? readRememberPref() : false));
   const saveKey = async () => {
     setBusy('key');
     try {
-      const st = await api.saveApiKey(key);
+      const st = await api.saveApiKey(key, remember);
       setKeyStatus(st);
       setKey('');
       toast('ok', `Key saved to ${st.backend}`);
@@ -217,6 +235,15 @@ function AiSettings() {
             </Button>
           )}
         </div>
+        {isWeb && (
+          <label className="row small" style={{ gap: 8, alignItems: 'flex-start' }}>
+            <input type="checkbox" checked={remember} disabled={keyStatus?.canRemember === false} onChange={(e) => { setRemember(e.target.checked); writeRememberPref(e.target.checked); }} aria-label="Remember this key on this device" style={{ marginTop: 3 }} />
+            <span>
+              <b>Remember this key on this device</b>
+              <span className="faint"> — saved encrypted in this browser so you do not have to paste it on every visit. It is never sent to Genius servers or your account and is not synced to other devices. Anyone using this browser profile, or a malicious script on this page, could still use it; leave this off on shared computers. {keyStatus?.canRemember === false ? 'This browser cannot store it (private window or blocked storage), so it will be kept for this tab only.' : ''}</span>
+            </span>
+          </label>
+        )}
         <div className="faint small">
           Stored in: {keyStatus?.backend ?? '…'}. The key never returns to this window, is never written to project files or logs, and is never exposed to previewed apps.
         </div>

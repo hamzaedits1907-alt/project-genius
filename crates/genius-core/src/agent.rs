@@ -1277,6 +1277,13 @@ impl Genius {
         let settings = self.settings()?;
         let mut run = Run::new(project_id, task_id, Some(conv_id), Role::Main, mode, effort);
         run.autopilot = mode == AgentMode::Build && req.autopilot.unwrap_or(settings.approvals.apply_ai_edits == crate::settings::Policy::Auto);
+        // Nothing of the user's exists yet in a project that still holds only the starter page, so
+        // the first application is written straight to the project (every step stays a revertible
+        // checkpoint) and verified there; otherwise it would sit as a draft while the preview
+        // kept showing the starter.
+        if mode == AgentMode::Build && req.autopilot.is_none() && !run.autopilot && self.workspace(project_id).is_ok_and(|ws| self.starter_only(&ws)) {
+            run.autopilot = true;
+        }
         run.request = req.message.trim().lines().next().unwrap_or("").chars().take(80).collect();
         let mut messages = self.agent_prompt(project_id, conv_id, Role::Main, mode, effort, run.autopilot, &message, None)?;
         let req = AgentRequest { message, mode, ..req.clone() };
@@ -2259,7 +2266,14 @@ impl Genius {
                 let diags = crate::diagnostics::parse(&out.output_tail);
                 let diag_text: String = diags.iter().take(40).map(|d| format!("{}:{}:{} {} {}\n", d.file.as_deref().unwrap_or("?"), d.line.unwrap_or(0), d.column.unwrap_or(0), d.code.as_deref().unwrap_or(""), d.message)).collect();
                 let excerpts = if out.ok() { String::new() } else { self.diagnostic_excerpts(run, &ws, &diags) };
-                let staged_note = if !run.autopilot && !run.staged.is_empty() { format!("NOTE: your {} pending edits are not on disk yet, so this check ran on the current files.\n", run.staged.len()) } else { String::new() };
+                // Edits that are only staged are not in the project folder: the check ran on the OLD
+                // files. It is real, but it says nothing about the pending edits, so it never counts
+                // as verification of them.
+                let stale = !run.autopilot && !run.staged.is_empty();
+                let staged_note = if stale { format!("NOTE: your {} pending edits are not on disk yet, so this check ran on the current files and does NOT verify them.\n", run.staged.len()) } else { String::new() };
+                // A green build of the untouched starter page is not a working application.
+                let placeholder = out.ok() && op == Operation::Build && ws.read_text_opt("src/App.tsx").ok().flatten().is_some_and(|s| crate::scaffold::is_template_app(&s)) && !run.staged.iter().any(|(p, c)| p == "src/App.tsx" && c.is_some());
+                let staged_note = if placeholder { format!("{staged_note}NOTE: the build passed, but src/App.tsx is still the Genius starter page (\"Application code has not been generated yet\"). The application does not exist yet; this is not a successful build of the requested app.\n") } else { staged_note };
                 let text = format!(
                     "{pre}{staged_note}status: {}\nexit code: {}\nduration: {} ms\n{}{}output:\n{}",
                     out.status,
@@ -2269,7 +2283,8 @@ impl Genius {
                     if excerpts.is_empty() { String::new() } else { format!("code at the reported lines (> marks the line):\n{excerpts}") },
                     crate::diagnostics::focus_log(&out.output_tail, if excerpts.is_empty() { 8000 } else { 5000 })
                 );
-                if out.ok() {
+                let counts = out.ok() && !stale && !placeholder;
+                if counts {
                     let name = match op {
                         Operation::Build => "build",
                         Operation::Test => "test",
@@ -2279,7 +2294,8 @@ impl Genius {
                         run.passed.push(name.to_string());
                     }
                 }
-                Ok(ToolOutcome { ok: out.ok(), summary: format!("{} {} (exit {})", op.label(), out.status, out.exit_code.map(|c| c.to_string()).unwrap_or_else(|| "none".into())), text, data: json!({ "check": op.label(), "status": out.status, "exitCode": out.exit_code, "runId": out.id, "errors": diags.len() }) })
+                let suffix = if placeholder { " — starter page only, no application yet" } else if stale { " — on the current files, not the pending edits" } else { "" };
+                Ok(ToolOutcome { ok: out.ok() && !placeholder, summary: format!("{} {} (exit {}){suffix}", op.label(), out.status, out.exit_code.map(|c| c.to_string()).unwrap_or_else(|| "none".into())), text, data: json!({ "check": op.label(), "status": out.status, "exitCode": out.exit_code, "runId": out.id, "errors": diags.len(), "stale": stale, "placeholder": placeholder }) })
             }
             "remember" => {
                 let a: RememberArgs = typed(name, args)?;
@@ -2580,7 +2596,7 @@ impl Genius {
     /// Evidence-based task report built from recorded operations, never from model claims.
     fn build_report(&self, run: &Run<'_>, cs: Option<&crate::changes::Changeset>, outcome: &Value, error: Option<&str>, model_text: &str) -> Value {
         let read: Vec<String> = run.steps.iter().filter(|s| s.tool == "read_file" && s.ok).flat_map(|s| s.result.get("paths").and_then(|p| p.as_array()).map(|a| a.iter().filter_map(|p| p.as_str().map(String::from)).collect::<Vec<_>>()).unwrap_or_default()).collect::<std::collections::BTreeSet<_>>().into_iter().collect();
-        let checks: Vec<Value> = run.steps.iter().filter(|s| s.tool == "run_check").map(|s| json!({ "check": s.args.get("check"), "ok": s.ok, "status": s.result.get("status"), "exitCode": s.result.get("exitCode"), "summary": s.summary })).collect();
+        let checks: Vec<Value> = run.steps.iter().filter(|s| s.tool == "run_check").map(|s| json!({ "check": s.args.get("check"), "ok": s.ok, "status": s.result.get("status"), "exitCode": s.result.get("exitCode"), "summary": s.summary, "stale": s.result.get("stale"), "placeholder": s.result.get("placeholder") })).collect();
         let subagents: Vec<Value> = run.steps.iter().filter(|s| s.tool == "delegate").map(|s| json!({ "role": s.args.get("role"), "ok": s.ok })).collect();
         let failed: Vec<String> = run.steps.iter().filter(|s| !s.ok && !s.summary.trim().is_empty()).map(|s| s.summary.clone()).collect();
         let verify = outcome.get("verify").cloned().unwrap_or(Value::Null);
@@ -2594,7 +2610,8 @@ impl Genius {
         }
         let lower = model_text.to_lowercase();
         let claims_test = ["tests pass", "build passes", "build succeeded", "i tested", "i verified", "verified that", "all tests"].iter().any(|k| lower.contains(k));
-        let ran_ok = checks.iter().any(|c| c["ok"].as_bool() == Some(true)) || verify.get("ok").and_then(|v| v.as_bool()) == Some(true);
+        // A check that ran on the old files (edits only staged) or on the starter page verified nothing.
+        let ran_ok = checks.iter().any(|c| c["ok"].as_bool() == Some(true) && c["stale"].as_bool() != Some(true) && c["placeholder"].as_bool() != Some(true)) || verify.get("ok").and_then(|v| v.as_bool()) == Some(true);
         let mut warnings = Vec::new();
         if claims_test && !ran_ok {
             warnings.push("The explanation mentions testing or a passing build, but no successful build or test ran in this task. Treat that statement as unverified.".to_string());

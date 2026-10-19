@@ -10,6 +10,8 @@ export interface AccountView {
   isAdmin: boolean;
   signOut: () => void;
   openAdmin: () => void;
+  /** Desktop: opens Settings → Account (sign in / out). */
+  openAccount?: () => void;
 }
 
 let current: AccountView | null = null;
@@ -30,9 +32,18 @@ export function AccountBlock() {
     () => current,
   );
   if (!capabilities.accounts || !a) return null;
+  if (!a.email) {
+    // Desktop, not signed in: the account is optional, so this is an invitation, not a gate.
+    return (
+      <button className="gx-account" onClick={a.openAccount} aria-label="Sign in to your Genius account" title="Sign in (optional): the same account works in Genius Web">
+        <span className="av" aria-hidden>?</span>
+        <span className="who"><b className="ellipsis">Sign in</b><span>optional account</span></span>
+      </button>
+    );
+  }
   return (
     <div className="row" style={{ flex: 1, minWidth: 0 }}>
-      <button className="gx-account" onClick={a.isAdmin ? a.openAdmin : undefined} title={a.isAdmin ? 'Open the owner admin panel' : a.email} aria-label={`Signed in as ${a.email}`}>
+      <button className="gx-account" onClick={a.isAdmin ? a.openAdmin : a.openAccount} title={a.isAdmin ? 'Open the owner admin panel' : a.email} aria-label={`Signed in as ${a.email}`}>
         <span className="av" aria-hidden>{a.email.slice(0, 1).toUpperCase()}</span>
         <span className="who">
           <b className="ellipsis">{a.email}</b>

@@ -1,25 +1,83 @@
-// Settings → Account (Genius Web): who is signed in, what the plan allows, password change, privacy facts.
+// Settings → Account (desktop and web): sign in / create an account, who is signed in, what the plan
+// allows, the limits that apply, password change, privacy facts. The desktop app and Genius Web use the
+// same account service, so one account works in both.
 import { useState } from 'react';
 import { Check, X } from 'lucide-react';
-import { sb, useAuth } from './auth';
+import { isWeb } from '../lib/platform';
+import AuthScreen from './AuthScreen';
+import { accountConfigSource, clearAccountConfig, saveAccountConfig, sb, supabaseConfigured, useAuth, type Limits } from './auth';
+
+const LIMIT_LABELS: [keyof Limits, string][] = [
+  ['maxModelCalls', 'Model calls per task'],
+  ['maxToolCalls', 'Tool calls per task'],
+  ['maxTaskMinutes', 'Minutes per task'],
+  ['maxConcurrentTasks', 'Tasks at the same time'],
+  ['maxRetries', 'Retries per step'],
+  ['dailyAgentMissions', 'Agent missions per day'],
+  ['dailyResearch', 'Research reports per day'],
+  ['dailyWebToolCalls', 'Web searches/page reads per day'],
+];
+
+function ConnectService() {
+  const [url, setUrl] = useState('');
+  const [key, setKey] = useState('');
+  const [msg, setMsg] = useState<string | null>(null);
+  const save = () => {
+    const err = saveAccountConfig(url, key);
+    if (err) return setMsg(err);
+    location.reload();
+  };
+  return (
+    <div className="card pad col" style={{ gap: 8, maxWidth: 520 }}>
+      <b>Connect the Genius account service</b>
+      <p className="small muted" style={{ margin: 0 }}>
+        This build does not include the account service address. Paste the two PUBLIC values from your Supabase project (Project settings → API): the project URL and the <b>anon / publishable</b> key. Never paste the service-role or secret key; this app refuses it.
+      </p>
+      <input className="input" placeholder="https://your-project.supabase.co" aria-label="Account service address" value={url} onChange={(e) => setUrl(e.target.value)} />
+      <input className="input" placeholder="anon / publishable key" aria-label="Public key" value={key} onChange={(e) => setKey(e.target.value)} autoComplete="off" spellCheck={false} />
+      {msg && <div className="callout bad" role="alert">{msg}</div>}
+      <div className="row"><button className="btn primary" disabled={!url || !key} onClick={save}>Save and reload</button></div>
+    </div>
+  );
+}
 
 export default function AccountSettings() {
   const session = useAuth((s) => s.session);
   const access = useAuth((s) => s.access);
+  const context = useAuth((s) => s.context);
   const signOut = useAuth((s) => s.signOut);
   const [pw, setPw] = useState('');
   const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
+
+  if (!supabaseConfigured) {
+    return (
+      <section>
+        <h2>Account</h2>
+        {isWeb ? <p className="muted">Accounts are not configured on this deployment.</p> : <ConnectService />}
+      </section>
+    );
+  }
+  if (!session) {
+    return (
+      <section>
+        <h2>Account</h2>
+        <p className="muted small">Signing in is optional on the desktop: Genius works without an account. An account adds the Genius Pro features and the same login in Genius Web.</p>
+        <AuthScreen embedded />
+      </section>
+    );
+  }
   const change = async () => {
     if (pw.length < 8) return setMsg({ ok: false, text: 'The password must have at least 8 characters.' });
     const { error } = await sb().auth.updateUser({ password: pw });
     setMsg(error ? { ok: false, text: error.message } : { ok: true, text: 'Password changed.' });
     if (!error) setPw('');
   };
+  const limits = context?.limits;
   return (
     <section>
       <h2>Account</h2>
       <div className="card pad col" style={{ gap: 6 }}>
-        <div><b>{session?.user.email}</b></div>
+        <div><b>{session.user.email}</b></div>
         <div className="small muted">Plan: {access?.plan === 'pro' ? `Pro${access.planExpiresAt ? ` until ${access.planExpiresAt.slice(0, 10)}` : ''}` : 'Free'}{access?.isAdmin ? ' · owner' : ''}</div>
         <div className="small muted">Genius Pro adds Genius capabilities (Agent Mode, custom agents, higher task budgets). It never pays for model usage: you pay your AI provider directly.</div>
       </div>
@@ -35,6 +93,20 @@ export default function AccountSettings() {
           ))}
         </ul>
       </div>
+      {limits && (
+        <div className="card pad col" style={{ gap: 6, marginTop: 12 }}>
+          <b>Your Genius limits</b>
+          <p className="small muted" style={{ margin: 0 }}>These cap Genius features (tasks, tools, missions). They do not change what your AI provider charges you.</p>
+          <dl className="am-facts">
+            {LIMIT_LABELS.map(([k, label]) => (
+              <div key={k} style={{ display: 'contents' }}>
+                <dt>{label}</dt>
+                <dd>{limits[k] ?? 'no cap'}</dd>
+              </div>
+            ))}
+          </dl>
+        </div>
+      )}
       <div className="card pad col" style={{ gap: 8, marginTop: 12 }}>
         <b>Change password</b>
         <div className="row">
@@ -46,13 +118,15 @@ export default function AccountSettings() {
       <div className="card pad col" style={{ gap: 6, marginTop: 12 }}>
         <b>Privacy</b>
         <ul className="small muted" style={{ margin: 0, paddingLeft: 18 }}>
-          <li>Your conversations, sources and files are stored in your account and visible only to you (enforced by the database).</li>
-          <li>Your AI provider key is kept in this browser tab only. It is never saved to your account or any database, and is lost when the tab closes.</li>
-          <li>Prompts go from your browser to the provider you chose. NVIDIA and custom endpoints go through the Genius relay, which forwards them and stores nothing.</li>
-          <li>Web searches and page reads go through the Genius web proxy, which blocks private and local addresses.</li>
+          <li>Your account stores your profile, plan and (in Genius Web) your conversations, visible only to you (enforced by the database).</li>
+          <li>Your AI provider key is never saved to your account or any Genius database and never synced between devices. {isWeb ? 'In this browser you choose in Settings → AI provider whether it is remembered on this device (encrypted) or kept only until the tab closes.' : 'On this computer it is kept in the operating system credential store.'}</li>
+          <li>Prompts go from {isWeb ? 'your browser' : 'this app'} to the provider you chose{isWeb ? '; NVIDIA and custom endpoints go through the Genius relay, which forwards them and stores nothing' : ''}.</li>
         </ul>
       </div>
-      <button className="btn" style={{ marginTop: 12 }} onClick={() => void signOut()}>Sign out</button>
+      <div className="row" style={{ marginTop: 12 }}>
+        <button className="btn" onClick={() => void signOut()}>Sign out</button>
+        {!isWeb && accountConfigSource === 'saved' && <button className="btn ghost" onClick={() => { clearAccountConfig(); void signOut().finally(() => location.reload()); }}>Forget account service</button>}
+      </div>
     </section>
   );
 }

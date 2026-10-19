@@ -35,7 +35,11 @@ export interface RuntimeOptions {
 
 export interface KeyVault {
   get(p: ProviderId): string | null;
-  set(p: ProviderId, key: string): void;
+  set(p: ProviderId, key: string, opts?: { remember?: boolean }): void;
+  /** Optional: is this provider's key stored (encrypted) on this device? */
+  remembered?(p: ProviderId): boolean;
+  /** Optional: can this browser remember keys at all? */
+  canRemember?(): boolean;
   remove(p: ProviderId): void;
 }
 
@@ -162,12 +166,13 @@ export class WebRuntime {
   }
   keyStatus() {
     const key = this.opts.keys.get(this.settings.provider);
-    return { stored: !!key, hint: key ? `…${key.slice(-4)}` : null, backend: 'this browser tab (session only)', error: null };
+    const kept = this.opts.keys.remembered?.(this.settings.provider) ?? false;
+    return { stored: !!key, hint: key ? `…${key.slice(-4)}` : null, backend: kept ? 'this device (encrypted in this browser; never sent to Genius servers)' : 'this browser tab (session only)', error: null, remembered: kept, canRemember: this.opts.keys.canRemember?.() ?? false };
   }
   providerConfig(): ProviderConfig {
     const s = this.settings;
     const key = this.opts.keys.get(s.provider);
-    if (!key) throw { kind: 'no_key', message: `Add your ${PROVIDER_LABEL[s.provider]} API key in Settings first. It stays in this browser tab.` };
+    if (!key) throw { kind: 'no_key', message: `Add your ${PROVIDER_LABEL[s.provider]} API key in Settings first. It stays in this browser.` };
     const direct = BROWSER_DIRECT[s.provider];
     if (!direct && !s.relayConsent) throw { kind: 'relay_consent', message: `${PROVIDER_LABEL[s.provider]} does not allow calls straight from a browser. In Settings you can allow Genius Web to pass your requests through its relay (it forwards them to the provider with your key and stores nothing).` };
     return { provider: s.provider, baseUrl: s.baseUrl || DEFAULT_BASE[s.provider], apiKey: key, relay: direct ? undefined : { url: this.opts.relayUrl, accessToken: this.opts.accessToken }, fetchImpl: this.opts.fetchImpl };
@@ -319,7 +324,7 @@ export class WebRuntime {
       case 'save_api_key': {
         const key = String(a.key ?? '').trim();
         if (key.length < 8 || /\s/.test(key)) throw { kind: 'validation', message: 'That does not look like an API key.' };
-        this.opts.keys.set(this.settings.provider, key);
+        this.opts.keys.set(this.settings.provider, key, { remember: a.remember === true });
         this.models = null;
         return this.keyStatus();
       }

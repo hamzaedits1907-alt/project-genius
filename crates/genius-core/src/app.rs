@@ -74,6 +74,48 @@ pub struct ReadinessCheck {
     pub detail: String,
 }
 
+/// Model rounds `generate` may spend: the first answer plus targeted completions.
+const GENERATE_ROUNDS: usize = 6;
+
+/// Plain-language names of the stages of a generation, for the activity log.
+fn stage_label(stage: &str) -> &'static str {
+    match stage {
+        "generate" => "Writing code",
+        "apply" => "Applying files",
+        "build" => "Install and build",
+        "preview" => "Preview",
+        "runtime" => "Runtime check",
+        "verify" => "Verification",
+        _ => "Stage",
+    }
+}
+
+/// What a generated project still lacks: files that must be (re)written and problems found.
+#[derive(Debug, Default)]
+pub(crate) struct Gaps {
+    pub must_write: Vec<String>,
+    pub notes: Vec<String>,
+    pub unresolved: usize,
+}
+
+impl Gaps {
+    pub fn is_complete(&self) -> bool {
+        self.must_write.is_empty() && self.notes.is_empty()
+    }
+
+    pub fn summary(&self) -> String {
+        let mut parts: Vec<String> = self.must_write.clone();
+        if self.unresolved > 0 {
+            parts.push(format!("{} import(s) pointing at files that were never written", self.unresolved));
+        }
+        parts.join(", ")
+    }
+
+    pub fn json(&self) -> Value {
+        json!({ "mustWrite": self.must_write, "unresolvedImports": self.unresolved, "notes": self.notes })
+    }
+}
+
 /// Per-call routing and budget overrides for [`Genius::ai_call_opts`]; unset fields come from
 /// the settings (effort, thinking, temperature) and the role's defaults.
 #[derive(Debug, Clone, Default)]
@@ -591,6 +633,7 @@ impl Genius {
         match store.apply(&ws, id) {
             Ok(cs) => {
                 store.mark_reverted_if_restore(&cs)?;
+                self.clear_pending(project_id, id);
                 self.bus.resolve_changeset(id, EventStatus::Completed, "applied");
                 self.clear_preview_errors(project_id); // the code changed: old runtime errors are stale
                 ev.set_title(format!("Applied: {}", cs.title));
@@ -614,15 +657,62 @@ impl Genius {
         if settings.verify_after_apply && matches!(applied.kind.as_str(), "generate" | "change" | "repair") {
             let me = self.clone();
             let pid = applied.project_id.clone();
-            self.spawn_task(&applied.project_id, "verify", "Verify changes with a production build", move |task_id, cancel| async move {
-                me.verify_pipeline(&pid, &task_id, &cancel, false).await
+            let generated = applied.kind == "generate";
+            self.spawn_task(&applied.project_id, "verify", if generated { "Build and check the generated app" } else { "Verify changes with a production build" }, move |task_id, cancel| async move {
+                if generated {
+                    me.verify_applied_generation(&pid, &task_id, &cancel).await
+                } else {
+                    me.verify_pipeline(&pid, &task_id, &cancel, false).await
+                }
             })?;
         }
         Ok(applied)
     }
 
+    /// Forget a proposal that is no longer pending (applied or discarded).
+    fn clear_pending(&self, project_id: &str, changeset_id: &str) {
+        if let Ok(p) = self.db.get_project(project_id) {
+            if p.status.get("pendingChangeset").and_then(|v| v.as_str()) == Some(changeset_id) {
+                let _ = self.db.patch_project_status(project_id, &json!({ "pendingChangeset": null }));
+            }
+        }
+    }
+
+    /// The generated files were applied after a review: build them, start the preview and look at
+    /// it in a real browser, then record how far it got (the same states `generate` reports).
+    pub(crate) async fn verify_applied_generation(&self, project_id: &str, task_id: &str, cancel: &CancellationToken) -> Result<Value> {
+        let verify = self.verify_pipeline_opts(project_id, task_id, cancel, true, false).await?;
+        let built = verify["ok"] == json!(true);
+        let mut runtime = Value::Null;
+        let mut state = if built {
+            "built"
+        } else if verify["placeholder"] == json!(true) {
+            "incomplete"
+        } else {
+            "build_failed"
+        };
+        if built {
+            match verify["previewUrl"].as_str() {
+                Some(url) => {
+                    runtime = self.runtime_verify(project_id, task_id, url).await;
+                    state = match runtime["status"].as_str() {
+                        Some("verified") => "verified",
+                        Some("problems") => "runtime_errors",
+                        _ => "built",
+                    };
+                }
+                None => state = "preview_failed",
+            }
+        }
+        let mut patch = json!({ "generation": { "state": state, "at": now() } });
+        patch["stage"] = json!(if state == "incomplete" { "generation_incomplete" } else { "generated" });
+        self.db.patch_project_status(project_id, &patch)?;
+        Ok(json!({ "state": state, "verify": verify, "runtime": runtime }))
+    }
+
     pub fn reject_changeset(&self, id: &str) -> Result<Changeset> {
         let cs = ChangeStore::new(&self.db).reject(id)?;
+        self.clear_pending(&cs.project_id, id);
         self.bus.resolve_changeset(id, EventStatus::Cancelled, "rejected");
         self.bus.record(Some(&cs.project_id), cs.task_id.as_deref(), EventKind::Changeset, EventStatus::Cancelled, format!("Rejected: {}", cs.title), json!({ "changesetId": cs.id }));
         Ok(cs)
@@ -1139,6 +1229,16 @@ impl Genius {
         let ws = self.workspace(project_id)?;
         let store = ChangeStore::new(&self.db);
         let fresh = !ws.exists("package.json");
+        // A project that still holds only Genius's own starter page has no user work to protect,
+        // so the first real application is applied directly (and stays revertible). Without this a
+        // second attempt on a half-finished project only *proposed* the files while the preview
+        // kept showing the starter page.
+        let blank = fresh || self.starter_only(&ws);
+        let mut phases: Vec<Value> = Vec::new();
+        let mut stage = |name: &str, status: &str, note: String| {
+            phases.push(json!({ "stage": name, "status": status, "note": note }));
+            self.bus.record(Some(project_id), Some(task_id), EventKind::Task, if status == "failed" { EventStatus::Failed } else { EventStatus::Completed }, format!("{}: {note}", stage_label(name)), json!({ "stage": name, "stageStatus": status }));
+        };
 
         // 1. Deterministic template (only for an empty project).
         if fresh {
@@ -1158,18 +1258,39 @@ impl Genius {
         let mut messages = prompts::generate_messages(&spec, &template_ctx, &p.notes);
         let mut all_events = Vec::new();
         let mut explanation = String::new();
-        for round in 0..4 {
-            let (r, events) = self.ai_call_opts(project_id, task_id, if round == 0 { "Generating source code" } else { "Continuing generation" }, &messages, true, cancel, &CallOptions::role(ModelRole::Code)).await?;
+        let mut last_progress = (usize::MAX, usize::MAX);
+        let mut stalled = 0;
+        let mut rounds = 0;
+        for round in 0..GENERATE_ROUNDS {
+            rounds = round + 1;
+            let purpose = if round == 0 { "Generating source code" } else { "Completing the project" };
+            let (r, events) = self.ai_call_opts(project_id, task_id, purpose, &messages, true, cancel, &CallOptions::role(ModelRole::Code)).await?;
             all_events.extend(events);
             if round == 0 {
                 explanation = collect(&all_events).explanation;
             }
-            if r.finish_reason.as_deref() != Some("length") {
+            // Stop only when the model is finished AND the output hangs together. Running out of
+            // output budget is not the only way to stop early: a model can also simply forget the
+            // file that wires the others together.
+            let parsed = collect(&all_events);
+            let gaps = self.generation_gaps(&ws, &parsed, blank);
+            let cut_off = r.finish_reason.as_deref() == Some("length");
+            if !cut_off && gaps.is_complete() {
                 break;
             }
-            let done: Vec<String> = collect(&all_events).files.into_iter().map(|(p, _)| p).collect();
+            if round + 1 == GENERATE_ROUNDS {
+                break;
+            }
+            let progress = (parsed.files.len(), gaps.must_write.len() + gaps.notes.len());
+            stalled = if progress == last_progress { stalled + 1 } else { 0 };
+            if stalled >= 2 {
+                break; // the model keeps returning the same thing: do not spend more of the user's quota
+            }
+            last_progress = progress;
+            stage("generate", "continuing", format!("round {} left {} gap(s); asking the model for the rest", round + 1, gaps.must_write.len() + gaps.notes.len()));
+            let done: Vec<String> = parsed.files.iter().map(|(p, _)| p.clone()).collect();
             messages.push(ChatMessage::assistant(r.content));
-            messages.push(prompts::continue_message(&done));
+            messages.push(prompts::completion_message(&done, &gaps.must_write, &gaps.notes, cut_off));
         }
         let parsed = collect(&all_events);
         let incomplete: Vec<String> = parsed.incomplete.iter().filter(|p| !parsed.files.iter().any(|(f, _)| f == *p)).cloned().collect();
@@ -1178,30 +1299,134 @@ impl Genius {
                 "The model did not return any files in the required format. Try again or choose a stronger code model in Settings.".into(),
             ));
         }
+        let gaps = self.generation_gaps(&ws, &parsed, blank);
+        stage("generate", if gaps.is_complete() { "done" } else { "incomplete" }, format!("{} files written in {rounds} model round(s){}", parsed.files.len(), if gaps.is_complete() { String::new() } else { format!("; still missing: {}", gaps.summary()) }));
         let (changes, rejected) = self.safe_changes(&ws, &parsed.files, &parsed.deletes)?;
         let summary = if explanation.is_empty() { format!("Generated {} files", changes.len()) } else { explanation.clone() };
         let cs = store.create(project_id, Some(task_id), "generate", &format!("Generate {}", spec.name), &summary, &changes)?;
         self.db.add_message(project_id, Some(task_id), "assistant", &format!("{summary}\n\nFiles: {}", changes.iter().map(|c| c.path.as_str()).collect::<Vec<_>>().join(", ")))?;
 
-        // 3. Apply. A fresh project only contains the template, so applying cannot destroy
-        //    user work; every file remains revertible from History. Re-generation of an
-        //    existing project follows the review policy.
-        let auto = fresh || self.settings()?.approvals.apply_ai_edits == Policy::Auto;
+        // 3. Apply. A blank project only contains the starter, so applying cannot destroy user
+        //    work; every file remains revertible from History. Re-generation of a project with
+        //    real code follows the review policy, and says so plainly.
+        let auto = blank || self.settings()?.approvals.apply_ai_edits == Policy::Auto;
         if !auto {
+            stage("apply", "awaiting_review", format!("{} file(s) are drafts; nothing is written to the project until you apply them", changes.len()));
+            self.db.patch_project_status(project_id, &json!({ "pendingChangeset": cs.id, "generation": { "state": "awaiting_review", "at": now() } }))?;
             self.bus.record(Some(project_id), Some(task_id), EventKind::Changeset, EventStatus::AwaitingApproval, format!("Review proposed changes: {}", cs.title), json!({ "changesetId": cs.id }));
-            return Ok(json!({ "changesetId": cs.id, "applied": false, "rejectedPaths": rejected, "incomplete": incomplete }));
+            return Ok(json!({ "state": "awaiting_review", "changesetId": cs.id, "applied": false, "rejectedPaths": rejected, "incomplete": incomplete, "gaps": gaps.json(), "phases": phases }));
         }
         self.apply_changeset_inner(project_id, Some(task_id), &cs.id)?;
-        self.db.patch_project_status(project_id, &json!({ "stage": "generated" }))?;
+        stage("apply", "done", format!("{} file(s) written to the project folder", changes.len()));
+
+        // A project whose src/App.tsx is still the starter page is not generated, whatever else
+        // was written: building it would only prove that the template compiles.
+        let app_src = ws.read_text_opt("src/App.tsx")?;
+        if blank && app_src.as_deref().is_none_or(scaffold::is_template_app) {
+            let msg = format!(
+                "Genius wrote {} file(s), but src/App.tsx is still the starter page, so the application is NOT generated and the preview would only show the template. {}Choose Regenerate, or ask the Assistant to write src/App.tsx.",
+                changes.len(),
+                if gaps.is_complete() { String::new() } else { format!("Missing: {}. ", gaps.summary()) }
+            );
+            stage("verify", "failed", msg.clone());
+            self.db.patch_project_status(project_id, &json!({ "stage": "generation_incomplete", "pendingChangeset": null, "generation": { "state": "incomplete", "at": now() } }))?;
+            return Err(GeniusError::Validation(msg));
+        }
+        self.db.patch_project_status(project_id, &json!({ "stage": "generated", "pendingChangeset": null }))?;
 
         // 4. Verify for real: install → build → preview (+ Build Doctor on failure).
-        let verify = self.verify_pipeline_opts(project_id, task_id, cancel, true, fresh).await;
+        let verify = self.verify_pipeline_opts(project_id, task_id, cancel, true, blank).await;
         let verify = match verify {
             Ok(v) => v,
             Err(GeniusError::Cancelled) => return Err(GeniusError::Cancelled),
             Err(e) => json!({ "ok": false, "error": { "kind": e.kind(), "message": e.to_string() } }),
         };
-        Ok(json!({ "changesetId": cs.id, "applied": true, "rejectedPaths": rejected, "incomplete": incomplete, "verify": verify }))
+        let built = verify["ok"] == json!(true);
+        stage("build", if built { "done" } else { "failed" }, if built { "install and production build passed".to_string() } else { format!("stopped at {}", verify["failedStep"].as_str().unwrap_or("verification")) });
+
+        // 5. Runtime: does the preview really serve the generated app and run without errors?
+        let mut runtime = Value::Null;
+        let mut state = if built { "built" } else { "build_failed" };
+        if built {
+            if let Some(url) = verify["previewUrl"].as_str() {
+                runtime = self.runtime_verify(project_id, task_id, url).await;
+                state = match runtime["status"].as_str() {
+                    Some("verified") => "verified",
+                    Some("problems") => "runtime_errors",
+                    _ => "built",
+                };
+                stage("runtime", runtime["status"].as_str().unwrap_or("unknown"), runtime["summary"].as_str().unwrap_or("").to_string());
+            } else {
+                state = "preview_failed";
+                stage("preview", "failed", verify["preview"]["error"].as_str().unwrap_or("the preview did not start").to_string());
+            }
+        }
+        self.db.patch_project_status(project_id, &json!({ "generation": { "state": state, "at": now() } }))?;
+        Ok(json!({ "state": state, "changesetId": cs.id, "applied": true, "rejectedPaths": rejected, "incomplete": incomplete, "gaps": gaps.json(), "verify": verify, "runtime": runtime, "phases": phases }))
+    }
+
+    /// True while the project holds only Genius's own starter files (the placeholder page).
+    pub(crate) fn starter_only(&self, ws: &Workspace) -> bool {
+        ws.exists("package.json") && ws.read_text_opt("src/App.tsx").ok().flatten().is_none_or(|s| scaffold::is_template_app(&s))
+    }
+
+    /// What is still missing from the model's output so far (see [`integrity`](crate::integrity)).
+    fn generation_gaps(&self, ws: &Workspace, parsed: &crate::blocks::ParsedOutput, blank: bool) -> Gaps {
+        let mut gaps = Gaps::default();
+        for p in &parsed.incomplete {
+            if !parsed.files.iter().any(|(f, _)| f == p) && !gaps.must_write.contains(p) {
+                gaps.must_write.push(p.clone());
+                gaps.notes.push(format!("- {p} was cut off and was NOT saved"));
+            }
+        }
+        let app = parsed.files.iter().find(|(p, _)| p == "src/App.tsx");
+        let app_is_starter = match app {
+            Some((_, c)) => scaffold::is_template_app(c),
+            None => blank && ws.read_text_opt("src/App.tsx").ok().flatten().is_none_or(|s| scaffold::is_template_app(&s)),
+        };
+        if app_is_starter && !gaps.must_write.iter().any(|p| p == "src/App.tsx") {
+            gaps.must_write.push("src/App.tsx".into());
+            gaps.notes.push("- src/App.tsx is still the starter page that says no application has been generated".into());
+        }
+        let unresolved = crate::integrity::unresolved_relative_imports(&parsed.files, &|p| ws.exists(p));
+        if !unresolved.is_empty() {
+            gaps.notes.push(crate::integrity::render_unresolved(&unresolved));
+            gaps.unresolved = unresolved.len();
+        }
+        gaps
+    }
+
+    /// Runtime evidence for a started preview: the dev server serves the generated `App` module
+    /// (not the starter), and — when a Chromium-family browser exists — a real headless page load
+    /// has no uncaught exception, console error, failed request or blank page.
+    pub(crate) async fn runtime_verify(&self, project_id: &str, task_id: &str, url: &str) -> Value {
+        let mut problems: Vec<String> = Vec::new();
+        let served = async {
+            let client = reqwest::Client::builder().timeout(Duration::from_secs(10)).build().ok()?;
+            let base = if url.ends_with('/') { url.to_string() } else { format!("{url}/") };
+            let r = client.get(format!("{base}src/App.tsx")).send().await.ok()?;
+            r.status().is_success().then_some(())?;
+            r.text().await.ok()
+        }
+        .await;
+        let serves_app = served.as_ref().map(|t| !scaffold::is_template_app(t));
+        if serves_app == Some(false) {
+            problems.push("the dev server is serving the starter page, not the generated application".into());
+        }
+        if !self.browser_available() {
+            let status = if problems.is_empty() { "unavailable" } else { "problems" };
+            return json!({ "status": status, "servesGeneratedApp": serves_app, "problems": problems, "browser": false, "summary": "No Chrome/Edge found: the app was built and served but NOT opened in a browser, so runtime behaviour is unverified." });
+        }
+        let opts = crate::browser::CheckOptions { viewports: vec![1280], ..Default::default() };
+        match self.browser_check(project_id, url, opts).await {
+            Ok(r) => {
+                problems.extend(r.blocking_problems());
+                let status = if problems.is_empty() { "verified" } else { "problems" };
+                self.bus.record(Some(project_id), Some(task_id), EventKind::Preview, if problems.is_empty() { EventStatus::Completed } else { EventStatus::Failed }, if problems.is_empty() { "Opened the preview in a real browser: no runtime errors".to_string() } else { format!("Browser check found problems: {}", problems.join("; ")) }, json!({ "problems": problems }));
+                json!({ "status": status, "servesGeneratedApp": serves_app, "problems": problems, "browser": true, "consoleErrors": r.console_errors(), "summary": if problems.is_empty() { "Opened in a real browser: loads, renders, no console errors or failed requests.".to_string() } else { problems.join("; ") } })
+            }
+            Err(e) => json!({ "status": "error", "servesGeneratedApp": serves_app, "problems": problems, "browser": true, "summary": format!("The browser check could not run: {e}") }),
+        }
     }
 
     /// Validate model-proposed paths; unsafe ones are rejected and reported, not written.
@@ -1408,6 +1633,17 @@ impl Genius {
                 self.bus.record(Some(project_id), Some(task_id), EventKind::Diagnosis, EventStatus::Failed, format!("Build Doctor stopped after {max} attempts"), json!({ "attempts": self.repair_history.lock().unwrap().get(project_id).cloned() }));
             }
             return Ok(report);
+        }
+        // A green build of the starter page proves nothing about the requested application.
+        if let Ok(ws) = self.workspace(project_id) {
+            if ws.read_text_opt("src/App.tsx").ok().flatten().is_some_and(|s| scaffold::is_template_app(&s)) {
+                report["ok"] = json!(false);
+                report["failedStep"] = json!("generate");
+                report["placeholder"] = json!(true);
+                report["message"] = json!("The build passed, but src/App.tsx is still the Genius starter page: the application has not been generated yet.");
+                self.bus.record(Some(project_id), Some(task_id), EventKind::Build, EventStatus::Failed, "Build passed, but only the starter page exists — the application is not generated", json!({ "placeholder": true }));
+                return Ok(report);
+            }
         }
         self.repair_history.lock().unwrap().remove(project_id);
         report["ok"] = json!(true);

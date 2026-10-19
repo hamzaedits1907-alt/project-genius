@@ -14,7 +14,7 @@ export interface Capabilities {
   localProjects: boolean;
   /** Provider keys kept in the operating system's credential store (desktop only). */
   secureKeyStore: boolean;
-  /** Accounts, synced conversations and the owner admin panel (browser only). */
+  /** Optional Genius account (same login in the app and in Genius Web); synced conversations and the owner admin panel are browser-only. */
   accounts: boolean;
   /** Updates through GitHub Releases (desktop only). */
   selfUpdate: boolean;
@@ -22,7 +22,7 @@ export interface Capabilities {
 
 export const capabilities: Capabilities = isWeb
   ? { localProjects: false, secureKeyStore: false, accounts: true, selfUpdate: false }
-  : { localProjects: true, secureKeyStore: true, accounts: false, selfUpdate: true };
+  : { localProjects: true, secureKeyStore: true, accounts: true, selfUpdate: true };
 
 const PRIVATE_V4 = /^(10\.|127\.|0\.|169\.254\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.|100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\.)/;
 

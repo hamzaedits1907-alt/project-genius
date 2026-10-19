@@ -35,7 +35,7 @@ export async function authenticate(req: Request, fetchImpl: typeof fetch = fetch
 export function requireFeature(c: Caller, feature: string) {
   if (c.status === 'suspended') throw new AuthError('Your account is suspended.', 403);
   const f = c.features[feature];
-  if (!f?.available) throw new AuthError(f?.reason === 'switched_off' ? 'This feature is switched off at the moment.' : f?.reason === 'needs_pro' ? 'This feature needs Genius Pro.' : 'This feature is not available to your account.', 403);
+  if (!f?.available) throw new AuthError(f?.reason === 'maintenance' ? 'Genius is in maintenance right now. Try again later.' : f?.reason === 'switched_off' ? 'This feature is switched off at the moment.' : f?.reason === 'needs_pro' ? 'This feature needs Genius Pro.' : 'This feature is not available to your account.', 403);
 }
 
 /** A tiny in-memory rate limit per user (best effort: a function instance may be recycled at any time). */

@@ -1,7 +1,7 @@
 // The Genius Web shell: account gate → runtime → the same App as the desktop, with URL routes
 // (/app/chat, /app/research, /app/code, /app/agents, /app/projects, /app/settings, /admin).
 import { useEffect, useMemo, useState } from 'react';
-import { Loader2 } from 'lucide-react';
+import { Loader2, Megaphone, X } from 'lucide-react';
 import App from '../App';
 import { setAccountView } from '../components/AccountBlock';
 import { extraViews } from '../lib/extraViews';
@@ -15,7 +15,8 @@ import { accessToken, localOnly, sb, supabaseConfigured, useAuth } from './auth'
 import { setRuntime } from './context';
 import { MemoryStore } from './store';
 import { SupabaseStore } from './supabaseStore';
-import { sessionKeyVault, WebRuntime } from './runtime';
+import { createKeyVault } from './keyvault';
+import { WebRuntime } from './runtime';
 import { noWebTools, proxyTools } from './webTools';
 
 extraViews.code = CodeView;
@@ -40,6 +41,39 @@ function Notice({ title, children }: { title: string; children: React.ReactNode 
         {children}
       </div>
     </main>
+  );
+}
+
+function Announcements() {
+  const items = useAuth((s) => s.context?.announcements ?? []);
+  const [hidden, setHidden] = useState<string[]>(() => {
+    try {
+      return JSON.parse(sessionStorage.getItem('genius.announce.hidden') ?? '[]') as string[];
+    } catch {
+      return [];
+    }
+  });
+  const shown = items.filter((a) => !hidden.includes(a.id)).slice(0, 2);
+  if (!shown.length) return null;
+  const hide = (id: string) => {
+    const next = [...hidden, id];
+    setHidden(next);
+    try {
+      sessionStorage.setItem('genius.announce.hidden', JSON.stringify(next));
+    } catch {
+      /* hidden for this render only */
+    }
+  };
+  return (
+    <div className="gx-announce" role="region" aria-label="Announcements">
+      {shown.map((a) => (
+        <div key={a.id} className={`callout ${a.level === 'critical' ? 'bad' : a.level === 'warning' ? 'warn' : 'info'}`} role={a.level === 'critical' ? 'alert' : 'status'}>
+          <Megaphone size={15} />
+          <div className="grow"><b>{a.title}</b>{a.body ? <div className="small">{a.body}</div> : null}</div>
+          <button className="icon-btn" aria-label={`Dismiss ${a.title}`} onClick={() => hide(a.id)}><X size={13} /></button>
+        </div>
+      ))}
+    </div>
   );
 }
 
@@ -86,8 +120,21 @@ function Shell({ runtime }: { runtime: WebRuntime }) {
       </Notice>
     );
   }
+  if (access?.maintenance && !access.isAdmin) {
+    return (
+      <Notice title="Genius is being maintained">
+        <p className="muted">{access.maintenance.message || 'The service is temporarily switched off by its owner. Please try again later.'}</p>
+        <button className="btn" onClick={() => void signOut()}>Sign out</button>
+      </Notice>
+    );
+  }
   void runtime;
-  return <App />;
+  return (
+    <>
+      <Announcements />
+      <App />
+    </>
+  );
 }
 
 export default function WebApp() {
@@ -98,6 +145,7 @@ export default function WebApp() {
   }, [init]);
 
   const userId = session?.user.id ?? null;
+  const vault = useMemo(() => createKeyVault(), []);
   const store = useMemo(() => (userId ? new SupabaseStore(sb()) : localOnly ? new MemoryStore('genius.web.local') : null), [userId]);
   useEffect(() => {
     if (!store) {
@@ -105,14 +153,14 @@ export default function WebApp() {
       setRt(null);
       return;
     }
-    const rt = new WebRuntime({ store, tools: localOnly ? noWebTools : proxyTools({ url: '/api/web', accessToken }), accessToken: localOnly ? async () => '' : accessToken, relayUrl: '/api/relay', keys: sessionKeyVault() });
+    const rt = new WebRuntime({ store, tools: localOnly ? noWebTools : proxyTools({ url: '/api/web', accessToken }), accessToken: localOnly ? async () => '' : accessToken, relayUrl: '/api/relay', keys: vault });
     setRuntime(rt);
-    void rt.load().then(() => setRt(rt));
+    void Promise.all([vault.ready, rt.load()]).then(() => setRt(rt)); // remembered keys are decrypted before the first request
     return () => {
       setRuntime(null);
       setRt(null);
     };
-  }, [store]);
+  }, [store, vault]);
 
   if (!ready) return <Notice title="Genius"><Loader2 className="spin" /></Notice>;
   if (!supabaseConfigured && !localOnly) {

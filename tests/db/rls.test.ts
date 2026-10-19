@@ -47,6 +47,7 @@ beforeAll(async () => {
   `);
   await db.exec(sql('20261019000000_genius_web.sql'));
   await db.exec(sql('20261019000100_genius_web_storage.sql'));
+  await db.exec(sql('20261020000000_admin_advanced.sql'));
   ids.alice = (await q<{ id: string }>(`insert into auth.users (email) values ('alice@example.com') returning id`))[0].id;
   ids.bob = (await q<{ id: string }>(`insert into auth.users (email) values ('bob@example.com') returning id`))[0].id;
   ids.owner = (await q<{ id: string }>(`insert into auth.users (email) values ('owner@example.com') returning id`))[0].id;
@@ -217,5 +218,114 @@ describe('attachment storage', () => {
     await fails(as(ids.alice, () => db.query(`insert into storage.objects (bucket_id, name) values ('attachments', '${ids.bob}/pic.png')`)), /row-level security/);
     expect(await as(ids.bob, () => q(`select * from storage.objects`))).toEqual([]);
     expect((await q<{ public: boolean }>(`select public from storage.buckets where id = 'attachments'`))[0].public).toBe(false);
+  });
+});
+
+describe('advanced administration', () => {
+  const rpc = <R = Record<string, unknown>>(user: string | null, text: string, params: unknown[] = []) => as(user, () => q<R>(text, params));
+  type Access = { a: { plan: string; features: Record<string, { reason: string }>; maintenance: { message: string } | null } };
+  const access = async (user: string) => ((await rpc(user, `select public.my_access() as a`))[0] as Access).a;
+
+  it('is closed to ordinary users and to visitors', async () => {
+    for (const call of [
+      `select public.admin_set_setting('maintenance', '{"enabled": true, "message": "x"}')`,
+      `select * from public.admin_search_users('', 'all', 'all', 'created', 10, 0)`,
+      `select public.admin_user_detail('${ids.bob}')`,
+      `select public.admin_bulk_set_plan(array['${ids.bob}']::uuid[], 'pro')`,
+      `select * from public.admin_usage_series(7)`,
+      `select * from public.admin_list_admins()`,
+      `select public.admin_set_note('${ids.bob}', 'hello')`,
+    ]) {
+      await fails(rpc(ids.alice, call), /administrator access required/);
+    }
+    await fails(rpc(null, `select * from public.admin_search_users()`), /permission denied/);
+    await fails(as(ids.alice, () => db.query(`update public.app_settings set value = '{"open": true}' where key = 'signups'`)), /permission denied/);
+    await fails(as(ids.alice, () => db.query(`insert into public.announcements (title) values ('spam')`)), /permission denied/);
+    expect(await rpc(ids.alice, `select * from public.admin_notes`)).toEqual([]);
+  });
+
+  it('searches with filters, paging and a total, and shows one user in detail', async () => {
+    const all = await rpc(ids.owner, `select * from public.admin_search_users('', 'all', 'all', 'created', 2, 0)`);
+    expect(all).toHaveLength(2);
+    expect(Number((all[0] as { total_count: unknown }).total_count)).toBe(3);
+    const pros = await rpc<{ plan: string }>(ids.owner, `select plan from public.admin_search_users('', 'pro', 'all', 'created', 10, 0)`);
+    expect(pros.every((r) => r.plan === 'pro')).toBe(true);
+    expect(await rpc(ids.owner, `select email from public.admin_search_users('alice', 'all', 'all', 'email', 10, 0)`)).toEqual([{ email: 'alice@example.com' }]);
+    await rpc(ids.owner, `select public.admin_set_note('${ids.alice}', 'asked for early access')`);
+    const d = (await rpc(ids.owner, `select public.admin_user_detail('${ids.alice}') as d`))[0] as { d: { profile: { email: string }; note: string; audit: unknown[]; isAdmin: boolean } };
+    expect(d.d.profile.email).toBe('alice@example.com');
+    expect(d.d.note).toBe('asked for early access');
+    expect(d.d.isAdmin).toBe(false);
+    expect(d.d.audit.length).toBeGreaterThan(0);
+    expect(await rpc(ids.alice, `select * from public.admin_notes`)).toEqual([]);
+  });
+
+  it('changes plans in bulk, bounded, and writes one audit record', async () => {
+    const before = Number((await rpc(ids.owner, `select count(*) n from public.admin_audit`))[0].n);
+    const n = (await rpc(ids.owner, `select public.admin_bulk_set_plan(array['${ids.alice}','${ids.bob}']::uuid[], 'pro', null, 'beta') as n`))[0] as { n: number };
+    expect(n.n).toBe(2);
+    expect(Number((await rpc(ids.owner, `select count(*) n from public.admin_audit`))[0].n)).toBe(before + 1);
+    expect((await access(ids.alice)).plan).toBe('pro');
+    await rpc(ids.owner, `select public.admin_bulk_set_plan(array['${ids.alice}','${ids.bob}']::uuid[], 'free')`);
+    const many = `array[${Array.from({ length: 201 }, () => `'${ids.bob}'`).join(',')}]::uuid[]`;
+    await fails(rpc(ids.owner, `select public.admin_bulk_set_plan(${many}, 'pro')`), /at most 200/);
+  });
+
+  it('maintenance mode switches features off for users but not for the owner', async () => {
+    await rpc(ids.owner, `select public.admin_set_setting('maintenance', '{"enabled": true, "message": "Back at 18:00"}', 'upgrade')`);
+    const a = await access(ids.alice);
+    expect(a.features.chat.reason).toBe('maintenance');
+    expect(a.maintenance?.message).toBe('Back at 18:00');
+    expect((await access(ids.owner)).features.chat.reason).toBe('ok');
+    await rpc(ids.owner, `select public.admin_set_setting('maintenance', '{"enabled": false, "message": ""}')`);
+    expect((await access(ids.alice)).features.chat.reason).toBe('ok');
+  });
+
+  it('can close registrations and reopen them', async () => {
+    await rpc(ids.owner, `select public.admin_set_setting('signups', '{"open": false}')`);
+    await fails(db.query(`insert into auth.users (email) values ('late@example.com')`), /registrations are closed/i);
+    await rpc(ids.owner, `select public.admin_set_setting('signups', '{"open": true}')`);
+    await db.query(`insert into auth.users (email) values ('late@example.com')`);
+    expect(Number((await q(`select count(*) n from public.profiles where email = 'late@example.com'`))[0].n)).toBe(1);
+  });
+
+  it('refuses settings that contain secrets or negative limits', async () => {
+    await fails(rpc(ids.owner, `select public.admin_set_setting('limits_free', '{"note": "nvapi-123"}')`), /secrets|non-negative/);
+    await fails(rpc(ids.owner, `select public.admin_set_setting('limits_free', '{"maxModelCalls": -1}')`), /non-negative/);
+    await fails(rpc(ids.owner, `select public.admin_set_setting('anything_else', '{}')`), /unknown setting/);
+  });
+
+  it('enforces a plan-specific daily cap on recorded Genius usage', async () => {
+    await rpc(ids.owner, `select public.admin_set_setting('limits_free', '{"dailyAgentMissions": 1, "dailyWebToolCalls": null}')`);
+    await as(ids.alice, () => db.query(`insert into public.usage_events (kind) values ('agent')`));
+    await fails(as(ids.alice, () => db.query(`insert into public.usage_events (kind) values ('agent')`)), /Daily limit reached/);
+    await as(ids.alice, () => db.query(`insert into public.usage_events (kind) values ('chat')`)); // kinds without a cap are untouched
+    await rpc(ids.owner, `select public.admin_bulk_set_plan(array['${ids.alice}']::uuid[], 'pro')`);
+    await as(ids.alice, () => db.query(`insert into public.usage_events (kind) values ('agent')`)); // Pro: no mission cap by default
+    await rpc(ids.owner, `select public.admin_bulk_set_plan(array['${ids.alice}']::uuid[], 'free')`);
+    const limits = ((await rpc(ids.alice, `select public.my_context() as c`))[0] as { c: { limits: { dailyAgentMissions: number } } }).c.limits;
+    expect(limits.dailyAgentMissions).toBe(1);
+  });
+
+  it('shows users only the announcements that are in force', async () => {
+    const id = ((await rpc(ids.owner, `select public.admin_save_announcement(null, 'Planned downtime', 'Friday 18:00', 'warning', true, null) as id`))[0] as { id: string }).id;
+    await rpc(ids.owner, `select public.admin_save_announcement(null, 'Draft', '', 'info', false, null)`);
+    expect(await rpc(ids.bob, `select title from public.announcements`)).toEqual([{ title: 'Planned downtime' }]);
+    expect(((await rpc(ids.bob, `select public.my_context() as c`))[0] as { c: { announcements: unknown[] } }).c.announcements).toHaveLength(1);
+    expect((await rpc(ids.owner, `select * from public.admin_list_announcements()`)).length).toBe(2);
+    await rpc(ids.owner, `select public.admin_delete_announcement('${id}')`);
+    expect(await rpc(ids.bob, `select title from public.announcements`)).toEqual([]);
+  });
+
+  it('reports usage as counts, lists administrators read-only and deletes cohorts cleanly', async () => {
+    expect((await rpc(ids.owner, `select day, kind, n from public.admin_usage_series(7)`)).length).toBeGreaterThan(0);
+    expect(await rpc(ids.owner, `select email from public.admin_list_admins()`)).toEqual([{ email: 'owner@example.com' }]);
+    await fails(as(ids.owner, () => db.query(`insert into public.admin_users (user_id) values ('${ids.bob}')`)), /permission denied/);
+    await rpc(ids.owner, `select public.admin_save_cohort('beta', 'Beta testers')`);
+    await rpc(ids.owner, `select public.admin_bulk_cohort('beta', array['${ids.bob}']::uuid[], true)`);
+    await rpc(ids.owner, `select public.admin_set_flag('agent_mode', true, false, 0, 'beta', 'beta only')`);
+    await rpc(ids.owner, `select public.admin_delete_cohort('beta')`);
+    expect((await q(`select cohort_id from public.feature_flags where key = 'agent_mode'`))[0]).toEqual({ cohort_id: null });
+    await rpc(ids.owner, `select public.admin_set_flag('agent_mode', true, false, 100, null, 'restore')`);
   });
 });

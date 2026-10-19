@@ -8,6 +8,7 @@ import { askGenius, runApp, useWorkspace } from '../../store/workspace';
 import { fixMessage, problemSummary } from '../../lib/runtime';
 import { Badge, Button, IconButton, Segmented, Spinner, StatusBadge } from '../../components/ui';
 import PlanView from './PlanView';
+import GenerationBanner from './GenerationBanner';
 import FileExplorer from './FileExplorer';
 import SearchPanel from './SearchPanel';
 import GitPanel from './GitPanel';
@@ -234,7 +235,11 @@ export default function Workspace({ projectId }: { projectId: string }) {
           {project.name}
         </span>
         {simple ? (
-          <FriendlyStatus building={running.length > 0 || verifying.length > 0} lastBuild={runtimeProblem && lastBuild?.status !== 'failed' ? 'failed' : lastBuild?.status} />
+          <FriendlyStatus building={running.length > 0 || verifying.length > 0} lastBuild={runtimeProblem && lastBuild?.status !== 'failed' ? 'failed' : lastBuild?.status} pending={!!project.status.pendingChangeset} notGenerated={project.status.stage === 'generation_incomplete'} />
+        ) : project.status.pendingChangeset ? (
+          <Badge tone="warn">draft files not applied</Badge>
+        ) : project.status.stage === 'generation_incomplete' ? (
+          <Badge tone="bad">app not generated</Badge>
         ) : lastBuild ? (
           <StatusBadge status={lastBuild.status} label={`build ${lastBuild.status}`} />
         ) : (
@@ -294,6 +299,16 @@ export default function Workspace({ projectId }: { projectId: string }) {
           </>
         )}
       </header>
+      <div style={{ padding: '0 10px' }}>
+        <GenerationBanner
+          onReview={(id) => {
+            openTab(`review:${id}`);
+            setWs({ stage: 'code' });
+          }}
+          onPlan={() => (simple ? setWs({ stage: 'plan' }) : openTab('plan'))}
+          onFix={() => void fixForMe()}
+        />
+      </div>
       {simple ? (
         <PanelGroup direction="horizontal" autoSaveId="genius-simple-h" className="ws-simple">
           <Panel defaultSize={40} minSize={28} order={1}>
@@ -415,11 +430,23 @@ export default function Workspace({ projectId }: { projectId: string }) {
 }
 
 /** Plain-language project status for simple mode. */
-function FriendlyStatus({ building, lastBuild }: { building: boolean; lastBuild?: string }) {
+function FriendlyStatus({ building, lastBuild, pending, notGenerated }: { building: boolean; lastBuild?: string; pending?: boolean; notGenerated?: boolean }) {
   if (building)
     return (
       <span className="pill run">
         <span className="dot run" /> Working…
+      </span>
+    );
+  if (pending)
+    return (
+      <span className="pill warn" title="AI-written files have not been applied to the project yet">
+        <span className="dot" /> Changes waiting for you
+      </span>
+    );
+  if (notGenerated)
+    return (
+      <span className="pill bad" title="src/App.tsx is still the starter page">
+        <span className="dot bad" /> App not generated
       </span>
     );
   if (lastBuild === 'failed')

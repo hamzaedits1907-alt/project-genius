@@ -17,9 +17,11 @@
       <nav aria-label="Main">
         <a href="#features">Features</a>
         <a href="#get">Download</a>
+        <a href="#nvidia">Free NVIDIA key</a>
         <a href="#providers">Providers</a>
         <a href="#changelog">Changelog</a>
         <a href="#faq">FAQ</a>
+        <a href="https://discord.gg/AVBTnCN5D6" rel="noopener">Discord</a>
         <a class="btn primary" href="/app/chat">Open Genius Web</a>
       </nav>
     </header>
@@ -31,7 +33,7 @@
         <p class="lead">Genius chats, researches the web with sources it really read, understands your images and files, does exact maths, and runs multi-step missions — with your own provider account, and honest about what it did and did not verify.</p>
         <div class="cta">
           <a class="btn primary lg" href="/app/chat">Open Genius Web</a>
-          <a class="btn lg" id="dl-win" href="https://github.com/hamzaedits1907-alt/project-genius/releases/latest">Download for Windows</a>
+          <a class="btn lg" id="dl-win" href="#get">Download for Windows</a>
         </div>
         <p class="fine" id="dl-note">Windows 10/11 · free · you pay only your own AI provider</p>
         <figure class="shot"><img src="/screens/chat-welcome.png" alt="Genius chat: a welcome screen with a message box, model picker and four starting ideas" width="1400" height="900" /><figcaption>The Genius interface (screenshot with sample sidebar history).</figcaption></figure>
@@ -65,7 +67,7 @@
               <tr><th>Chat, Research, files, images</th><td>Yes</td><td>Yes</td></tr>
               <tr><th>Agent Mode</th><td>Real tools in an isolated project copy, approvals, builds and tests</td><td>Web tools only (search, pages, calculation); cannot change files, never “verified” by a build</td></tr>
               <tr><th>Code</th><td>Local projects, terminal, Git, live preview</td><td>Writes and previews code; nothing runs</td></tr>
-              <tr><th>Your provider key</th><td>Windows credential store</td><td>This browser tab only; gone when you close it</td></tr>
+              <tr><th>Your provider key</th><td>Windows credential store (remembered until you remove it)</td><td>Your choice: this tab only, or remembered on this device (encrypted in this browser, never sent to Genius)</td></tr>
               <tr><th>Account and sync</th><td>None (local data)</td><td>Account; conversations kept in your private account area</td></tr>
               <tr><th>NVIDIA NIM</th><td>Direct</td><td>Through a relay that stores nothing (NVIDIA blocks browsers)</td></tr>
             </tbody>
@@ -76,14 +78,34 @@
       <section id="get" class="band">
         <h2>Download for Windows</h2>
         <div class="card">
-          <p><a class="btn primary" id="dl-exe" href="https://github.com/hamzaedits1907-alt/project-genius/releases/download/v0.5.0/Genius_0.5.0_x64-setup.exe">Genius_0.5.0_x64-setup.exe</a> <a class="btn" id="dl-msi" href="https://github.com/hamzaedits1907-alt/project-genius/releases/download/v0.5.0/Genius_0.5.0_x64_en-US.msi">MSI installer</a> <a class="btn ghost" id="dl-all" href="https://github.com/hamzaedits1907-alt/project-genius/releases/latest">All platforms and checksums</a></p>
+          <p><a class="btn primary" id="dl-exe" href="https://github.com/hamzaedits1907-alt/project-genius/releases/download/v0.5.0/Genius_0.5.0_x64-setup.exe">Genius_0.5.0_x64-setup.exe</a> <a class="btn" id="dl-msi" href="https://github.com/hamzaedits1907-alt/project-genius/releases/download/v0.5.0/Genius_0.5.0_x64_en-US.msi">MSI installer</a> <a class="btn ghost" id="dl-sum" href="#get" hidden>SHA-256 checksums</a></p>
           <ul>
             <li><b>Requirements:</b> Windows 10 or 11 (64-bit) with WebView2 (preinstalled). For the Code workspace you also need Node.js 20+ and, optionally, Git.</li>
-            <li><b>Setup:</b> run the installer. Windows may show a warning because the installer is <b>not code-signed yet</b>: install only from this project's GitHub release and compare the published SHA-256 file next to the download.</li>
+            <li><b>Setup:</b> run the installer. Windows may show a warning because the installer is <b>not code-signed yet</b>: install only from the download buttons on this page and compare the published SHA-256 checksum.</li>
             <li><b>First start:</b> open Settings → AI provider, choose your provider, paste your key, pick Auto or a model, press Test connection.</li>
-            <li><b>Updates:</b> Genius checks GitHub Releases and can update itself (the Windows updater was tested by hand by the author).</li>
+            <li><b>Updates:</b> Genius checks for new versions and can update itself (the Windows updater was tested by hand by the author).</li>
           </ul>
-          <p class="fine">macOS and Linux builds are published on the same release page; they are less tested than Windows.</p>
+          <p class="fine">Windows is the supported platform. macOS and Linux builds exist but are less tested; ask on Discord if you need one.</p>
+        </div>
+      </section>
+
+      <section id="nvidia" class="band">
+        <h2>Get a free NVIDIA API key (about 3 minutes)</h2>
+        <p class="sub">Genius is built to work with NVIDIA's hosted models, and NVIDIA lets developers try them for free. You create the key yourself; it stays on your computer or in your browser tab and is never sent to Genius servers.</p>
+        <div class="card">
+          <ol class="steps">
+            <li><b>Open <a href="https://build.nvidia.com/" rel="noopener">build.nvidia.com</a></b> and press <b>Login</b> (top right). Create a free NVIDIA account with your email, or sign in if you already have one, and confirm the verification email. NVIDIA may also ask you to verify a phone number.</li>
+            <li><b>Open the API keys page:</b> click your profile picture (top right) → <b>Settings</b> → <b>API Keys</b>, or go straight to <a href="https://build.nvidia.com/settings/api-keys" rel="noopener">build.nvidia.com/settings/api-keys</a>.</li>
+            <li>Press <b>Generate API Key</b>, give it a name (for example “Genius”) and an expiry, then confirm.</li>
+            <li><b>Copy the key now.</b> It starts with <code>nvapi-</code> and NVIDIA may not show the full text again. If you lose it, simply generate a new one.</li>
+            <li><b>Paste it into Genius:</b> in the desktop app open <b>Settings → AI provider</b>, choose <b>NVIDIA</b>, paste the key, keep the model on <b>Auto</b> and press <b>Test connection</b>. In Genius Web the same screen is under <b>Settings</b>; turn on “Remember this key on this device” so you only paste it once.</li>
+          </ol>
+          <ul>
+            <li><b>Cost:</b> NVIDIA offers free access for development and testing, with rate limits per model. Limits and credits are decided by NVIDIA and can change — check your account page on build.nvidia.com for the current numbers.</li>
+            <li><b>“API access restricted by your organization”?</b> Some personal NVIDIA accounts are blocked from creating keys. Try again after a day, make sure your email is verified, or ask in the <a href="https://discord.gg/AVBTnCN5D6" rel="noopener">Genius Discord</a>.</li>
+            <li><b>Never share the key.</b> Anyone with it can use your quota. If it leaks, delete it on the same API Keys page and create a new one.</li>
+            <li><b>In the browser:</b> NVIDIA does not allow calls straight from web pages, so Genius Web uses a small relay that forwards your request and stores nothing. You are asked for permission once. The desktop app calls NVIDIA directly.</li>
+          </ul>
         </div>
       </section>
 
@@ -116,8 +138,12 @@
       <section id="changelog" class="band alt">
         <h2>Changelog</h2>
         <div class="card" id="changelog-body">
-          <h3>Next release (this web build)</h3>
+          <h3>0.6.0</h3>
           <ul>
+            <li><b>Code workspace repaired:</b> a generated project is no longer reported as built while the preview still shows the starter page. Genius now notices missing or cut-off files, asks the model for exactly those, refuses to call a starter-page build a success, and shows whether the files are applied, built and opened in a real browser.</li>
+            <li>Sign in to the desktop app with the same account as Genius Web; no email-confirmation step.</li>
+            <li>Provider key remembered on desktop (credential store) and, if you choose, on this device in the browser.</li>
+            <li>A much more capable owner admin panel.</li>
             <li>Genius Web: the browser app with accounts, synced conversations, Research, Code, Agent Mode (web tools), Projects and an owner admin panel.</li>
             <li>Fixed malformed tool calls such as <code>&lt;web_search {…}&gt;</code>; raw tool markup never reaches an answer.</li>
             <li>Fixed research citations that pointed at <code>tauri.localhost</code>; citations now link to the page that was fetched.</li>
@@ -129,22 +155,23 @@
             <li>Project Brain, task limits, provider diagnostics, adapters for Anthropic, Gemini and OpenAI.</li>
             <li>Faster image analysis; accurate task states (<em>verified</em> vs <em>completed, not verified</em>).</li>
           </ul>
-          <p><a href="https://github.com/hamzaedits1907-alt/project-genius/blob/main/CHANGELOG.md">Full changelog on GitHub</a></p>
+          
         </div>
       </section>
 
       <section class="band">
         <h2>Roadmap, honestly</h2>
-        <p class="sub">Genius has a long list of ideas. Each has a status in the <a href="https://github.com/hamzaedits1907-alt/project-genius/blob/main/docs/ROADMAP.md">public roadmap</a>: implemented, partial, unverified, deferred or not started. Voice is deliberately deferred. Next: more providers verified live, interactive charts and artifacts, resumable tasks, a deeper Project Brain.</p>
+        <p class="sub">Genius has a long list of ideas. Each idea is tracked with an honest status — implemented, partial, unverified, deferred or not started — and nothing is marked done without evidence. Voice is deliberately deferred. Next: more providers verified live, interactive charts and artifacts, resumable tasks, a deeper Project Brain.</p>
       </section>
 
       <section id="faq" class="band alt">
         <h2>FAQ and troubleshooting</h2>
+        <details><summary>Where do I get a free key?</summary><p>See <a href="#nvidia">Get a free NVIDIA API key</a> above.</p></details>
         <details><summary>Do I need to pay for Genius?</summary><p>The desktop app and Genius Web are free to use today. You pay your AI provider for the models you use. A Pro plan for Genius capabilities is planned; no billing is live.</p></details>
         <details><summary>“The provider rejected the key”</summary><p>Check that the key belongs to the provider selected in Settings, has no extra spaces, and has access to the chosen model. Press Test connection for a step-by-step report.</p></details>
         <details><summary>NVIDIA does not work in the browser</summary><p>NVIDIA blocks calls from web pages. In Settings → AI provider allow the relay for NVIDIA, or use the desktop app, which calls NVIDIA directly.</p></details>
-        <details><summary>I closed the tab and my key is gone</summary><p>That is deliberate: in the browser the key lives only in the tab. Paste it again. The desktop app stores it in the Windows credential store.</p></details>
-        <details><summary>Windows says the installer is unsafe</summary><p>The installer is not code-signed yet. Download only from this project's GitHub release and compare the SHA-256 file published next to it.</p></details>
+        <details><summary>Genius Web asks for my key again</summary><p>Turn on “Remember this key on this device” when you save it (Settings → AI provider). Without it the key lives only in the open tab. The key is never uploaded or synced to other devices. The desktop app keeps it in the Windows credential store.</p></details>
+        <details><summary>Windows says the installer is unsafe</summary><p>The installer is not code-signed yet. Download only from the buttons on this page and compare the published SHA-256 checksum.</p></details>
         <details><summary>A scanned PDF cannot be read</summary><p>Genius reads PDF text layers. For scans, attach the pages as images to a vision-capable model.</p></details>
         <details><summary>Agent Mode in the browser did not change my files</summary><p>Correct: a browser cannot touch your computer. Use Genius Desktop for missions that edit a project.</p></details>
       </section>
@@ -156,9 +183,8 @@
         <p class="fine">An independent project. Not affiliated with any AI provider.</p>
       </div>
       <nav aria-label="Footer">
-        <a href="https://github.com/hamzaedits1907-alt/project-genius">GitHub</a>
-        <a id="discord" href="#" hidden>Discord</a>
-        <a href="https://github.com/hamzaedits1907-alt/project-genius/issues">Report a problem</a>
+        <a id="discord" href="https://discord.gg/AVBTnCN5D6" rel="noopener">Discord community</a>
+        <a href="#nvidia">Free NVIDIA key</a>
         <a href="/app/chat">Open Genius Web</a>
       </nav>
     </footer>

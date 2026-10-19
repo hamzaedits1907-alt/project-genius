@@ -6,8 +6,62 @@
 import { createClient, type Session, type SupabaseClient } from '@supabase/supabase-js';
 import { create } from 'zustand';
 
-const url = import.meta.env.VITE_SUPABASE_URL as string | undefined;
-const anon = import.meta.env.VITE_SUPABASE_ANON_KEY as string | undefined;
+const CONFIG_KEY = 'genius.account.config';
+
+/** Why a pasted key must be refused, or null when it is acceptable as the PUBLIC (anon/publishable) key. */
+export function badPublicKey(key: string): string | null {
+  const k = key.trim();
+  if (k.startsWith('sb_secret_')) return 'That is a secret key. Use the public (anon / publishable) key; a secret key must never be put in an app.';
+  if (k.startsWith('sb_publishable_')) return null;
+  const parts = k.split('.');
+  if (parts.length !== 3) return 'That does not look like a Supabase public key.';
+  try {
+    const payload = JSON.parse(atob(parts[1].replace(/-/g, '+').replace(/_/g, '/'))) as { role?: string };
+    if (payload.role === 'service_role') return 'That is the service-role key. It must never be put in an app. Use the anon (public) key.';
+    return payload.role === 'anon' ? null : 'That key is not the anon (public) key.';
+  } catch {
+    return 'That does not look like a Supabase public key.';
+  }
+}
+
+/** Build-time values first (Netlify / release build); otherwise what the user saved in this app (desktop). */
+function resolveConfig(): { url?: string; anon?: string; source: 'build' | 'saved' | 'none' } {
+  const bu = import.meta.env.VITE_SUPABASE_URL as string | undefined;
+  const ba = import.meta.env.VITE_SUPABASE_ANON_KEY as string | undefined;
+  if (bu && ba && /^https:\/\//.test(bu)) return { url: bu, anon: ba, source: 'build' };
+  try {
+    const saved = JSON.parse(localStorage.getItem(CONFIG_KEY) ?? 'null') as { url?: string; anon?: string } | null;
+    if (saved?.url && saved.anon && /^https:\/\//.test(saved.url) && !badPublicKey(saved.anon)) return { ...saved, source: 'saved' };
+  } catch {
+    /* storage unavailable: treated as not configured */
+  }
+  return { source: 'none' };
+}
+const cfg = resolveConfig();
+const url = cfg.url;
+const anon = cfg.anon;
+export const accountConfigSource = cfg.source;
+
+/** Save the account service address (desktop). Takes effect after the app reloads. Returns an error text or null. */
+export function saveAccountConfig(newUrl: string, newAnon: string): string | null {
+  const u = newUrl.trim().replace(/\/+$/, '');
+  if (!/^https:\/\/[a-z0-9-]+\.supabase\.co$/i.test(u)) return 'The address must look like https://your-project.supabase.co';
+  const bad = badPublicKey(newAnon);
+  if (bad) return bad;
+  try {
+    localStorage.setItem(CONFIG_KEY, JSON.stringify({ url: u, anon: newAnon.trim() }));
+  } catch {
+    return 'This app could not save the setting.';
+  }
+  return null;
+}
+export function clearAccountConfig(): void {
+  try {
+    localStorage.removeItem(CONFIG_KEY);
+  } catch {
+    /* nothing to clear */
+  }
+}
 
 export const supabaseConfigured = !!url && !!anon && /^https:\/\//.test(url);
 /** Development only: run without accounts, with conversations kept in this browser. Never enabled in a production build. */
@@ -22,7 +76,7 @@ export function sb(): SupabaseClient {
 
 export interface FeatureState {
   available: boolean;
-  reason: 'ok' | 'suspended' | 'switched_off' | 'not_rolled_out' | 'needs_pro';
+  reason: 'ok' | 'suspended' | 'maintenance' | 'switched_off' | 'not_rolled_out' | 'needs_pro';
   name: string;
   description: string;
   minPlan: 'free' | 'pro';
@@ -33,14 +87,30 @@ export interface Access {
   plan: 'free' | 'pro';
   planExpiresAt: string | null;
   isAdmin: boolean;
+  /** Set while the owner has put the service into maintenance (administrators never see it). */
+  maintenance?: { enabled: boolean; message: string } | null;
   features: Record<string, FeatureState>;
 }
+export interface Limits {
+  maxModelCalls: number | null;
+  maxToolCalls: number | null;
+  maxTaskMinutes: number | null;
+  maxConcurrentTasks: number | null;
+  maxRetries: number | null;
+  contextChars: number | null;
+  dailyAgentMissions: number | null;
+  dailyWebToolCalls: number | null;
+  dailyResearch: number | null;
+}
+export interface Announcement { id: string; title: string; body: string; level: 'info' | 'warning' | 'critical' }
+export interface AccountContext { limits: Limits | null; announcements: Announcement[] }
 
 interface AuthState {
   ready: boolean;
   session: Session | null;
   recovery: boolean;
   access: Access | null;
+  context: AccountContext | null;
   error: string | null;
   init: () => Promise<void>;
   refreshAccess: () => Promise<void>;
@@ -52,6 +122,7 @@ export const useAuth = create<AuthState>((set, get) => ({
   session: null,
   recovery: false,
   access: null,
+  context: null,
   error: null,
   init: async () => {
     if (!supabaseConfigured) {
@@ -65,7 +136,7 @@ export const useAuth = create<AuthState>((set, get) => ({
     s.auth.onAuthStateChange((event, session) => {
       set({ session, recovery: event === 'PASSWORD_RECOVERY' ? true : get().recovery && !!session });
       if (session) void get().refreshAccess();
-      else set({ access: null });
+      else set({ access: null, context: null });
     });
   },
   refreshAccess: async () => {
@@ -73,13 +144,16 @@ export const useAuth = create<AuthState>((set, get) => ({
       const { data, error } = await sb().rpc('my_access');
       if (error) throw error;
       set({ access: data as Access, error: null });
+      // Limits and announcements are a convenience: failing to load them must never block the app.
+      const ctx = await sb().rpc('my_context');
+      if (!ctx.error && ctx.data) set({ context: ctx.data as AccountContext });
     } catch (e) {
       set({ error: e instanceof Error ? e.message : String((e as { message?: string })?.message ?? e) });
     }
   },
   signOut: async () => {
     await sb().auth.signOut();
-    set({ session: null, access: null });
+    set({ session: null, access: null, context: null });
   },
 }));
 

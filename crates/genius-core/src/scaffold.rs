@@ -22,6 +22,15 @@ pub fn trusted_scripts() -> Vec<(&'static str, &'static str)> {
     ]
 }
 
+/// Text of the starter `src/App.tsx`. While this text is present, the project has no
+/// application: a build or preview of it proves nothing about the requested app.
+pub const TEMPLATE_MARKER: &str = "Application code has not been generated yet";
+
+/// Is this source the untouched Genius starter page?
+pub fn is_template_app(source: &str) -> bool {
+    source.contains(TEMPLATE_MARKER)
+}
+
 pub fn slugify(name: &str) -> String {
     let mut s: String = name
         .to_lowercase()

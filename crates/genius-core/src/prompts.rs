@@ -154,6 +154,21 @@ pub fn continue_message(done: &[String]) -> ChatMessage {
     ))
 }
 
+/// Follow-up when the generated project is not complete yet. Says exactly what is missing so
+/// the model writes those files instead of repeating the ones it already finished.
+pub fn completion_message(done: &[String], must_write: &[String], notes: &[String], cut_off: bool) -> ChatMessage {
+    let mut text = String::from(if cut_off { "Your output was cut off by the length limit." } else { "The project is not complete yet." });
+    text.push_str(&format!(" Files already written and accepted: {}.", if done.is_empty() { "none".into() } else { done.join(", ") }));
+    if !must_write.is_empty() {
+        text.push_str(&format!("\nWrite these files now, each in full: {}.", must_write.join(", ")));
+    }
+    if !notes.is_empty() {
+        text.push_str(&format!("\nProblems found in what you wrote so far:\n{}", notes.join("\n")));
+    }
+    text.push_str("\nThe application only works when src/App.tsx is the real application (not the starter page) and every import resolves to a file that exists. Do not repeat accepted files unless they must change. Keep the remaining files compact. Use the same <<<FILE: path>>> block format.");
+    ChatMessage::user(text)
+}
+
 pub fn change_messages(request: &str, context: &str, memory: &str, spec_summary: &str) -> Vec<ChatMessage> {
     let system = format!(
         "You are the code-editing engine of Project Genius. You make focused, correct changes to an existing project.\n{STACK}\n\n{DESIGN_GUIDE}\nFor visual work, extend the project's existing design tokens and components rather than inventing a second style.\n\n{FILE_PROTOCOL}\n\nOnly output files you actually change (full new content). Preserve existing behaviour and code style unless the request says otherwise. First write 1-3 sentences explaining the change."

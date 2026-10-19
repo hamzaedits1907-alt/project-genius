@@ -190,6 +190,10 @@ export interface KeyStatus {
   hint: string | null;
   backend: string;
   error: string | null;
+  /** Web only: the key is stored (encrypted) on this device and survives closing the tab. */
+  remembered?: boolean;
+  /** Web only: this browser can remember keys (IndexedDB + Web Crypto). */
+  canRemember?: boolean;
 }
 
 export interface ModelInfo {
@@ -272,7 +276,11 @@ export interface RunStatusSummary {
 }
 
 export interface ProjectStatus {
-  stage?: 'created' | 'imported' | 'planned' | 'generated';
+  stage?: 'created' | 'imported' | 'planned' | 'generated' | 'generation_incomplete';
+  /** AI files proposed but not written to the project folder yet (waiting for the user). */
+  pendingChangeset?: string | null;
+  /** Outcome of the last generation: awaiting_review | incomplete | build_failed | built | runtime_errors | preview_failed | verified. */
+  generation?: { state: string; at: string };
   lastBuild?: RunStatusSummary;
   lastTest?: RunStatusSummary;
   lastInstall?: RunStatusSummary;

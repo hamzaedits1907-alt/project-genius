@@ -35,3 +35,5 @@ code { background: color-mix(in srgb, var(--accent) 12%, transparent); padding: 
 footer { display: flex; justify-content: space-between; gap: 20px; flex-wrap: wrap; padding: 32px max(16px, calc((100% - 1120px) / 2)); border-top: 1px solid var(--line); } footer nav { display: flex; gap: 18px; flex-wrap: wrap; align-items: flex-start; }
 @media (max-width: 640px) { .top nav a:not(.btn) { display: none; } .hero { padding-top: 40px; } }
 @media (prefers-reduced-motion: reduce) { html { scroll-behavior: auto; } }
+.steps { margin: 0; padding-left: 22px; display: flex; flex-direction: column; gap: 12px; color: var(--muted); } .steps b { color: var(--text); }
+.steps + ul { margin-top: 18px; }
