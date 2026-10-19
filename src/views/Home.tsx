@@ -451,15 +451,19 @@ function CloneDialog({ onClose }: { onClose: () => void }) {
 }
 
 /** Models that work well for planning and writing code, best first (matched by substring). */
-const PREFERRED_MODELS = ['qwen3-coder', 'qwen2.5-coder-32b', 'deepseek-v3', 'deepseek-r1', 'llama-3.3-70b', 'llama-3.1-405b', 'nemotron-super', 'llama-3.1-70b', 'mixtral-8x22b'];
+const PREFERRED_MODELS = ['qwen3-coder', 'qwen2.5-coder-32b', 'nemotron-3-super', 'nemotron-3-ultra', 'deepseek-v', 'glm-5', 'kimi-k', 'gpt-oss-120b', 'llama-3.3-70b', 'llama-3.1-405b', 'nemotron-super', 'nemotron-3.5-lightning', 'gpt-oss-20b', 'llama-3.1-70b', 'mixtral-8x22b'];
+
+/** Candidate models in the order they should be tried: preferred families first, then everything else that chats. */
+export function recommendModels(models: ModelInfo[]): string[] {
+  const usable = models.filter((m) => m.inferredCategory === 'chat' || m.inferredCategory === 'code');
+  const out: string[] = [];
+  for (const want of PREFERRED_MODELS) for (const m of usable) if (m.id.toLowerCase().includes(want) && !out.includes(m.id)) out.push(m.id);
+  for (const m of usable) if (!out.includes(m.id)) out.push(m.id);
+  return out;
+}
 
 export function recommendModel(models: ModelInfo[]): string | null {
-  const usable = models.filter((m) => m.inferredCategory === 'chat' || m.inferredCategory === 'code');
-  for (const want of PREFERRED_MODELS) {
-    const hit = usable.find((m) => m.id.toLowerCase().includes(want));
-    if (hit) return hit.id;
-  }
-  return usable[0]?.id ?? null;
+  return recommendModels(models)[0] ?? null;
 }
 
 /** First-run setup right on Home: paste a key, Genius picks a good model. */
@@ -483,14 +487,27 @@ export function QuickSetup() {
   const pickModel = async () => {
     setBusy('Finding the best model for you…');
     const list = await api.listModels(true);
-    if (provider !== 'nvidia' && provider !== 'custom') {
+    if (provider !== 'custom' && (isWeb || provider !== 'nvidia')) {
       // Auto picks among the models this key lists; the key is proven by the listing above
       setSettings(await api.saveSettings({ ...(settings as NonNullable<typeof settings>), modelMode: 'auto', model: null }));
       toast('ok', `Connected: ${list.models.length} models are available. Genius picks one for each request; you can choose one in Settings.`);
       return;
     }
-    const best = recommendModel(list.models);
-    if (!best) throw new Error('No chat models are available for this key. Choose one in Settings → AI provider.');
+    // A provider's model list can include models that no longer answer (NVIDIA lists some that return 404), so a model is only chosen once it really replied.
+    const candidates = recommendModels(list.models).slice(0, 8);
+    if (!candidates.length) throw new Error('No chat models are available for this key. Choose one in Settings → AI provider.');
+    let best: string | null = null;
+    for (const c of candidates) {
+      setBusy(`Testing ${c}…`);
+      try {
+        await api.probeModel(c);
+        best = c;
+        break;
+      } catch {
+        /* try the next candidate */
+      }
+    }
+    if (!best) throw new Error('None of the first models answered a test message. Choose a model in Settings → AI provider, or try again later.');
     setSettings(await api.selectModel(best));
     toast('ok', `All set! Genius will use ${best}. You can change it any time in Settings.`);
   };
