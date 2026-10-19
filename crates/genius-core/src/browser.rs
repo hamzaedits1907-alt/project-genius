@@ -57,7 +57,8 @@ const CHECK_TIMEOUT: Duration = Duration::from_secs(60);
 const TEST_TIMEOUT: Duration = Duration::from_secs(90);
 const MAX_TIMEOUT: Duration = Duration::from_secs(300);
 const CALL_TIMEOUT: Duration = Duration::from_secs(30);
-const LAUNCH_TIMEOUT: Duration = Duration::from_secs(25);
+/// Cold browser starts on a loaded machine (CI runners starting several at once) can take well over 25 s.
+const LAUNCH_TIMEOUT: Duration = Duration::from_secs(60);
 const LOAD_TIMEOUT: Duration = Duration::from_secs(20);
 const MAX_WS_MESSAGE: u64 = 64 * 1024 * 1024;
 const MAX_CONSOLE: usize = 60;
