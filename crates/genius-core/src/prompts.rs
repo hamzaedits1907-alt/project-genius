@@ -102,7 +102,7 @@ pub fn plan_messages(description: &str, constraints: &str) -> Vec<ChatMessage> {
         r#"You are the planning engine of Project Genius, an AI software studio. Turn the user's idea into a precise, buildable specification.
 {STACK}
 {DESIGN_GUIDE}
-Make ordinary product decisions yourself (including a concrete visual direction: mood, palette, fonts) and record the important ones under "assumptions". Keep scope realistic for a first version that can be fully implemented in one pass (typically 4-12 source files; up to ~25 for full multi-page websites).
+Make ordinary product decisions yourself (including a concrete visual direction: mood, palette, fonts) and record the important ones under "assumptions". Keep scope realistic for a first version that can be fully implemented (typically 4-12 source files; HARD LIMIT 22 entries in "files"). Do not give every tiny component its own file and stylesheet: put small shared UI pieces together, share one stylesheet where sensible, and build the features the user asked for rather than a large design system.
 Respond with ONLY one JSON object (no markdown fences, no commentary) with exactly these keys:
 {{
   "name": "short product name",
@@ -144,6 +144,128 @@ pub fn generate_messages(spec: &ProjectSpec, template_context: &str, memory: &st
         user.push_str(&format!("\n\nPROJECT MEMORY (decisions and conventions to respect):\n{memory}"));
     }
     user.push_str("\n\nWrite src/App.tsx and every component, page, hook, utility, stylesheet and test needed. Update index.html (title, meta description, font <link> tags if you use web fonts). Include a README.md describing the app and how to run it.");
+    vec![ChatMessage::system(system), ChatMessage::user(user)]
+}
+
+/// Files per model call when a new application is generated. One answer that holds a whole app (40 files in
+/// one real Personal Finance Tracker run) is cut off by the output limit again and again and ends as drafts
+/// that never build, so the app is written a few files at a time, dependencies first.
+pub const GENERATE_BATCH_FILES: usize = 4;
+
+/// How early a planned file must be written: shared styles, types and helpers first, the app shell last, so
+/// every later file can import what already exists.
+fn generation_tier(path: &str) -> u8 {
+    let p = path.to_lowercase();
+    let name = p.rsplit('/').next().unwrap_or(&p);
+    if p == "src/index.css" || p == "src/styles.css" || p == "src/global.css" {
+        0
+    } else if p == "src/app.tsx" {
+        6
+    } else if name == "main.tsx" || name == "index.html" || name == "vite-env.d.ts" {
+        7
+    } else if name.starts_with("readme") || p.ends_with(".md") || p.ends_with(".json") {
+        8
+    } else if p.contains("/types") || name.starts_with("types.") || p.contains("/constants") || p.contains("/utils") || p.contains("/lib/") || p.contains("/data/") || p.contains("/services/") {
+        1
+    } else if p.contains("/hooks/") || p.contains("/context") || p.contains("/store") || p.contains("/state") {
+        2
+    } else if p.contains("/pages/") || p.contains("/views/") || p.contains("/routes/") {
+        5
+    } else if p.contains("/layout") || name.starts_with("layout") {
+        4
+    } else {
+        3
+    }
+}
+
+/// The planned files in the order they should be written (stable within a tier).
+pub fn generation_order(files: &[crate::spec::PlannedFile]) -> Vec<crate::spec::PlannedFile> {
+    let mut v: Vec<(u8, usize, crate::spec::PlannedFile)> = files.iter().cloned().enumerate().map(|(i, f)| (generation_tier(&f.path), i, f)).collect();
+    v.sort_by_key(|(t, i, _)| (*t, *i));
+    let mut seen = std::collections::HashSet::new();
+    v.into_iter().map(|(_, _, f)| f).filter(|f| seen.insert(f.path.clone())).collect()
+}
+
+/// What the next batch needs to know about files already written: small files in full (types, helpers), larger
+/// ones as their exports only, so imports and props line up without resending the whole project.
+pub fn written_digest(files: &[(String, String)]) -> String {
+    let mut out = String::new();
+    for (path, content) in files {
+        if path.ends_with(".css") {
+            let vars: Vec<&str> = content.lines().filter(|l| l.trim_start().starts_with("--")).take(40).collect();
+            out.push_str(&format!("<<<WRITTEN: {path}>>>
+{}
+<<<END WRITTEN>>>
+", if vars.is_empty() { content.chars().take(600).collect::<String>() } else { vars.join("
+") }));
+        } else if content.len() <= 1800 {
+            out.push_str(&format!("<<<WRITTEN: {path}>>>
+{content}
+<<<END WRITTEN>>>
+"));
+        } else {
+            let sig: Vec<&str> = content
+                .lines()
+                .filter(|l| {
+                    let t = l.trim_start();
+                    t.starts_with("export ") || t.starts_with("interface ") || t.starts_with("type ") || t.starts_with("import ")
+                })
+                .take(60)
+                .collect();
+            out.push_str(&format!("<<<WRITTEN: {path} (signatures only)>>>
+{}
+<<<END WRITTEN>>>
+", sig.join("
+")));
+        }
+    }
+    out
+}
+
+/// One batch of the generation: only the named files, written to fit the files that already exist.
+pub fn generate_batch_messages(spec: &ProjectSpec, template_context: &str, memory: &str, written: &[(String, String)], batch: &[crate::spec::PlannedFile], part: usize, parts: usize, retry_note: &str) -> Vec<ChatMessage> {
+    let system = format!(
+        "You are the implementation engine of Project Genius. You write complete, production-quality source code with polished, modern visual design.
+{STACK}
+
+{DESIGN_GUIDE}
+
+{FILE_PROTOCOL}
+
+The application is written a few files at a time (this is part {} of {}). Write ONLY the files listed under FILES TO WRITE NOW, each complete, and nothing else: no files that are not listed, no README unless listed. Keep each file focused (under about 250 lines) and finish every file. Reuse what already exists: import from the WRITTEN files exactly the names, props and types shown there, and never redefine them.",
+        part + 1,
+        parts
+    );
+    let spec_json = serde_json::to_string_pretty(spec).unwrap_or_default();
+    let mut user = format!("SPECIFICATION of the whole application:
+{spec_json}
+
+{template_context}");
+    if !memory.trim().is_empty() {
+        user.push_str(&format!("
+
+PROJECT MEMORY (decisions and conventions to respect):
+{memory}"));
+    }
+    if !written.is_empty() {
+        user.push_str(&format!("
+
+ALREADY WRITTEN (do not rewrite these):
+{}", written_digest(written)));
+    }
+    user.push_str("
+
+FILES TO WRITE NOW:
+");
+    for f in batch {
+        user.push_str(&format!("- {} — {}
+", f.path, f.purpose));
+    }
+    if !retry_note.is_empty() {
+        user.push_str(&format!("
+{retry_note}
+"));
+    }
     vec![ChatMessage::system(system), ChatMessage::user(user)]
 }
 

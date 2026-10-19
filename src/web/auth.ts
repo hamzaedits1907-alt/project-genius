@@ -5,8 +5,19 @@
 // is only a convenience, not a protection.
 import { createClient, type Session, type SupabaseClient } from '@supabase/supabase-js';
 import { create } from 'zustand';
+import { isWeb } from '../lib/platform';
 
 const CONFIG_KEY = 'genius.account.config';
+
+/**
+ * The Genius account service of this project. Both values are PUBLIC by design (the same two values are in
+ * the website's JavaScript; row level security protects the data), so the desktop app can ship them and
+ * "sign in" works without pasting anything. A build can override them with VITE_SUPABASE_URL/ANON_KEY, and a
+ * user can still paste their own project in Settings → Account.
+ */
+const DESKTOP_DEFAULT = { url: 'https://mkfcqdpuujnkikiwibgo.supabase.co', anon: 'sb_publishable_UYlXKaRzyfFZuFSFocr7gg_popNqXXa' };
+/** Where e-mail links (confirmation, magic link, password reset) land when the app is not itself a web page. */
+const SITE_ORIGIN = 'https://project-genius.netlify.app';
 
 /** Why a pasted key must be refused, or null when it is acceptable as the PUBLIC (anon/publishable) key. */
 export function badPublicKey(key: string): string | null {
@@ -35,6 +46,7 @@ function resolveConfig(): { url?: string; anon?: string; source: 'build' | 'save
   } catch {
     /* storage unavailable: treated as not configured */
   }
+  if (!isWeb) return { ...DESKTOP_DEFAULT, source: 'build' };
   return { source: 'none' };
 }
 const cfg = resolveConfig();
@@ -164,7 +176,7 @@ export async function accessToken(): Promise<string> {
 }
 
 /** The callback address for emails (confirmation, magic link, password reset). Must be listed in Supabase's redirect URLs. */
-export const redirectTo = () => `${location.origin}/app`;
+export const redirectTo = () => `${isWeb ? location.origin : SITE_ORIGIN}/app`;
 
 /** Whether a feature is usable for this user (always true for local-only development and the desktop app). */
 export function featureOf(access: Access | null, key: string): FeatureState {

@@ -14,10 +14,42 @@ const conv = (r: any): ConversationRec => ({ id: r.id, mode: r.mode, title: r.ti
 const msg = (r: any): MessageRec => ({ id: r.id, conversationId: r.conversation_id, role: r.role, kind: r.kind, content: r.content, meta: r.meta ?? {}, taskId: r.task_id, createdAt: r.created_at }); // eslint-disable-line @typescript-eslint/no-explicit-any
 const src = (r: any): SourceRec => ({ id: r.id, conversationId: r.conversation_id, taskId: r.task_id, n: r.n, url: r.url, requestedUrl: r.requested_url, title: r.title, status: r.status, fetchedAt: r.fetched_at, contentHash: r.content_hash, snippet: r.snippet, usedFor: r.used_for, official: !!r.flags?.official, flags: (r.flags?.notes as string[]) ?? [] }); // eslint-disable-line @typescript-eslint/no-explicit-any
 
+/** Transient failures (network drop, 5xx) are retried; the same ids are reused, so a retry can never duplicate a row. */
+async function retrying<T>(fn: () => PromiseLike<{ data: T | null; error: { message: string; code?: string } | null }>, tries = 3) {
+  let last: { message: string; code?: string } | null = null;
+  for (let i = 0; i < tries; i++) {
+    try {
+      const r = await fn();
+      if (!r.error) return r;
+      last = r.error;
+      if (!/fetch|network|timeout|50d|ECONN/i.test(r.error.message) || r.error.code) return r;
+    } catch (e) {
+      last = { message: e instanceof Error ? e.message : String(e) };
+    }
+    await new Promise((res) => setTimeout(res, 300 * (i + 1)));
+  }
+  return { data: null as T | null, error: last };
+}
+
 export class SupabaseStore implements WebStore {
   constructor(private sb: SupabaseClient) {}
 
+  /**
+   * Whether the database has the sync migration (tombstones, conversation_summaries, ...). Until the owner has
+   * applied supabase/migrations/20261021000000_sync.sql the store keeps working in its earlier shape.
+   */
+  private v2: Promise<boolean> | null = null;
+  isSyncSchema(): Promise<boolean> {
+    this.v2 ??= Promise.resolve(this.sb.from('conversations').select('deleted_at').limit(0)).then((r) => !r.error);
+    return this.v2;
+  }
+
   async listConversations(mode: Mode | null, query?: string) {
+    if (await this.isSyncSchema()) {
+      const { data, error } = await this.sb.rpc('conversation_summaries', { p_mode: mode, p_query: query?.trim() || null, p_limit: 300 });
+      if (error) fail('Could not load conversations', error);
+      return ((data ?? []) as any[]).map((r) => ({ id: r.id, mode: r.mode, title: r.title, createdAt: r.created_at, updatedAt: r.updated_at, origin: r.origin, snippet: String(r.snippet ?? ''), messageCount: Number(r.message_count ?? 0) })); // eslint-disable-line @typescript-eslint/no-explicit-any
+    }
     let q = this.sb.from('conversations').select('*').order('updated_at', { ascending: false }).limit(300);
     if (mode) q = q.eq('mode', mode);
     const { data, error } = await q;
@@ -44,13 +76,16 @@ export class SupabaseStore implements WebStore {
     return rows.map((c) => ({ ...c, snippet: (hits.get(c.id) ?? last.get(c.id) ?? '').replace(/\s+/g, ' ').slice(0, 140), messageCount: counts.get(c.id) ?? 0 }));
   }
   async getConversation(id: string) {
-    const { data } = await this.sb.from('conversations').select('*').eq('id', id).maybeSingle();
+    let q = this.sb.from('conversations').select('*').eq('id', id);
+    if (await this.isSyncSchema()) q = q.is('deleted_at', null);
+    const { data } = await q.maybeSingle();
     return data ? conv(data) : null;
   }
   async createConversation(mode: Mode, title: string, origin: Record<string, unknown> | null = null) {
-    const { data, error } = await this.sb.from('conversations').insert({ mode, title, origin }).select().single();
+    const id = crypto.randomUUID();
+    const { data, error } = await retrying(() => this.sb.from('conversations').upsert({ id, mode, title, origin }, { onConflict: 'id', ignoreDuplicates: true }).select().maybeSingle());
     if (error) fail('Could not create the conversation', error);
-    return conv(data);
+    return conv(data ?? (await this.sb.from('conversations').select('*').eq('id', id).single()).data);
   }
   async renameConversation(id: string, title: string) {
     const { error } = await this.sb.from('conversations').update({ title: title.slice(0, 200) }).eq('id', id);
@@ -60,29 +95,45 @@ export class SupabaseStore implements WebStore {
     const files = await this.listAttachments(id);
     const paths = files.filter((f) => f.meta.imagePath).map((f) => String(f.meta.imagePath));
     if (paths.length) await this.sb.storage.from('attachments').remove(paths);
+    if (await this.isSyncSchema()) {
+      const { error } = await this.sb.rpc('delete_conversation', { p_id: id });
+      if (error) fail('Could not delete the conversation', error);
+      return;
+    }
     const { error } = await this.sb.from('conversations').delete().eq('id', id);
     if (error) fail('Could not delete the conversation', error);
   }
   async listMessages(conversationId: string) {
+    if (await this.isSyncSchema()) {
+      // the NEWEST 1000 live messages, oldest first (a long conversation must show its end, not its beginning)
+      const { data, error } = await this.sb.from('messages').select('*').eq('conversation_id', conversationId).is('deleted_at', null).order('created_at', { ascending: false }).order('seq', { ascending: false }).limit(1000);
+      if (error) fail('Could not load messages', error);
+      return (data ?? []).reverse().map(msg);
+    }
     const { data, error } = await this.sb.from('messages').select('*').eq('conversation_id', conversationId).order('created_at', { ascending: true }).limit(1000);
     if (error) fail('Could not load messages', error);
     return (data ?? []).map(msg);
   }
   async addMessage(m: Omit<MessageRec, 'id' | 'createdAt'> & { id?: string; createdAt?: string }) {
-    const row: Record<string, unknown> = { conversation_id: m.conversationId, role: m.role, kind: m.kind, content: m.content, meta: m.meta, task_id: m.taskId };
-    if (m.id) row.id = m.id;
+    // The id is chosen here, so a retry after a lost response (or a double click) stores the message once.
+    const row: Record<string, unknown> = { id: m.id ?? crypto.randomUUID(), conversation_id: m.conversationId, role: m.role, kind: m.kind, content: m.content, meta: m.meta, task_id: m.taskId };
     if (m.createdAt) row.created_at = m.createdAt;
-    const { data, error } = await this.sb.from('messages').insert(row).select().single();
+    const { data, error } = await retrying(() => this.sb.from('messages').upsert(row, { onConflict: 'id', ignoreDuplicates: true }).select().maybeSingle());
     if (error) fail('Could not save the message', error);
-    return msg(data);
+    return msg(data ?? (await this.sb.from('messages').select('*').eq('id', row.id as string).single()).data);
   }
   async deleteFrom(conversationId: string, messageId: string) {
     const all = await this.listMessages(conversationId);
     const i = all.findIndex((m) => m.id === messageId);
     if (i < 0) return 0;
     const drop = all.slice(i).map((m) => m.id);
-    const { error } = await this.sb.from('messages').delete().in('id', drop);
-    if (error) fail('Could not remove messages', error);
+    if (await this.isSyncSchema()) {
+      const { error } = await this.sb.rpc('delete_messages_from', { p_conversation: conversationId, p_message: messageId });
+      if (error) fail('Could not remove messages', error);
+    } else {
+      const { error } = await this.sb.from('messages').delete().in('id', drop);
+      if (error) fail('Could not remove messages', error);
+    }
     const keep = new Set(all.slice(0, i).map((m) => m.taskId).filter(Boolean));
     const srcs = await this.listSources(conversationId);
     const gone = srcs.filter((s) => s.taskId && !keep.has(s.taskId)).map((s) => s.id);

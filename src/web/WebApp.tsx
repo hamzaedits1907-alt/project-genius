@@ -17,6 +17,7 @@ import { MemoryStore } from './store';
 import { SupabaseStore } from './supabaseStore';
 import { createKeyVault } from './keyvault';
 import { WebRuntime } from './runtime';
+import { startLiveRefresh } from './liveSync';
 import { noWebTools, proxyTools } from './webTools';
 
 extraViews.code = CodeView;
@@ -165,6 +166,13 @@ export default function WebApp() {
       setRt(null);
     };
   }, [store, vault]);
+
+  // The same account on another device: pick up its new conversations and messages without a manual reload.
+  const live = !!runtime && !!userId;
+  useEffect(() => {
+    if (!live || !userId) return;
+    return startLiveRefresh(sb(), userId);
+  }, [live, userId]);
 
   if (!ready) return <Notice title="Genius"><Loader2 className="spin" /></Notice>;
   if (!supabaseConfigured && !localOnly) {

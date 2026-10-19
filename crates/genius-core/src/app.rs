@@ -1261,7 +1261,83 @@ impl Genius {
         let mut last_progress = (usize::MAX, usize::MAX);
         let mut stalled = 0;
         let mut rounds = 0;
-        for round in 0..GENERATE_ROUNDS {
+        // A plan with more than a handful of files is written a few files at a time, dependencies first, then
+        // gaps are closed the same way. (One answer holding a whole app is cut off by the output limit.)
+        let batched = spec.files.len() > prompts::GENERATE_BATCH_FILES;
+        if batched {
+            let order = prompts::generation_order(&spec.files);
+            let parts = order.len().div_ceil(prompts::GENERATE_BATCH_FILES);
+            for (i, batch) in order.chunks(prompts::GENERATE_BATCH_FILES).enumerate() {
+                let written = collect(&all_events).files;
+                let msgs = prompts::generate_batch_messages(&spec, &template_ctx, &p.notes, &written, batch, i, parts, "");
+                let purpose = format!("Generating source code (part {}/{parts})", i + 1);
+                let (_, ev) = self.ai_call_opts(project_id, task_id, &purpose, &msgs, true, cancel, &CallOptions::role(ModelRole::Code)).await?;
+                rounds += 1;
+                if i == 0 {
+                    explanation = collect(&ev).explanation;
+                }
+                all_events.extend(ev);
+                // a file that arrived cut off or not at all is asked for again, alone and compact
+                let missing: Vec<crate::spec::PlannedFile> = {
+                    let parsed = collect(&all_events);
+                    batch.iter().filter(|f| !parsed.files.iter().any(|(p, _)| p == &f.path)).cloned().collect()
+                };
+                if !missing.is_empty() {
+                    stage("generate", "continuing", format!("part {}/{parts}: {} file(s) were cut off; writing them again one at a time", i + 1, missing.len()));
+                    for f in missing {
+                        let written = collect(&all_events).files;
+                        let note = format!("A previous attempt at {} was cut off by the output limit. Write it again COMPLETE and compact: under 200 lines, no long comments, no unused code.", f.path);
+                        let msgs = prompts::generate_batch_messages(&spec, &template_ctx, &p.notes, &written, std::slice::from_ref(&f), i, parts, &note);
+                        let (_, ev) = self.ai_call_opts(project_id, task_id, &format!("Rewriting {}", f.path), &msgs, true, cancel, &CallOptions::role(ModelRole::Code)).await?;
+                        rounds += 1;
+                        all_events.extend(ev);
+                    }
+                }
+            }
+            // close what is still missing: App.tsx, cut-off files, imports of files nobody wrote
+            for gap_round in 0..3 {
+                let parsed = collect(&all_events);
+                let gaps = self.generation_gaps(&ws, &parsed, blank);
+                if gaps.is_complete() {
+                    break;
+                }
+                let mut want: Vec<crate::spec::PlannedFile> = gaps.must_write.iter().map(|p| crate::spec::PlannedFile { path: p.clone(), purpose: "required by the application".into() }).collect();
+                for u in crate::integrity::unresolved_relative_imports(&parsed.files, &|p| ws.exists(p)) {
+                    let dir = u.importer.rsplit_once('/').map(|(d, _)| d).unwrap_or("");
+                    let mut parts_: Vec<&str> = dir.split('/').filter(|s| !s.is_empty()).collect();
+                    for seg in u.specifier.split('/') {
+                        match seg {
+                            "." | "" => {}
+                            ".." => {
+                                parts_.pop();
+                            }
+                            s => parts_.push(s),
+                        }
+                    }
+                    let mut path = parts_.join("/");
+                    let last = path.rsplit('/').next().unwrap_or("").to_string();
+                    if !last.contains('.') {
+                        path.push_str(if last.chars().next().is_some_and(|c| c.is_uppercase()) { ".tsx" } else { ".ts" });
+                    }
+                    if !want.iter().any(|f| f.path == path) {
+                        want.push(crate::spec::PlannedFile { path: path.clone(), purpose: format!("imported by {} but missing", u.importer) });
+                    }
+                }
+                want.truncate(prompts::GENERATE_BATCH_FILES);
+                if want.is_empty() {
+                    break;
+                }
+                stage("generate", "continuing", format!("gap round {}: writing {} missing file(s)", gap_round + 1, want.len()));
+                let note = format!("Problems found so far:
+{}", gaps.notes.join("
+"));
+                let msgs = prompts::generate_batch_messages(&spec, &template_ctx, &p.notes, &parsed.files, &want, 0, 1, &note);
+                let (_, ev) = self.ai_call_opts(project_id, task_id, "Completing the project", &msgs, true, cancel, &CallOptions::role(ModelRole::Code)).await?;
+                rounds += 1;
+                all_events.extend(ev);
+            }
+        }
+        for round in 0..(if batched { 0 } else { GENERATE_ROUNDS }) {
             rounds = round + 1;
             let purpose = if round == 0 { "Generating source code" } else { "Completing the project" };
             let (r, events) = self.ai_call_opts(project_id, task_id, purpose, &messages, true, cancel, &CallOptions::role(ModelRole::Code)).await?;

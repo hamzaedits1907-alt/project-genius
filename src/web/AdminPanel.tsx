@@ -5,6 +5,7 @@
 // provider key or message content ever appears here: only counts and account metadata.
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Download, Loader2, Megaphone, Power, Search, ShieldAlert, Trash2, X } from 'lucide-react';
+import { isWeb } from '../lib/platform';
 import { sb, useAuth, featureOf, type Limits } from './auth';
 
 interface UserRow {
@@ -663,11 +664,13 @@ function System({ onError }: P) {
     const t0 = performance.now();
     const admins = await rpc<{ user_id: string; email: string; since: string }[]>('admin_list_admins');
     const dbMs = Math.round(performance.now() - t0);
-    const web = await fetch('/api/web', { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' }).then((r) => ({ status: r.status })).catch(() => ({ status: 0 }));
-    const relay = await fetch('/api/relay', { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' }).then((r) => ({ status: r.status })).catch(() => ({ status: 0 }));
+    // The web proxy and the relay are functions of the website; the desktop app does not use them.
+    const probe = (p: string) => (isWeb ? fetch(p, { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' }).then((r) => ({ status: r.status })).catch(() => ({ status: 0 })) : Promise.resolve({ status: -1 }));
+    const web = await probe('/api/web');
+    const relay = await probe('/api/relay');
     return { admins, dbMs, web, relay };
   }, onError);
-  const reach = (s: number) => (s === 0 ? <span className="badge bad">unreachable</span> : <span className="badge ok">reachable (HTTP {s}; an error status is expected for an empty test request)</span>);
+  const reach = (s: number) => (s === -1 ? <span className="badge">not used by the desktop app</span> : s === 0 ? <span className="badge bad">unreachable</span> : <span className="badge ok">reachable (HTTP {s}; an error status is expected for an empty test request)</span>);
   return (
     <div className="card pad col" style={{ gap: 8 }}>
       <div className="row"><b className="grow">This deployment</b><button className="btn sm" onClick={() => void reload()}>Re-check</button></div>

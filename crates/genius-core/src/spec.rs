@@ -197,12 +197,21 @@ pub fn parse_spec(text: &str) -> Result<ProjectSpec> {
     Ok(spec)
 }
 
+/// A plan bigger than this cannot be written reliably in one pass; the planner is asked to merge files.
+pub const MAX_PLANNED_FILES: usize = 30;
+
 pub fn validate(spec: &ProjectSpec) -> Result<()> {
     if spec.name.trim().is_empty() {
         return Err(GeniusError::Validation("The plan has no project name.".into()));
     }
     if spec.features.is_empty() {
         return Err(GeniusError::Validation("The plan lists no features.".into()));
+    }
+    if spec.files.len() > MAX_PLANNED_FILES {
+        return Err(GeniusError::Validation(format!(
+            "The plan lists {} files; the limit is {MAX_PLANNED_FILES}. Merge small components and stylesheets and list only the files the app really needs.",
+            spec.files.len()
+        )));
     }
     for d in &spec.dependencies {
         if !valid_npm_name(&d.name) {
