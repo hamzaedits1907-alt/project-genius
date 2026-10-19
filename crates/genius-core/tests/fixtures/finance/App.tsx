@@ -73,6 +73,7 @@ export default function App() {
             <section className="panel">
               <h2>Where the money goes</h2>
               <CategoryChart rows={categories} />
+              <div className="table-scroll">
               <table className="tx">
                 <tbody>
                   {categories.map((c) => (
@@ -80,6 +81,7 @@ export default function App() {
                   ))}
                 </tbody>
               </table>
+              </div>
             </section>
           )}
         </main>

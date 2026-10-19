@@ -146,10 +146,13 @@ impl Respond for Scripted {
                 }
             }
             "change" => {
+                // fixtures may be checked out with CRLF line endings (git autocrlf on Windows)
                 let summary = SUMMARY_TS
+                    .replace("\r\n", "\n")
                     .replace("  balance: number;\n}", "  balance: number;\n  savingsRate: number;\n}")
                     .replace("balance: round(income - expenses) };", "balance: round(income - expenses), savingsRate: income > 0 ? (income - expenses) / income : 0 };");
                 let cards = CARDS_TSX
+                    .replace("\r\n", "\n")
                     .replace("import { money } from '../lib/format';", "import { money, percent } from '../lib/format';")
                     .replace("    </section>", "      <article className=\"card savings\">\n        <h3>Savings rate</h3>\n        <p className=\"figure\" data-testid=\"savings-rate\">{percent(summary.savingsRate)}</p>\n      </article>\n    </section>");
                 sse(&format!("Added a savings rate card.\n{}{}", block("src/lib/summary.ts", &summary), block("src/components/SummaryCards.tsx", &cards)), "stop")
@@ -342,7 +345,7 @@ async fn personal_finance_tracker_is_generated_applied_built_served_and_works_in
         let report = g.browser_test(&pid, &url, TestOptions { steps, viewport: Some(1280), screenshot: true, ..Default::default() }).await.unwrap();
         assert_browser(&report, "finance tracker interactions");
         // mobile layout: no horizontal overflow
-        let check = g.browser_check(&pid, &url, genius_core::browser::CheckOptions { viewports: vec![375, 768], ..Default::default() }).await.unwrap();
+        let check = g.browser_check(&pid, &url, genius_core::browser::CheckOptions { viewports: vec![320, 375, 768], ..Default::default() }).await.unwrap();
         assert!(check.ok(), "responsive check: {:?}", check.blocking_problems());
     }
 
@@ -379,7 +382,8 @@ async fn personal_finance_tracker_is_generated_applied_built_served_and_works_in
     g.apply_changeset(ch["changesetId"].as_str().unwrap()).unwrap();
     wait_tasks(&g, &pid).await;
     assert!(g.read_file(&pid, "src/components/SummaryCards.tsx").unwrap().contains("Savings rate"));
-    assert_eq!(g.project(&pid).unwrap().status["lastBuild"]["status"], "succeeded");
+    let last_build = g.db.list_runs(&pid, 20).unwrap().into_iter().find(|r| r.op == "build").expect("a build ran after the follow-up");
+    assert_eq!(g.project(&pid).unwrap().status["lastBuild"]["status"], "succeeded", "build output: {}", last_build.output_tail);
     let module = reqwest::get(format!("{url}src/components/SummaryCards.tsx")).await.unwrap().text().await.unwrap();
     assert!(module.contains("Savings rate"), "the running preview serves the changed file");
     if browser {

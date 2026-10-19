@@ -18,14 +18,16 @@ body { margin: 0; }
 .top { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 18px; }
 h1 { font-size: 1.6rem; margin: 0; }
 h2 { font-size: 1.05rem; margin: 0 0 12px; }
-nav { display: flex; gap: 6px; }
+nav { display: flex; flex-wrap: wrap; gap: 6px; }
 .tab { border: 1px solid var(--line); background: var(--panel); padding: 8px 14px; border-radius: 999px; cursor: pointer; font: inherit; }
 .tab.on { background: var(--accent); border-color: var(--accent); color: #fff; }
+.layout > * { min-width: 0; }
+.table-scroll { overflow-x: auto; }
 .layout { display: grid; grid-template-columns: 300px 1fr; gap: 18px; align-items: start; }
 .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 14px; padding: 16px; margin-bottom: 16px; }
 .form { display: grid; gap: 10px; margin: 0; }
 label { display: grid; gap: 4px; font-size: 0.85rem; color: var(--muted); }
-input, select, button { font: inherit; padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px; background: #fff; color: var(--text); }
+input, select, button { max-width: 100%; min-width: 0; font: inherit; padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px; background: #fff; color: var(--text); }
 .two { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
 .actions { display: flex; gap: 8px; }
 button { cursor: pointer; }

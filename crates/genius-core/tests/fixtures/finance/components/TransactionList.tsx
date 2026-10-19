@@ -30,6 +30,7 @@ export default function TransactionList({ items, onEdit, onDelete }: Props) {
       {rows.length === 0 ? (
         <p className="muted">No transactions match.</p>
       ) : (
+        <div className="table-scroll">
         <table className="tx">
           <thead>
             <tr><th>Date</th><th>Description</th><th>Category</th><th className="num">Amount</th><th /></tr>
@@ -49,6 +50,7 @@ export default function TransactionList({ items, onEdit, onDelete }: Props) {
             ))}
           </tbody>
         </table>
+        </div>
       )}
     </section>
   );

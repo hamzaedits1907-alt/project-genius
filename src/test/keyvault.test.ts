@@ -1,3 +1,4 @@
+// @vitest-environment node
 // The browser key vault: session-only vs remembered-on-this-device, with real Web Crypto (Node's
 // implementation of the same API) and an in-memory stand-in for IndexedDB.
 import { describe, expect, it } from 'vitest';
