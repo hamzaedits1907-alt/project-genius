@@ -472,9 +472,12 @@ export function QuickSetup() {
   const [key, setKey] = useState('');
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [allowRelay, setAllowRelay] = useState(false);
 
   const settings = useApp((s) => s.settings);
   const provider: ProviderId = settings?.provider ?? 'nvidia';
+  // Genius Web only: NVIDIA (and custom endpoints) refuse calls from a web page, so requests must go through the relay, with the user's consent.
+  const needsRelay = isWeb && (provider === 'nvidia' || provider === 'custom');
   const providerLabel = { nvidia: 'NVIDIA', openai: 'OpenAI', anthropic: 'Anthropic', gemini: 'Google Gemini', custom: 'your endpoint' }[provider];
 
   const pickModel = async () => {
@@ -495,6 +498,10 @@ export function QuickSetup() {
   const connect = async () => {
     setError(null);
     try {
+      if (needsRelay && settings && !settings.relayConsent) {
+        if (!allowRelay) throw new Error('Tick the box below to allow the relay for this provider, or choose OpenAI, Anthropic or Gemini.');
+        setSettings(await api.saveSettings({ ...settings, relayConsent: true }));
+      }
       if (!keyStatus?.stored) {
         setBusy('Saving your key securely…');
         setKeyStatus(await api.saveApiKey(key.trim()));
@@ -563,6 +570,12 @@ export function QuickSetup() {
               Advanced…
             </Button>
           </div>
+          {needsRelay && !settings?.relayConsent && (
+            <label className="row small" style={{ gap: 8, alignItems: 'flex-start' }}>
+              <input type="checkbox" checked={allowRelay} onChange={(e) => setAllowRelay(e.target.checked)} style={{ marginTop: 3 }} />
+              <span>{providerLabel} does not allow web pages to call it directly. I allow Genius Web to pass my requests through its relay, which forwards them with my own key and stores nothing.</span>
+            </label>
+          )}
           {busy && <div className="small muted">{busy}</div>}
           {error && <Callout tone="bad">{error}</Callout>}
         </div>
