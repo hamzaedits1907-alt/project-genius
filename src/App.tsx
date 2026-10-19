@@ -1,5 +1,5 @@
 import { Component, useEffect, type ErrorInfo, type ReactNode } from 'react';
-import { ArrowDownCircle, Bot, Command, FolderKanban, Home as HomeIcon, MessageCircle, Plus, Search as SearchIcon, Settings as SettingsIcon, X } from 'lucide-react';
+import { X } from 'lucide-react';
 import ChatHome from './views/chat/ChatHome';
 import ResearchView from './views/chat/ResearchView';
 import { subscribeChat } from './store/chat';
@@ -15,11 +15,8 @@ import Workspace from './views/workspace/Workspace';
 import ApprovalDialog from './views/ApprovalDialog';
 import UpdateDialog from './views/UpdateDialog';
 import AgentsView from './views/agents/AgentsView';
-import { useAgents } from './store/agents';
-import { pendingApprovalTasks } from './lib/agents';
-import { GeniusAvatar } from './components/GeniusAvatar';
-import { useWorkspace } from './store/workspace';
-import CommandPalette, { openCommandPalette, shortcutLabel } from './components/CommandPalette';
+import CommandPalette from './components/CommandPalette';
+import { Sidebar, startNewChat } from './components/Sidebar';
 
 class ErrorBoundary extends Component<{ children: ReactNode; view: string }, { error: Error | null; componentStack: string; logPath: string | null }> {
   state = { error: null as Error | null, componentStack: '', logPath: null as string | null };
@@ -91,14 +88,10 @@ export default function App() {
   const loadSettings = useApp((s) => s.loadSettings);
   const refreshApprovals = useApp((s) => s.refreshApprovals);
   const approvals = useApp((s) => s.approvals);
-  const openProjectId = useWorkspace((s) => s.projectId);
-  const openProjectName = useWorkspace((s) => s.project?.name);
-  const update = useApp((s) => s.update);
+  const collapsed = useApp((s) => s.sidebarCollapsed);
+  const setCollapsed = useApp((s) => s.setSidebarCollapsed);
   const showUpdate = useApp((s) => s.showUpdate);
   const setShowUpdate = useApp((s) => s.setShowUpdate);
-  const busy = useWorkspace((s) => s.tasks.some((t) => t.kind !== 'verify'));
-  const skipped = useApp((s) => s.skippedVersion);
-  const agentApprovals = useAgents((s) => pendingApprovalTasks(s.missions).length);
 
   // Backend events: released even if the app unmounts before `listen` resolves (StrictMode
   // mounts twice in development; the old code leaked the first set and delivered every event twice).
@@ -126,54 +119,21 @@ export default function App() {
       } else if (mod && e.shiftKey && (e.key === 'N' || e.key === 'n')) {
         e.preventDefault();
         navigate({ name: 'create' });
+      } else if (mod && e.shiftKey && (e.key === 'O' || e.key === 'o')) {
+        e.preventDefault();
+        startNewChat(useApp.getState().route.name === 'research' ? 'research' : 'chat');
+      } else if (mod && !e.shiftKey && (e.key === 'b' || e.key === 'B')) {
+        e.preventDefault();
+        setCollapsed(!useApp.getState().sidebarCollapsed);
       }
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [navigate]);
+  }, [navigate, setCollapsed]);
 
   return (
-    <div className="shell">
-      <nav className="rail" aria-label="Main navigation">
-        <button className="logo" onClick={() => navigate({ name: 'home' })} title="Genius" aria-label="Genius home">
-          <GeniusAvatar size={34} mood={busy ? 'working' : 'idle'} />
-        </button>
-        <button className={route.name === 'home' ? 'on' : ''} onClick={() => navigate({ name: 'home' })} title="Home" aria-label="Home">
-          <HomeIcon size={19} />
-        </button>
-        <button className={route.name === 'chat' ? 'on' : ''} onClick={() => navigate({ name: 'chat' })} title="Chat" aria-label="Chat mode">
-          <MessageCircle size={19} />
-        </button>
-        <button className={route.name === 'research' ? 'on' : ''} onClick={() => navigate({ name: 'research' })} title="Research" aria-label="Research mode">
-          <SearchIcon size={19} />
-        </button>
-        <button className={route.name === 'create' ? 'on' : ''} onClick={() => navigate({ name: 'create' })} title="New project (Ctrl+Shift+N)" aria-label="New project">
-          <Plus size={19} />
-        </button>
-        {openProjectId && (
-          <button className={route.name === 'project' ? 'on' : ''} onClick={() => navigate({ name: 'project', id: openProjectId })} title={`Workspace: ${openProjectName ?? ''}`} aria-label="Open workspace">
-            <FolderKanban size={19} />
-            {approvals.length > 0 && <span className="count">{approvals.length}</span>}
-          </button>
-        )}
-        <button className={route.name === 'agents' ? 'on' : ''} onClick={() => navigate({ name: 'agents' })} title="Agents and missions" aria-label="Agents">
-          <Bot size={19} />
-          {agentApprovals > 0 && <span className="count" title="Agent tasks waiting for your approval">{agentApprovals}</span>}
-        </button>
-        <div className="spacer" />
-        <button onClick={openCommandPalette} title={`Command palette (${shortcutLabel('Ctrl+K')})`} aria-label="Command palette">
-          <Command size={18} />
-        </button>
-        {update?.available && update.latestVersion !== skipped && (
-          <button className="update-dot" onClick={() => setShowUpdate(true)} title={`Update available: ${update.latestVersion}`} aria-label="Update available">
-            <ArrowDownCircle size={19} />
-            <span className="count ok" />
-          </button>
-        )}
-        <button className={route.name === 'settings' ? 'on' : ''} onClick={() => navigate({ name: 'settings' })} title="Settings (Ctrl+,)" aria-label="Settings">
-          <SettingsIcon size={19} />
-        </button>
-      </nav>
+    <div className={`shell gx-shell ${collapsed ? 'collapsed' : ''}`}>
+      <Sidebar />
       <main className="main">
         <ErrorBoundary key={route.name} view={route.name}>
           {route.name === 'home' && <Home />}

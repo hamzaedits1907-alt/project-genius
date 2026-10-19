@@ -35,6 +35,9 @@ interface AppState {
   /** A version the user chose to skip: no announcement or sidebar badge for it. */
   skippedVersion: string | null;
   skipVersion: (v: string | null) => void;
+  /** The left sidebar is collapsed to an icon rail (remembered between sessions). */
+  sidebarCollapsed: boolean;
+  setSidebarCollapsed: (v: boolean) => void;
   navigate: (r: Route) => void;
   toast: (tone: Toast['tone'], text: string) => void;
   dismissToast: (id: number) => void;
@@ -54,7 +57,8 @@ interface AppState {
 let toastId = 0;
 
 export const useApp = create<AppState>((set, get) => ({
-  route: { name: 'home' },
+  // Conversation is the home screen; the project builder lives under Code (route 'home').
+  route: { name: 'chat' },
   settings: null,
   keyStatus: null,
   appInfo: null,
@@ -68,6 +72,11 @@ export const useApp = create<AppState>((set, get) => ({
   skipVersion: (v) => {
     storage('genius.skipVersion', v ?? '');
     set({ skippedVersion: v, showUpdate: false });
+  },
+  sidebarCollapsed: storage('genius.sidebarCollapsed') === '1',
+  setSidebarCollapsed: (v) => {
+    storage('genius.sidebarCollapsed', v ? '1' : '0');
+    set({ sidebarCollapsed: v });
   },
   navigate: (route) => set({ route }),
   toast: (tone, text) => {

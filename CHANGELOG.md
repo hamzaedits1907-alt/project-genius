@@ -1,5 +1,24 @@
 # Changelog
 
+## [0.5.0]
+
+Genius is a general-purpose assistant first; building apps is one of its tools.
+
+- **New conversation-first interface.** A collapsible sidebar with a prominent *New chat*, workspaces (Chat, Research, Code, Agents), searchable history grouped by date, recent projects and a *Files* library. The home screen is a conversation with a welcome screen and a larger composer (attach, paste or drop files, Web on/off, Research). Messages render Markdown, code with copy, tables, **mathematics (KaTeX)**, picture thumbnails that open again from history, the web pages an answer really read, and an optional *Details* panel. Provider failures are explained with a Retry; running answers show their tool steps, a timer and Stop. The project builder moved under **Code**.
+- **Fixed: wrong self-identification.** The chat prompt used to hard-code the model saved in Settings, while Auto routing or the provider could serve another — so an answer could claim one model while the message metadata showed another. The prompt no longer names a model; "who are you" is answered "I'm Genius, the AI assistant built into Project Genius". Only when asked which model it runs on does Genius read measured facts (`runtime_info`). Metadata keeps the **requested** model, the **provider-reported** label and per-request tokens and timings separately.
+- **Fixed: images.** A picture now goes straight to a vision model as one request (no describe-then-answer round trip, no re-describing on every tool step); the type is read from the file's bytes, not its extension; the first image of a fresh install no longer fails because the model list had not been loaded yet; the picture is not re-uploaded with unrelated follow-ups; and a message was previously sent twice (once from history, once as the new turn). Measured live against NVIDIA with a red image named `blue.png`: 54.7 s → 9.3 s for the image answer, 79.5 s → 1.5 s for a greeting (single samples).
+- **Everyday chat is faster by design.** A new `chat` routing role weighs speed more than agent work, effort follows the size of the request, and hidden reasoning is only used at Max effort.
+- **New tools for chat:** `calculate` (exact arithmetic, no scripting) and `data_summary` (computed statistics of an attached CSV/TSV/JSON), plus `runtime_info`.
+- **Evidence-based task lifecycle:** reports now say `verified`, `completed_unverified`, `failed` or `answered`.
+- Fixed number formatting in the agents UI on non-English systems.
+- **Project Brain.** Genius keeps an incrementally updated map of each project: type, entry points, build/test commands, modules, symbols with line numbers and the import graph (TypeScript, JavaScript, Python, Rust). Ask where something is, or what a change affects and which tests to run, in the new *Project Brain* panel or through the `project_brain` tool. Verified source facts and recorded history (memory, earlier changes, Git) are shown separately, and notes that mention files that no longer exist are flagged as possibly stale. It is a pattern scan, not a compiler.
+- **Limits.** Settings, AI provider, Limits caps model calls, tool calls, minutes, tokens, concurrent tasks and provider retries per task. A task that hits a limit stops as *blocked*, names the limit and keeps its work. These are not a spending cap.
+- **Honest usage.** Token counts are what the provider reports; requests without a report are shown as *estimated* and never mixed in.
+- **Connection diagnostics.** One report replaces "Test connection": key, address, models, model access, a real test message, image input and (optionally) tool-call format, each with what to do next. The key is never shown.
+- **More providers.** OpenAI, Anthropic and Google Gemini have native adapters (OpenAI-compatible endpoints too), each with its own key slot. They are covered by contract tests only; **no live call to them has been made**, and Auto model routing remains NVIDIA-only.
+- **Tests:** fixed a flawed live NVIDIA test (the model was right to skip reading a file already in its prompt) and added a deterministic test for the cause.
+- Windows updater: tested successfully by hand by the author (user-reported).
+
 ## [0.4.0]
 
 Genius becomes a platform: chat, research, agents and a real browser.

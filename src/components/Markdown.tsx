@@ -1,17 +1,21 @@
 import { Fragment, useState, type ReactNode } from 'react';
 import { Check, Copy } from 'lucide-react';
 import { openUrl } from '@tauri-apps/plugin-opener';
+import katex from 'katex';
+import 'katex/dist/katex.min.css';
 
 /**
  * Small, safe Markdown renderer for chat messages: builds React elements only (never
- * innerHTML), so model output can't inject markup. Supports fenced code, headings, lists,
- * quotes, bold/italic, inline code and https links.
+ * innerHTML, except for KaTeX output), so model output can't inject markup. Supports fenced code, headings, lists,
+ * quotes, bold/italic, inline code and https links. Mathematics (`$…$`, `$$…$$`, `\(…\)`,
+ * `\[…\]`) is typeset by KaTeX with `trust: false` (no links, no raw HTML), so a formula in a
+ * model answer can't inject markup either.
  */
 export function Markdown({ text }: { text: string }) {
   return <div className="md">{blocks(text)}</div>;
 }
 
-type Block = { kind: 'code'; lang: string; body: string } | { kind: 'h'; level: number; body: string } | { kind: 'ul' | 'ol'; items: string[] } | { kind: 'quote'; body: string } | { kind: 'p'; body: string } | { kind: 'hr' } | { kind: 'table'; head: string[]; rows: string[][] } | { kind: 'foot'; items: { n: string; text: string }[] };
+type Block = { kind: 'code'; lang: string; body: string } | { kind: 'h'; level: number; body: string } | { kind: 'ul' | 'ol'; items: string[] } | { kind: 'quote'; body: string } | { kind: 'p'; body: string } | { kind: 'hr' } | { kind: 'table'; head: string[]; rows: string[][] } | { kind: 'foot'; items: { n: string; text: string }[] } | { kind: 'math'; body: string };
 
 const cells = (l: string) => l.trim().replace(/^\|/, '').replace(/\|$/, '').split('|').map((c) => c.trim());
 const isSep = (l: string | undefined) => !!l && /^\s*\|?\s*:?-{2,}:?\s*(\|\s*:?-{2,}:?\s*)*\|?\s*$/.test(l) && l.includes('-');
@@ -36,6 +40,28 @@ export function parseBlocks(text: string): Block[] {
     if (!line.trim()) {
       i++;
       continue;
+    }
+    const mathStart = line.match(/^\s*(\$\$|\\\[)(.*)$/);
+    if (mathStart) {
+      const close = mathStart[1] === '$$' ? '$$' : '\\]';
+      const first = mathStart[2];
+      const at = first.indexOf(close);
+      if (at >= 0 && !first.slice(at + close.length).trim()) {
+        out.push({ kind: 'math', body: first.slice(0, at).trim() });
+        i++;
+        continue;
+      }
+      if (at < 0) {
+        const body = [first];
+        let j = i + 1;
+        while (j < lines.length && !lines[j].includes(close)) body.push(lines[j++]);
+        if (j < lines.length && !lines[j].slice(lines[j].indexOf(close) + close.length).trim()) {
+          body.push(lines[j].slice(0, lines[j].indexOf(close)));
+          out.push({ kind: 'math', body: body.join('\n').trim() });
+          i = j + 1;
+          continue;
+        }
+      }
     }
     if (isTableStart(lines, i)) {
       const head = cells(line);
@@ -114,6 +140,8 @@ function blocks(text: string): ReactNode {
         return <blockquote key={i}>{inline(b.body)}</blockquote>;
       case 'hr':
         return <hr key={i} />;
+      case 'math':
+        return <Formula key={i} tex={b.body} display />;
       case 'table':
         return (
           <div className="md-table" key={i}>
@@ -145,6 +173,12 @@ function blocks(text: string): ReactNode {
   });
 }
 
+/** One formula. KaTeX renders what it can; on a parse error it shows the source in red instead of throwing. */
+export function Formula({ tex, display }: { tex: string; display?: boolean }) {
+  const html = katex.renderToString(tex, { displayMode: !!display, throwOnError: false, trust: false, strict: 'ignore', output: 'htmlAndMathml', maxSize: 20, maxExpand: 500 });
+  return display ? <div className="md-math" role="math" aria-label={tex} dangerouslySetInnerHTML={{ __html: html }} /> : <span className="md-math-inline" aria-label={tex} dangerouslySetInnerHTML={{ __html: html }} />;
+}
+
 function CodeBlock({ lang, body }: { lang: string; body: string }) {
   const [copied, setCopied] = useState(false);
   return (
@@ -170,7 +204,7 @@ function CodeBlock({ lang, body }: { lang: string; body: string }) {
   );
 }
 
-const TOKEN = /(`[^`]+`)|(\*\*[^*]+\*\*)|(__[^_]+__)|(\*[^*\s][^*]*\*)|(_[^_\s][^_]*_)|(\[[^\]]+\]\((https?:\/\/[^)\s]+)\))|(https?:\/\/[^\s)]+)|((?<!\w)\[\d{1,3}\](?!\())/g;
+const TOKEN = /(`[^`]+`)|(\*\*[^*]+\*\*)|(__[^_]+__)|(\*[^*\s][^*]*\*)|(_[^_\s][^_]*_)|(\[[^\]]+\]\((https?:\/\/[^)\s]+)\))|(https?:\/\/[^\s)]+)|((?<!\w)\[\d{1,3}\](?!\())|(\$(?![\s$])[^$\n`]+?(?<![\s\\])\$(?!\d))|(\\\([^\n]+?\\\))/g;
 
 export function inline(text: string): ReactNode {
   const parts: ReactNode[] = [];
@@ -195,6 +229,8 @@ export function inline(text: string): ReactNode {
         </sup>,
       );
     }
+    else if (m[10]) parts.push(<Formula key={k++} tex={t.slice(1, -1)} />);
+    else if (m[11]) parts.push(<Formula key={k++} tex={t.slice(2, -2)} />);
     last = at + t.length;
   }
   if (last < text.length) parts.push(withBreaks(text.slice(last), k++));

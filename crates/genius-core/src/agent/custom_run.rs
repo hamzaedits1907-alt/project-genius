@@ -259,7 +259,7 @@ impl Genius {
         let opts = crate::app::CallOptions { role: Some(crate::router::ModelRole::Agent), model: p.model_override.clone(), max_tokens: Some(1024), thinking: Some(false), ..Default::default() };
         let (res, _) = self.ai_call_opts(run.project_id, run.task_id, "agent self-verification", messages, false, cancel, &opts).await?;
         let model = res.model.clone();
-        run.note_usage(&res, &model);
+        run.note_usage(&res, &model, messages.iter().map(|m| m.content.len()).sum());
         let t = res.content.trim().to_string();
         let verdict_line = t.lines().find(|l| l.trim_start().to_uppercase().starts_with("VERDICT")).unwrap_or("").to_uppercase();
         if verdict_line.is_empty() {

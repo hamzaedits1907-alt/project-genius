@@ -18,7 +18,7 @@ export function UsageBar({ label, used, max, unit }: { label: string; used: numb
     <div className="usage-bar">
       <div className="row small">
         <span className="grow">{label}</span>
-        <span className="muted">{used.toLocaleString()} / {max.toLocaleString()} {unit}</span>
+        <span className="muted">{used.toLocaleString('en-US')} / {max.toLocaleString('en-US')} {unit}</span>
       </div>
       <div className="meter" role="progressbar" aria-label={label} aria-valuemin={0} aria-valuemax={max} aria-valuenow={Math.min(used, max)}>
         <span className={pct >= 90 ? 'hot' : ''} style={{ width: `${pct}%` }} />
@@ -228,7 +228,7 @@ export function AgentDetail({ agent, advanced, onEdit, onDuplicate }: { agent: C
                 <UsageBar label="Tokens (this task)" used={current?.usage.tokens ?? 0} max={agent.budget.maxTokens} unit="tokens" />
                 <UsageBar label="Model calls (this task)" used={current?.usage.calls ?? 0} max={agent.budget.maxModelCalls} unit="calls" />
                 <div className="small muted">
-                  All time: {rt.usage.tokens.toLocaleString()} tokens · {rt.usage.calls} calls · {rt.usage.tasksDone} done · {rt.usage.tasksFailed} failed
+                  All time: {rt.usage.tokens.toLocaleString('en-US')} tokens · {rt.usage.calls} calls · {rt.usage.tasksDone} done · {rt.usage.tasksFailed} failed
                 </div>
               </Section>
 
@@ -238,7 +238,7 @@ export function AgentDetail({ agent, advanced, onEdit, onDuplicate }: { agent: C
                   <div>Scope: {agent.scope.projects === 'current' ? 'the task’s project' : 'any project'}{agent.scope.paths.length ? ` — ${agent.scope.paths.join(', ')}` : ' — whole project'}</div>
                   <div>Network: {agent.network ? 'allowed' : 'off'}</div>
                   <div>
-                    Budget per task: {(Object.keys(BUDGET_LABELS) as (keyof typeof BUDGET_LABELS)[]).map((k) => `${BUDGET_LABELS[k].label} ${agent.budget[k].toLocaleString()}`).join(' · ')} · retries {agent.retryLimit}
+                    Budget per task: {(Object.keys(BUDGET_LABELS) as (keyof typeof BUDGET_LABELS)[]).map((k) => `${BUDGET_LABELS[k].label} ${agent.budget[k].toLocaleString('en-US')}`).join(' · ')} · retries {agent.retryLimit}
                   </div>
                   {agent.knowledgeSources.length > 0 && <div>Knowledge: {agent.knowledgeSources.join(', ')}</div>}
                 </div>

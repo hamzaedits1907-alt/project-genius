@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-diagnose-provider"
+description = "Enables the diagnose_provider command without any pre-configured scope."
+commands.allow = ["diagnose_provider"]
+
+[[permission]]
+identifier = "deny-diagnose-provider"
+description = "Denies the diagnose_provider command without any pre-configured scope."
+commands.deny = ["diagnose_provider"]

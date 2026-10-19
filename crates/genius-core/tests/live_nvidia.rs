@@ -42,9 +42,15 @@ async fn live_auto_routing_and_agent_run() {
     let p = g.create_project("Live", "Live test").unwrap();
     let ws = g.workspace(&p.id).unwrap();
     ws.write_text("src/App.tsx", "export default function App() {\n  return <h1>Hello live test</h1>;\n}\n").unwrap();
+    // The needle lives in a file the CURRENT FILES snapshot never inlines (`.txt` is not a source
+    // extension), so the only way to know it is a real read_file. src/App.tsx IS inlined into the
+    // prompt (see `small_project_sources_are_inlined_so_a_read_is_not_required` in tests/agent.rs):
+    // asking about it proved nothing and failed whenever the model sensibly skipped the read.
+    let needle = format!("NEEDLE-{}", &p.id.replace('-', "")[..8]);
+    ws.write_text("notes/launch-code.txt", &format!("The launch code is {needle}.\n")).unwrap();
     let conv = g.db.create_conversation(&p.id, "Live").unwrap();
     let t = g
-        .start_agent(&p.id, AgentRequest { conversation_id: conv.id.clone(), message: "Read src/App.tsx and tell me exactly what the h1 says. Do not change anything.".into(), mode: AgentMode::Plan, ..Default::default() })
+        .start_agent(&p.id, AgentRequest { conversation_id: conv.id.clone(), message: "Open notes/launch-code.txt and tell me exactly what the launch code is. Do not change anything.".into(), mode: AgentMode::Plan, ..Default::default() })
         .expect("agent starts without a manually selected model");
     for _ in 0..1200 {
         if g.active_tasks(Some(&p.id)).is_empty() {
@@ -60,5 +66,5 @@ async fn live_auto_routing_and_agent_run() {
     let failed = g.bus.list(Some(&p.id), 500).unwrap().into_iter().any(|e| e.kind == EventKind::Task && e.task_id.as_deref() == Some(t.id.as_str()) && format!("{:?}", e.status) == "Failed");
     assert!(!failed, "the live agent task did not fail");
     assert!(steps.iter().any(|s| s.tool == "read_file" && s.ok), "the real model used the read_file tool");
-    assert!(answer.contains("Hello live test"), "the answer is grounded in the real file");
+    assert!(answer.contains(&needle), "the answer is grounded in the real file: {answer}");
 }

@@ -301,7 +301,10 @@ export function Report({ report }: { report: AgentReport }) {
   const failed = texts(report.failedSteps);
   const notVerified = [...new Set(texts(report.notVerified))];
   const warnings = [...new Set(texts(report.warnings))];
+  const STATUS: Record<string, string> = { blocked: 'Status: stopped by a Genius limit before finishing (see Details)', verified: 'Status: completed and verified by a real build or test', completed_unverified: 'Status: completed, NOT verified — no build or test has passed yet', failed: 'Status: failed' };
   const rows: { key: string; text: string; cls?: string }[] = [
+    ...(report.lifecycle && STATUS[report.lifecycle] ? [{ key: 'life', text: STATUS[report.lifecycle], cls: report.lifecycle === 'verified' ? '' : report.lifecycle === 'failed' ? 'bad-text' : 'warn-text' }] : []),
+    ...(report.budget?.stoppedBy ? [{ key: 'budget', text: `Limit reached: ${report.budget.stoppedBy.limit} (${report.budget.stoppedBy.max}) after ${report.budget.stoppedBy.used}. Raise it in Settings → AI provider → Limits, or say "continue".`, cls: 'warn-text' }] : []),
     { key: 'read', text: `Files read: ${read.length ? read.join(', ') : 'none'}` },
     { key: 'search', text: `Searches: ${typeof report.searches === 'number' ? report.searches : 0}` },
     { key: 'checks', text: `Checks run: ${checks.length ? checks.map((c) => `${c.check}: ${c.status ?? (c.ok ? 'passed' : 'error')}${c.exitCode != null ? ` (exit ${c.exitCode})` : ''}`).join(', ') : 'none'}` },

@@ -3,12 +3,13 @@ import { ArrowDownCircle, CheckCircle2, Copy, Globe, Plug, ExternalLink, FolderC
 import { open as openDialog } from '@tauri-apps/plugin-dialog';
 import { openUrl } from '@tauri-apps/plugin-opener';
 import { Github } from '../components/icons';
-import { api, errorKind, errorMessage } from '../lib/api';
+import { api, errorMessage } from '../lib/api';
 import { timeAgo } from '../lib/logic';
 import type { AuthStatus, Effort, ModelList, ModelMode, ModelRole, Policy, ResolvedModels, Settings, ToolStatus } from '../lib/types';
 import { useApp, type SettingsTab } from '../store/app';
 import { Badge, Button, Callout, Field, Segmented, Spinner, Switch } from '../components/ui';
 import { GeniusAvatar } from '../components/GeniusAvatar';
+import { DiagnosticsCard, KEY_LINK, KEY_PLACEHOLDER, LimitsCard, ProviderCard } from './ProviderPanels';
 
 const TABS: { id: SettingsTab; label: string; icon: React.ReactNode }[] = [
   { id: 'ai', label: 'AI provider', icon: <Sparkles size={15} /> },
@@ -40,7 +41,7 @@ export default function SettingsView({ initialTab }: { initialTab?: SettingsTab 
             <Spinner />
           ) : (
             <div>
-              {tab === 'ai' && <AiSettings />}
+              {tab === 'ai' && <AiSettings key={settings.provider} />}
               {tab === 'github' && <GithubSettings />}
               {tab === 'integrations' && <IntegrationSettings />}
               {tab === 'approvals' && <ApprovalSettings />}
@@ -82,7 +83,6 @@ function AiSettings() {
   const save = useSave();
   const [key, setKey] = useState('');
   const [busy, setBusy] = useState<string | null>(null);
-  const [conn, setConn] = useState<{ ok: boolean; text: string; kind?: string } | null>(null);
   const [models, setModels] = useState<ModelList | null>(null);
   const [modelErr, setModelErr] = useState<string | null>(null);
   const [filter, setFilter] = useState('');
@@ -123,24 +123,9 @@ function AiSettings() {
     setBusy('remove');
     try {
       setKeyStatus(await api.removeApiKey());
-      setConn(null);
       toast('ok', 'Key removed');
     } catch (e) {
       toast('bad', errorMessage(e));
-    } finally {
-      setBusy(null);
-    }
-  };
-  const test = async () => {
-    setBusy('test');
-    setConn(null);
-    try {
-      const r = (await api.testConnection()) as { modelsListed?: number; probe?: { model: string; streaming: boolean; latencyMs: number } };
-      const probe = r.probe ? ` Model ${r.probe.model} answered in ${r.probe.latencyMs} ms${r.probe.streaming ? ' with streaming' : ' (no streaming)'}.` : ' Select a model to also verify inference.';
-      setConn({ ok: true, text: `Connected. ${r.modelsListed ?? 0} models available.${probe}` });
-      void loadModels(false);
-    } catch (e) {
-      setConn({ ok: false, text: errorMessage(e), kind: errorKind(e) });
     } finally {
       setBusy(null);
     }
@@ -165,7 +150,7 @@ function AiSettings() {
     }
   };
 
-  const auto = settings.modelMode !== 'manual';
+  const auto = settings.modelMode !== 'manual' && settings.provider === 'nvidia';
   const setMode = (modelMode: ModelMode) => void save({ ...settings, modelMode }, true);
 
   const shown = useMemo(() => {
@@ -176,15 +161,22 @@ function AiSettings() {
   return (
     <section>
       <div>
-        <h2>NVIDIA API</h2>
+        <h2>AI provider</h2>
         <p className="muted small" style={{ margin: '4px 0 0' }}>
-          Genius uses NVIDIA's hosted models through the OpenAI-compatible API. Get a key at{' '}
-          <a href="#" onClick={(e) => (e.preventDefault(), void openUrl('https://build.nvidia.com/'))}>
-            build.nvidia.com
-          </a>
-          .
+          Genius works with your own account at the provider you choose.
+          {KEY_LINK[settings.provider] && (
+            <>
+              {' '}Get a key at{' '}
+              <a href="#" onClick={(e) => (e.preventDefault(), void openUrl(KEY_LINK[settings.provider]!))}>
+                {KEY_LINK[settings.provider]!.replace('https://', '').replace(/\/$/, '')}
+              </a>
+              .
+            </>
+          )}
         </p>
       </div>
+
+      <ProviderCard settings={settings} save={save} />
 
       <InternetCard />
 
@@ -201,11 +193,11 @@ function AiSettings() {
             type="password"
             autoComplete="off"
             spellCheck={false}
-            placeholder={keyStatus?.stored ? 'Enter a new key to replace the saved one' : 'nvapi-…'}
+            placeholder={keyStatus?.stored ? 'Enter a new key to replace the saved one' : KEY_PLACEHOLDER[settings.provider]}
             value={key}
             onChange={(e) => setKey(e.target.value)}
             onKeyDown={(e) => e.key === 'Enter' && key && void saveKey()}
-            aria-label="NVIDIA API key"
+            aria-label="API key"
           />
           <Button variant="primary" disabled={!key.trim()} loading={busy === 'key'} onClick={() => void saveKey()}>
             Save key
@@ -219,18 +211,9 @@ function AiSettings() {
         <div className="faint small">
           Stored in: {keyStatus?.backend ?? '…'}. The key never returns to this window, is never written to project files or logs, and is never exposed to previewed apps.
         </div>
-        <div className="row">
-          <Button icon={<RefreshCw size={14} />} disabled={!keyStatus?.stored} loading={busy === 'test'} onClick={() => void test()}>
-            Test connection
-          </Button>
-          {conn && (
-            <span className="row small" style={{ color: conn.ok ? 'var(--ok)' : 'var(--bad)' }}>
-              {conn.ok ? <CheckCircle2 size={15} /> : <XCircle size={15} />}
-              {conn.text}
-            </span>
-          )}
-        </div>
       </div>
+
+      <DiagnosticsCard keyStored={!!keyStatus?.stored} onDone={() => void loadModels(false)} />
 
       <div className="card pad col" style={{ gap: 12 }}>
         <div className="row">
@@ -239,6 +222,7 @@ function AiSettings() {
           {auto ? <Badge tone="accent">Auto</Badge> : settings.model ? <Badge tone="accent">Selected: {settings.model}</Badge> : <Badge tone="warn">None selected</Badge>}
         </div>
         <div className="col" style={{ gap: 6 }} role="radiogroup" aria-label="How Genius chooses the model">
+          {settings.provider === 'nvidia' && (
           <label className={`choice ${auto ? 'on' : ''}`}>
             <input type="radio" name="model-mode" checked={auto} onChange={() => setMode('auto')} />
             <span>
@@ -246,6 +230,7 @@ function AiSettings() {
               <span className="faint small" style={{ display: 'block' }}>Only models your key can use are considered. If one is unavailable, busy or failing, Genius switches to the next best and tells you.</span>
             </span>
           </label>
+          )}
           <label className={`choice ${!auto ? 'on' : ''}`}>
             <input type="radio" name="model-mode" checked={!auto} onChange={() => setMode('manual')} />
             <span>
@@ -323,6 +308,8 @@ function AiSettings() {
 
       {!auto && <VisionCheck model={settings.model} />}
 
+      <LimitsCard settings={settings} save={save} />
+
       <div className="card pad col" style={{ gap: 14 }}>
         <strong>Generation</strong>
         <div className="row" style={{ alignItems: 'flex-start', gap: 14 }}>
@@ -336,7 +323,7 @@ function AiSettings() {
             <input className="input" type="number" min={4000} max={400000} step={1000} value={params.contextBudgetChars} onChange={(e) => setParams({ ...params, contextBudgetChars: Number(e.target.value) })} />
           </Field>
         </div>
-        <Field label="API base URL" hint="Default: https://integrate.api.nvidia.com/v1. Use http://localhost:… only for a self-hosted NVIDIA NIM.">
+        <Field label="API base URL" hint={settings.provider === 'custom' ? 'The address of your OpenAI-compatible server (…/v1).' : 'Normally leave this alone. Use http://localhost:… only for a self-hosted server.'}>
           <input className="input mono" value={baseUrl} onChange={(e) => setBaseUrl(e.target.value)} />
         </Field>
         <div>

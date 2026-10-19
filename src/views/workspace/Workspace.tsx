@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { Panel, PanelGroup, PanelResizeHandle, type ImperativePanelHandle } from 'react-resizable-panels';
-import { Brain, ClipboardList, Code2, FileStack, Plug, Download, FolderTree, GitBranch, Hammer, History as HistoryIcon, Monitor, Package, Play, Search, Square, Stethoscope, TerminalSquare, TestTube2, UploadCloud, Wand2, X } from 'lucide-react';
+import { Brain, Network, ClipboardList, Code2, FileStack, Plug, Download, FolderTree, GitBranch, Hammer, History as HistoryIcon, Monitor, Package, Play, Search, Square, Stethoscope, TerminalSquare, TestTube2, UploadCloud, Wand2, X } from 'lucide-react';
 import { api, errorMessage } from '../../lib/api';
 import type { Operation } from '../../lib/types';
 import { useApp } from '../../store/app';
@@ -14,6 +14,7 @@ import GitPanel from './GitPanel';
 import HistoryPanel from './HistoryPanel';
 import MemoryPanel from './MemoryPanel';
 import ReferencesPanel from './ReferencesPanel';
+import BrainPanel from './BrainPanel';
 import IntegrationsPanel from './IntegrationsPanel';
 import EditorArea from './EditorArea';
 import BottomPanel from './BottomPanel';
@@ -24,7 +25,7 @@ import PublishDialog from './PublishDialog';
 import QuickOpen from './QuickOpen';
 import { registerCommands, type PaletteCommand } from '../../lib/commands';
 
-type Side = 'files' | 'search' | 'git' | 'history' | 'memory' | 'references' | 'integrations';
+type Side = 'files' | 'search' | 'git' | 'history' | 'memory' | 'brain' | 'references' | 'integrations';
 
 export default function Workspace({ projectId }: { projectId: string }) {
   const open = useWorkspace((s) => s.open);
@@ -198,6 +199,7 @@ export default function Workspace({ projectId }: { projectId: string }) {
     { id: 'git', label: 'Source control', icon: <GitBranch size={18} /> },
     { id: 'history', label: 'History & recovery', icon: <HistoryIcon size={18} /> },
     { id: 'memory', label: 'Project memory', icon: <Brain size={18} /> },
+    { id: 'brain', label: 'Project Brain', icon: <Network size={18} /> },
     { id: 'references', label: 'Imported files', icon: <FileStack size={18} /> },
     { id: 'integrations', label: 'Integrations', icon: <Plug size={18} /> },
   ];
@@ -364,6 +366,7 @@ export default function Workspace({ projectId }: { projectId: string }) {
               {side === 'git' && <GitPanel onPublish={() => setDialog('publish')} />}
               {side === 'history' && <HistoryPanel />}
               {side === 'memory' && <MemoryPanel />}
+              {side === 'brain' && <BrainPanel />}
               {side === 'references' && <ReferencesPanel />}
               {side === 'integrations' && <IntegrationsPanel onPublish={() => setDialog('publish')} />}
             </div>

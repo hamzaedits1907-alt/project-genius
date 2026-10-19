@@ -17,6 +17,8 @@ export interface ChatQueued {
 interface ChatState {
   workspaceId: string | null;
   conversations: Record<ChatMode, ChatConversation[]>;
+  /** Every Chat and Research conversation, newest first (the sidebar history). */
+  all: ChatConversation[];
   active: Record<ChatMode, string | null>;
   query: string;
   messages: MessageRow[];
@@ -29,6 +31,10 @@ interface ChatState {
   error: string | null;
 
   load: (mode: ChatMode) => Promise<void>;
+  /** (Re)load the sidebar history, optionally filtered by a search over titles and message text. */
+  loadAll: (query?: string) => Promise<void>;
+  /** Start a blank conversation: nothing is created until the first message is sent. */
+  fresh: (mode: ChatMode) => void;
   search: (mode: ChatMode, query: string) => Promise<void>;
   select: (mode: ChatMode, id: string | null) => Promise<void>;
   create: (mode: ChatMode) => Promise<ChatConversation | null>;
@@ -45,6 +51,7 @@ let qid = 0;
 export const useChat = create<ChatState>((set, get) => ({
   workspaceId: null,
   conversations: empty,
+  all: [],
   active: { chat: null, research: null },
   query: '',
   messages: [],
@@ -63,18 +70,28 @@ export const useChat = create<ChatState>((set, get) => ({
       const list = await api.listChatConversations(mode, get().query || undefined);
       const tasks = await api.activeTasks(ws);
       set({ workspaceId: ws, conversations: { ...get().conversations, [mode]: list }, tasks, error: null });
+      // A conversation stays open only if the user opened it; otherwise start blank (like a new chat).
       const cur = get().active[mode];
-      const next = cur && list.some((c) => c.id === cur) ? cur : (list[0]?.id ?? null);
-      await get().select(mode, next);
+      await get().select(mode, cur && list.some((c) => c.id === cur) ? cur : null);
+      void get().loadAll();
     } catch (e) {
       set({ error: errorMessage(e) });
     }
   },
 
+  loadAll: async (query) => {
+    const q = query ?? get().query;
+    const all = await api.listChatConversations(null, q || undefined).catch(() => get().all);
+    set({ all });
+  },
+
+  fresh: (mode) => set({ active: { ...get().active, [mode]: null }, messages: [], sources: [], queue: [] }),
+
   search: async (mode, query) => {
     set({ query });
     const list = await api.listChatConversations(mode, query || undefined).catch(() => []);
     set({ conversations: { ...get().conversations, [mode]: list } });
+    await get().loadAll(query);
   },
 
   select: async (mode, id) => {
@@ -87,7 +104,7 @@ export const useChat = create<ChatState>((set, get) => ({
   create: async (mode) => {
     try {
       const c = await api.createChatConversation(mode);
-      set({ conversations: { ...get().conversations, [mode]: [c, ...get().conversations[mode]] }, active: { ...get().active, [mode]: c.id }, messages: [], sources: [] });
+      set({ conversations: { ...get().conversations, [mode]: [c, ...get().conversations[mode]] }, all: [c, ...get().all], active: { ...get().active, [mode]: c.id }, messages: [], sources: [] });
       return c;
     } catch (e) {
       useApp.getState().toast('bad', errorMessage(e));
@@ -110,6 +127,7 @@ export const useChat = create<ChatState>((set, get) => ({
     const id = get().active[mode];
     const list = await api.listChatConversations(mode, get().query || undefined).catch(() => get().conversations[mode]);
     set({ conversations: { ...get().conversations, [mode]: list } });
+    void get().loadAll();
     if (id) {
       const [messages, sources] = await Promise.all([api.conversationMessages(id), mode === 'research' ? api.researchSources(id) : Promise.resolve([])]);
       if (get().active[mode] === id) set({ messages, sources });

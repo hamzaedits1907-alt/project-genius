@@ -76,3 +76,43 @@ A scripted **mock** provider plays the model's side of the tool protocol (labell
 - `cargo test -p genius-core --test updater_live` always runs the offline checks, including a child-process test that `HTTPS_PROXY` is honoured (a fake local proxy sees `CONNECT api.github.com:443`). With `GENIUS_LIVE_UPDATER=1` it also talks to the real GitHub release (needs network; optional `GENIUS_LIVE_OLD_VERSION`, `GENIUS_LIVE_NEW_TAG`).
 - The Windows installer path is verified by `.github/workflows/updater-windows.yml` (manual; see `docs/RELEASING.md`). Not yet run.
 - CI runs clippy with `-D warnings`; rustfmt is reported only.
+
+
+## 7. Genius Chat: identity, request metadata, images and tools — `cargo test -p genius-core --test chat_identity`
+
+A scripted NVIDIA stand-in (wiremock) records every request body, so these tests prove what Genius really *sends* and *stores*, **not** what a live model does:
+
+- the system prompt never names a model; a plain introduction is answered directly;
+- the requested model, the provider-reported label and the per-request tokens stay separate in the message metadata, including when they differ;
+- changing the model in Settings changes the next request; Auto mode never passes a stale preference off as the served model;
+- an explicit "which model are you" is answered from `runtime_info`;
+- a screenshot reaches a vision model as one real `image_url` payload (the exact attached bytes, sent once, to a vision model), follow-ups keep the picture, unrelated messages do not; with no vision model nothing is faked; non-images with an image extension are rejected;
+- `calculate` and `data_summary` return computed values to the model.
+
+Reproduction of the original identity bug: run this file against the pre-change sources (`git stash push -- crates/genius-core/src`): 7 of its 8 original tests fail.
+
+### Live chat test (real NVIDIA API, opt-in) — `NVIDIA_API_KEY=… cargo test -p genius-core --test live_chat -- --nocapture`
+
+Sends two tiny requests with your key: a PNG whose pixels are red but whose file name says "blue" (a model that reads the name answers blue), and a greeting. Prints the model, the provider's label, first-token and total times. Skipped without the key.
+
+## 8. Frontend UI states without the desktop shell
+
+`src/test/chat-ui.test.tsx` covers the sidebar, history, welcome and first-run screens, attachments and picture previews, failure and retry, math, and the stop button against the mocked backend.
+
+To look at the real rendering, a development-only harness (`harness.html`, `src/harness/main.tsx`, not part of the production build) mounts the real app on fixture data: run `npx vite --port 5199` and open `http://localhost:5199/harness.html#s=<welcome|firstrun|thread|image|web|research|running|error>&theme=<dark|light>`. The data there is fixture data for layout review only.
+
+## 7. Genius Core (0.5.0)
+
+Run heavy suites one after another, not in parallel (a full parallel run can exhaust 16 GB): `CARGO_BUILD_JOBS=2 cargo test -p genius-core --test <name> -- --test-threads=2`.
+
+| Suite | What it proves | Kind |
+|---|---|---|
+| `--lib` (299) | budgets, provider adapters (bodies, replies, streams, errors), Brain index/impact/search/staleness, diagnostics hints, everything older | unit |
+| `--test providers` (16) | Anthropic/Gemini/OpenAI/custom over HTTP: URL, auth header, key never in URL/body, usage, stream, errors, cancellation, rejected `temperature`; key slots; measured vs estimated usage; model-call budget to `blocked`; concurrency cap; diagnostics stages and secret non-leak | **contract** (stand-in server, no live provider) |
+| `--test brain` (6) | persistence across restart, incremental refresh, git history, memory staleness, project isolation, scope, `project_brain` tool via a scripted model | real files + real git, scripted model |
+| `--test agent`, `chat_identity`, `chat_research`, `missions`, `web_ssrf` | agent loop, identity/image metadata, research citations, missions, SSRF | mock provider |
+| `--test dashboard`, `browser`, `e2e` | Nexus Dashboard regression, real headless browser, real npm/tsc/vite | real tools, scripted model |
+| `--test live_nvidia`, `live_chat` | Auto routing + real tool read, image pixels vs file name, greeting, provider diagnostics | **live**, opt-in: skipped unless `NVIDIA_API_KEY` is set |
+| `npm test` (161) | UI incl. provider card, diagnostics, limits, Brain panel, blocked report | mocked IPC (jsdom), not the packaged app |
+
+Not covered by any automated test: the packaged Tauri window, live OpenAI/Anthropic/Gemini, live web search. The Windows updater was tested **manually by the user** (reported successful); CI covers it separately (`updater-windows.yml`).

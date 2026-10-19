@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-provider-capabilities"
+description = "Enables the provider_capabilities command without any pre-configured scope."
+commands.allow = ["provider_capabilities"]
+
+[[permission]]
+identifier = "deny-provider-capabilities"
+description = "Denies the provider_capabilities command without any pre-configured scope."
+commands.deny = ["provider_capabilities"]

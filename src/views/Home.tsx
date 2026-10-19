@@ -12,7 +12,6 @@ import { GeniusAvatar } from '../components/GeniusAvatar';
 import { markAutoBuild } from '../store/workspace';
 import { BlueprintGallery } from '../components/BlueprintGallery';
 import { EnhanceButton } from '../components/EnhanceButton';
-import { ModeSwitch } from './chat/ModeSwitch';
 import { blueprintById, type Blueprint } from '../lib/blueprints';
 
 const IDEAS = [
@@ -160,7 +159,7 @@ export default function Home() {
     <div className="page">
       <div className="page-inner">
         <div className="home-hero">
-          <ModeSwitch mode="code" />
+          <div className="gx-ws-label">Code workspace</div>
           <GeniusAvatar size={96} mood={starting || enhancing ? 'working' : idea.trim() ? 'listening' : 'idle'} />
           <div className="home-greet">{greeting()} I'm Genius.</div>
           <h1>What should we build today?</h1>
@@ -461,7 +460,7 @@ export function recommendModel(models: ModelInfo[]): string | null {
 }
 
 /** First-run setup right on Home: paste a key, Genius picks a good model. */
-function QuickSetup() {
+export function QuickSetup() {
   const navigate = useApp((s) => s.navigate);
   const keyStatus = useApp((s) => s.keyStatus);
   const setKeyStatus = useApp((s) => s.setKeyStatus);

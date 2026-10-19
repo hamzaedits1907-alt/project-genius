@@ -2,6 +2,8 @@
 
 **An AI software studio for the desktop.** Describe an app; Genius plans it with an NVIDIA-hosted model, writes real source files you can read and edit, installs and builds it, runs it in a live preview, diagnoses real build failures, keeps a reversible history of every change, and publishes to GitHub — while showing you each operation as it happens.
 
+> **Genius is a general-purpose AI assistant first** — chat, research, images and documents, data and calculations — with app building as one of its tools (the **Code** workspace).
+>
 > Status: working MVP. See [docs/STATUS.md](docs/STATUS.md) for exactly what is verified, what is mocked in tests, and what is not done yet.
 
 ## What it does
@@ -19,7 +21,7 @@
 
 - **Meet Genius.** An animated character who shows what it is doing (listening, thinking, working, happy, stuck), with a friendlier chat: Markdown answers, live narration, a progress checklist, and one-click answers when Genius asks you a question.
 - **Simple and Advanced modes.** Simple (default) is just the chat and your running app: type an idea on Home and Genius plans and builds it. Advanced keeps the full IDE (files, terminal, Git, history, memory, integrations). Switch any time from the top bar.
-- **Smarter agent.** Knows who and what it is (including the model it runs on), chats naturally, asks clarifying questions, builds whole multi-page websites in batches (`write_files`), keeps a visible todo list, and follows a built-in design guide.
+- **Smarter agent.** Knows who it is, chats naturally, asks clarifying questions, builds whole multi-page websites in batches (`write_files`), keeps a visible todo list, and follows a built-in design guide.
 - **More agents.** New *designer* and *tester* subagents alongside architect, reviewer and UI.
 - **Internet access.** `web_search` and `fetch_url` tools for docs and inspiration (SSRF-protected, content treated as data; toggle in Settings → AI provider).
 - **In-app updates** from GitHub Releases (see below).

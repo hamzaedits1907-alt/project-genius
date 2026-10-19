@@ -62,6 +62,16 @@ pub async fn test_connection(g: G<'_>) -> Result<Value> {
 }
 
 #[tauri::command]
+pub async fn diagnose_provider(g: G<'_>, deep: bool) -> Result<genius_core::provider_diag::DiagReport> {
+    g.diagnose_provider(deep).await
+}
+
+#[tauri::command]
+pub fn provider_capabilities() -> Vec<genius_core::provider::ProviderCapabilities> {
+    genius_core::provider::ProviderKind::ALL.iter().map(|k| k.capabilities()).collect()
+}
+
+#[tauri::command]
 pub async fn list_models(g: G<'_>, refresh: bool) -> Result<ModelList> {
     g.list_models(refresh).await
 }
@@ -574,6 +584,16 @@ pub async fn capability_report(g: G<'_>, project_id: Option<String>) -> Result<g
 }
 
 // ---------------------------------------------------------------- project memory
+
+#[tauri::command]
+pub fn brain_overview(g: G, project_id: String) -> Result<genius_core::brain::Overview> {
+    g.brain_overview(&project_id)
+}
+
+#[tauri::command]
+pub async fn brain_ask(g: G<'_>, project_id: String, query: String, impact: Vec<String>) -> Result<genius_core::brain_ops::BrainAnswer> {
+    g.brain_ask(&project_id, &query, &impact, &|_| true).await
+}
 
 #[tauri::command]
 pub fn list_memories(g: G, project_id: String) -> Result<Vec<genius_core::db::MemoryRow>> {

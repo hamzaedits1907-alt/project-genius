@@ -204,7 +204,7 @@ export function validateAgent(a: AgentDraft): AgentErrors {
   for (const k of Object.keys(BUDGET_MAX) as (keyof AgentBudget)[]) {
     const v = a.budget[k];
     if (!Number.isInteger(v) || v < 1) e[`budget.${k}`] = `${BUDGET_LABELS[k].label} must be a whole number of at least 1.`;
-    else if (v > BUDGET_MAX[k]) e[`budget.${k}`] = `${BUDGET_LABELS[k].label} is limited to ${BUDGET_MAX[k].toLocaleString()} ${BUDGET_LABELS[k].unit}.`;
+    else if (v > BUDGET_MAX[k]) e[`budget.${k}`] = `${BUDGET_LABELS[k].label} is limited to ${BUDGET_MAX[k].toLocaleString('en-US')} ${BUDGET_LABELS[k].unit}.`;
   }
   if (!Number.isInteger(a.retryLimit) || a.retryLimit < 0 || a.retryLimit > RETRY_MAX) e.retryLimit = `Retries must be between 0 and ${RETRY_MAX}.`;
   if (a.acceptanceCriteria.length > 2000) e.acceptanceCriteria = 'Limited to 2000 characters.';

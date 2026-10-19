@@ -23,7 +23,7 @@ use crate::process::{Operation, ProcessManager, RunOutcome};
 use crate::prompts;
 use crate::router::ModelRole;
 use crate::scaffold;
-use crate::secrets::{self, SecretStore, NVIDIA_KEY};
+use crate::secrets::{self, SecretStore};
 use crate::settings::{Effort, Policy, Settings};
 use crate::spec::{self, ProjectSpec};
 use crate::workspace::Workspace;
@@ -85,6 +85,9 @@ pub struct CallOptions {
     pub temperature: Option<f32>,
     /// Use exactly this model (custom agents with a manual model policy); no routing.
     pub model: Option<String>,
+    /// Try these models in this order instead of routing by role; later ones are used only when an
+    /// earlier one fails (unlike [`model`](Self::model), which allows no fallback).
+    pub chain: Option<Vec<String>>,
 }
 
 impl CallOptions {
@@ -124,6 +127,9 @@ pub fn effort_budget(effort: Effort, role: ModelRole, s: &Settings) -> (u32, boo
         (_, Effort::Fast) => tokens,
         _ => tokens.max(s.max_tokens),
     };
+    // Everyday chat reasons only at Max: a visible chat answer should start within seconds, and
+    // measured live requests spent most of their time in hidden reasoning.
+    let thinking = thinking && !(role == ModelRole::Chat && effort != Effort::Max);
     (tokens.min(s.max_tokens.saturating_mul(4)).max(256), thinking && role != ModelRole::Quick)
 }
 
@@ -171,6 +177,9 @@ pub struct Genius {
     pub(crate) agents: crate::custom_agents::AgentsRuntime,
     /// Token usage per task (in memory, bounded).
     usage: Mutex<HashMap<String, UsageTotals>>,
+    /// Descriptions a vision model gave of images (hash of the image data → model, text), so an
+    /// agent loop that re-sends the same screenshot every step describes it once. Bounded.
+    image_descriptions: Mutex<Vec<(u64, String, String)>>,
     /// What outbound web fetches may reach (public internet only, except in tests; see web.rs).
     pub(crate) web_policy: Mutex<crate::web::WebPolicy>,
     data_dir: PathBuf,
@@ -216,6 +225,7 @@ impl Genius {
             param_memory: ParamMemory::default(),
             agents: Default::default(),
             usage: Mutex::new(HashMap::new()),
+            image_descriptions: Mutex::new(Vec::new()),
             web_policy: Mutex::new(crate::web::WebPolicy::default()),
             data_dir: data_dir.to_path_buf(),
         }))
@@ -250,8 +260,19 @@ impl Genius {
 
     // ===================================================================== NVIDIA key + models
 
+    /// The provider selected in Settings (an unknown saved id behaves as NVIDIA).
+    pub fn provider_kind(&self) -> crate::provider::ProviderKind {
+        crate::provider::ProviderKind::from_id_or_default(&self.settings().map(|s| s.provider).unwrap_or_default())
+    }
+
+    /// Credential-store entry of the selected provider: every provider has its own key slot, so
+    /// switching provider never sends one provider's key to another.
+    fn key_name(&self) -> String {
+        self.provider_kind().key_name()
+    }
+
     pub fn key_status(&self) -> KeyStatus {
-        match self.secrets.get(NVIDIA_KEY) {
+        match self.secrets.get(&self.key_name()) {
             Ok(v) => KeyStatus { stored: v.is_some(), hint: v.as_deref().map(secrets::mask), backend: self.secrets.backend_name().into(), error: None },
             Err(e) => KeyStatus { stored: false, hint: None, backend: self.secrets.backend_name().into(), error: Some(e.to_string()) },
         }
@@ -259,33 +280,37 @@ impl Genius {
 
     pub fn save_api_key(&self, key: &str) -> Result<KeyStatus> {
         let key = secrets::validate_nvidia_key(key)?;
-        self.secrets.set(NVIDIA_KEY, &key)?;
+        let name = self.key_name();
+        self.secrets.set(&name, &key)?;
         // read back to prove the OS store actually persisted it
-        let stored = self.secrets.get(NVIDIA_KEY)?;
+        let stored = self.secrets.get(&name)?;
         if stored.as_deref() != Some(key.as_str()) {
             return Err(GeniusError::Secret("the credential store did not return the saved key".into()));
         }
-        self.bus.record(None, None, EventKind::Task, EventStatus::Completed, "NVIDIA API key saved to system credential store", json!({ "backend": self.secrets.backend_name(), "hint": secrets::mask(&key) }));
+        self.bus.record(None, None, EventKind::Task, EventStatus::Completed, format!("{} API key saved to system credential store", self.provider_kind().label()), json!({ "backend": self.secrets.backend_name(), "hint": secrets::mask(&key) }));
         Ok(self.key_status())
     }
 
     pub fn remove_api_key(&self) -> Result<KeyStatus> {
-        self.secrets.delete(NVIDIA_KEY)?;
-        self.bus.record(None, None, EventKind::Task, EventStatus::Completed, "NVIDIA API key removed", json!({}));
+        self.secrets.delete(&self.key_name())?;
+        self.bus.record(None, None, EventKind::Task, EventStatus::Completed, format!("{} API key removed", self.provider_kind().label()), json!({}));
         Ok(self.key_status())
     }
 
     pub(crate) fn client(&self) -> Result<(NvidiaClient, Settings)> {
         let s = self.settings()?;
-        let key = self.secrets.get(NVIDIA_KEY)?;
-        Ok((NvidiaClient::new(&s.base_url, key)?.with_param_memory(self.param_memory.clone()), s))
+        let kind = crate::provider::ProviderKind::from_id_or_default(&s.provider);
+        let key = self.secrets.get(&kind.key_name())?;
+        let mut client = NvidiaClient::new(&s.base_url, key)?.with_kind(kind).with_param_memory(self.param_memory.clone());
+        client.max_retries = s.limits.max_provider_retries;
+        Ok((client, s))
     }
 
     pub async fn test_connection(&self) -> Result<Value> {
         let (client, s) = self.client()?;
         // Auto mode verifies the model Genius would use for agent work.
         let model = if s.is_auto() && self.key_status().stored { self.resolve_models(ModelRole::Agent, s.effort).await.ok().and_then(|c| c.into_iter().next()).or(s.model.clone()) } else { s.model.clone() };
-        let mut ev = self.bus.start(None, None, EventKind::Ai, EventStatus::Running, "Testing NVIDIA connection", json!({ "baseUrl": client.base_url(), "model": model, "modelMode": s.model_mode }));
+        let mut ev = self.bus.start(None, None, EventKind::Ai, EventStatus::Running, format!("Testing {} connection", client.kind().label()), json!({ "baseUrl": client.base_url(), "model": model, "modelMode": s.model_mode }));
         let res = client.test_connection(model.as_deref()).await.map_err(GeniusError::from);
         match &res {
             Ok(v) => {
@@ -308,7 +333,7 @@ impl Genius {
         self.db.get_setting("model_probes").ok().flatten().and_then(|v| serde_json::from_value(v).ok()).unwrap_or_default()
     }
 
-    fn store_probe(&self, p: ProbeResult) -> Result<()> {
+    pub(crate) fn store_probe(&self, p: ProbeResult) -> Result<()> {
         let mut all = self.probes();
         all.insert(p.model.clone(), p);
         self.db.set_setting("model_probes", &serde_json::to_value(all)?)
@@ -324,7 +349,7 @@ impl Genius {
                 return Ok(ModelList { models, fetched_at: Some(ts), source: "cache".into(), stale, base_url: base, probes: self.probes() });
             }
         }
-        let mut ev = self.bus.start(None, None, EventKind::Ai, EventStatus::Running, "Fetching NVIDIA model list", json!({ "endpoint": format!("{base}/models") }));
+        let mut ev = self.bus.start(None, None, EventKind::Ai, EventStatus::Running, format!("Fetching {} model list", client.kind().label()), json!({ "endpoint": format!("{base}/models") }));
         match client.list_models().await {
             Ok(models) => {
                 let ts = self.db.put_model_cache(&base, &serde_json::to_value(&models)?)?;
@@ -659,6 +684,10 @@ impl Genius {
             if let Some(t) = tasks.values().find(|t| t.info.project_id == project_id && t.info.kind != "verify" && kind != "verify") {
                 return Err(GeniusError::Conflict(format!("'{}' is still running for this project. Wait for it or cancel it first.", t.info.title)));
             }
+            let cap = self.settings().map(|s| s.limits.max_concurrent_tasks).unwrap_or(6) as usize;
+            if kind != "verify" && tasks.values().filter(|t| t.info.kind != "verify").count() >= cap {
+                return Err(GeniusError::Conflict(format!("{cap} tasks are already running (Settings → Limits → concurrent tasks). Wait for one to finish or cancel it.")));
+            }
         }
         let info = TaskInfo { id: uuid::Uuid::new_v4().to_string(), project_id: project_id.into(), kind: kind.into(), title: title.into(), started_at: now() };
         let cancel = CancellationToken::new();
@@ -703,11 +732,12 @@ impl Genius {
         // Explicit per-call effort, else the effort chosen for this task (plan_work), else settings.
         let effort = opts.effort.or_else(|| self.task_effort(task_id)).unwrap_or(s.effort);
         let request_chars: usize = messages.iter().map(|m| m.content.len()).sum();
-        let chain = match &opts.model {
-            Some(m) => vec![m.clone()],
-            None => self.resolve_models_for(role, effort, request_chars).await?,
+        let chain = match (&opts.model, &opts.chain) {
+            (Some(m), _) => vec![m.clone()],
+            (None, Some(c)) if !c.is_empty() => c.clone(),
+            _ => self.resolve_models_for(role, effort, request_chars).await?,
         };
-        let manual = !s.is_auto() || opts.model.is_some();
+        let manual = (!s.is_auto() && opts.chain.is_none()) || opts.model.is_some();
         let (budget, think) = effort_budget(effort, role, &s);
         let thinking = opts.thinking.unwrap_or(think);
         let level = if !thinking { "low" } else { match effort { Effort::Fast => "low", Effort::Balanced => "medium", Effort::Max => "high" } };
@@ -864,6 +894,19 @@ impl Genius {
             let mut descs = Vec::new();
             for img in &m.images {
                 n += 1;
+                let key = {
+                    use std::hash::{Hash, Hasher};
+                    let mut h = std::collections::hash_map::DefaultHasher::new();
+                    img.hash(&mut h);
+                    h.finish()
+                };
+                let cached = self.image_descriptions.lock().unwrap().iter().find(|(k, _, _)| *k == key).map(|(_, m, d)| (m.clone(), d.clone()));
+                if let Some((model, d)) = cached {
+                    self.bus.record(Some(project_id), self.tid(task_id), EventKind::Ai, EventStatus::Completed, format!("Image {n} of {total} was already described by {model}; reusing that description"), json!({ "model": model, "purpose": "Vision handoff", "cached": true }));
+                    used = model;
+                    descs.push(d);
+                    continue;
+                }
                 let ask = vec![
                     ChatMessage::system(crate::router::VISION_PROMPT),
                     ChatMessage { role: "user".into(), content: format!("Describe this image in detail. Context from the user's message: {}", m.content.chars().take(600).collect::<String>()), images: vec![img.clone()] },
@@ -897,7 +940,14 @@ impl Genius {
                     }
                 }
                 match desc {
-                    Some(d) => descs.push(d),
+                    Some(d) => {
+                        let mut cache = self.image_descriptions.lock().unwrap();
+                        if cache.len() >= 24 {
+                            cache.remove(0);
+                        }
+                        cache.push((key, used.clone(), d.clone()));
+                        descs.push(d);
+                    }
                     None => return Err(last_err.map(GeniusError::from).unwrap_or_else(|| GeniusError::Validation("No vision model could describe the attached image.".into()))),
                 }
             }
@@ -989,7 +1039,7 @@ impl Genius {
                     };
                     self.record_model_observation(model, crate::model_stats::Outcome::Success { latency_ms }, Some(prompt_chars), None);
                 }
-                ev.update(EventStatus::Completed, json!({ "finishReason": r.finish_reason, "outputChars": r.content.len(), "streamed": r.streamed, "usage": r.usage, "tokens": tokens, "reasoningChars": r.reasoning.chars().count(), "reasoningHidden": r.had_reasoning }));
+                ev.update(EventStatus::Completed, json!({ "finishReason": r.finish_reason, "outputChars": r.content.len(), "streamed": r.streamed, "usage": r.usage, "tokens": tokens, "reasoningChars": r.reasoning.chars().count(), "reasoningHidden": r.had_reasoning, "requestedModel": r.model, "reportedModel": r.reported_model, "firstTokenMs": r.first_token_ms, "totalMs": r.total_ms, "images": messages.iter().map(|m| m.images.len()).sum::<usize>() }));
                 Ok((r, events))
             }
             Err(e) => {
@@ -1628,6 +1678,7 @@ pub fn validate_package_json(text: &str) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::secrets::NVIDIA_KEY;
 
     /// Tauri runs synchronous commands on the main thread, outside any Tokio context.
     /// Spawning a task from such a thread must work (regression test for a startup crash).
@@ -1885,7 +1936,7 @@ mod tests {
         assert_eq!(b.len(), 2);
         let text = b[1]["messages"][1]["content"].as_str().unwrap();
         assert!(text.starts_with("Rebuild this") && text.contains("blue header with a logo") && text.contains(VISION_M), "{text}");
-        assert!(r.g.attachments_for_message(&r.pid, &[]).is_ok());
+        assert!(r.g.attachments_for_message(&r.pid, &[]).await.is_ok());
 
         let r = routed(&[SUPER], None, |_| reply("", "x", "stop")).await;
         let msg = ChatMessage { role: "user".into(), content: "see".into(), images: vec!["data:image/png;base64,AAAA".into()] };

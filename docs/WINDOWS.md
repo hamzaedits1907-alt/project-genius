@@ -2,6 +2,8 @@
 
 Genius is developed and tested on Linux in CI; the Windows target **type-checks** (`cargo check --target x86_64-pc-windows-gnu`) but the desktop app has **not yet been run on Windows by the automated suites**. Use this checklist to verify it on your machine.
 
+> **Updater status:** the author tested the Genius updater on Windows by hand and it worked (user-reported; not re-run by the assistant). CI separately builds the installers and `updater-windows.yml` can re-verify a published pair.
+
 ## Prerequisites (install once; Genius never changes Windows security settings)
 
 | Tool | Get it | Check |

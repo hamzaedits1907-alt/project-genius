@@ -22,6 +22,8 @@ export const settings: T.Settings = {
   modelMode: 'auto',
   effort: 'max',
   thinking: true,
+  provider: 'nvidia',
+  limits: { maxModelCalls: 100, maxToolCalls: 150, maxMinutes: 45, maxTokens: 0, maxConcurrentTasks: 6, maxProviderRetries: 3 },
 };
 
 export const project: T.Project = {

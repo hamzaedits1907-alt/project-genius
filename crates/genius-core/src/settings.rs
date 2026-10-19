@@ -96,6 +96,11 @@ pub struct Settings {
     pub internet_access: bool,
     /// Display name of the assistant.
     pub assistant_name: String,
+    /// Which provider API the saved key belongs to: "nvidia" | "openai" | "anthropic" | "gemini" |
+    /// "custom" (any OpenAI-compatible endpoint at `base_url`). See `provider.rs`.
+    pub provider: String,
+    /// Limits on Genius's own work per task (calls, minutes, concurrency, retries).
+    pub limits: crate::budget::TaskLimits,
 }
 
 impl Default for Settings {
@@ -120,6 +125,8 @@ impl Default for Settings {
             auto_check_updates: true,
             internet_access: true,
             assistant_name: "Genius".into(),
+            provider: "nvidia".into(),
+            limits: crate::budget::TaskLimits::default(),
         }
     }
 }
@@ -165,6 +172,10 @@ impl Settings {
         if !["simple", "advanced"].contains(&self.ui_mode.as_str()) {
             return Err(GeniusError::Validation("ui mode must be \"simple\" or \"advanced\"".into()));
         }
+        if !crate::provider::ProviderKind::ALL.iter().any(|k| k.id() == self.provider) {
+            return Err(GeniusError::Validation("unknown provider".into()));
+        }
+        self.limits.validate().map_err(GeniusError::Validation)?;
         let name_len = self.assistant_name.trim().chars().count();
         if !(1..=40).contains(&name_len) {
             return Err(GeniusError::Validation("assistant name must be 1 to 40 characters".into()));

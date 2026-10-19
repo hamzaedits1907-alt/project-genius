@@ -58,6 +58,9 @@ pub const ARG_ALIASES: &[(&str, &str, &[&str])] = &[
     ("web_search", "query", &["q", "text", "search", "term"]),
     ("fetch_url", "url", &["link", "href", "uri", "address"]),
     ("read_reference", "id", &["reference", "ref", "reference_id"]),
+    ("calculate", "expression", &["expr", "formula", "input", "query", "math", "calculation"]),
+    ("data_summary", "id", &["file", "file_id", "fileId", "reference", "attachment"]),
+    ("data_summary", "column", &["col", "field"]),
     ("search_references", "query", &["q", "text", "search", "term"]),
 ];
 
@@ -88,6 +91,8 @@ const PRIMARY: &[(&str, &str)] = &[
     ("fetch_url", "url"),
     ("use_skill", "name"),
     ("read_reference", "id"),
+    ("calculate", "expression"),
+    ("data_summary", "id"),
     ("search_references", "query"),
     ("add_dependency", "packages"),
     ("write_files", "files"),
@@ -332,9 +337,16 @@ pub fn validate(name: &str, args: &Value, inline_files: bool) -> Result<(), ArgE
         "write_file" => first(&[("path", ""), ("content", "")]),
         "delete_file" | "git_diff" => first(&[("path", "")]),
         "search" | "web_search" | "search_references" => first(&[("query", "")]),
+        "project_brain" => match (o.get("query"), o.get("impact")) {
+            (None, None) => Some(ArgError { code: "brain:empty".into(), message: "give \"query\" (what to find) and/or \"impact\" (a list of file paths)".into() }),
+            (_, Some(v)) if !v.as_array().is_some_and(|a| a.iter().all(|p| p.is_string())) => Some(ArgError { code: "impact:type".into(), message: "\"impact\" must be a list of file path strings".into() }),
+            (Some(Value::String(_)), _) | (None, _) => None,
+            (Some(v), _) => Some(ArgError { code: "query:type".into(), message: format!("\"query\" must be a string, got {}", kind(v)) }),
+        },
         "fetch_url" => first(&[("url", "")]),
         "use_skill" => first(&[("name", "")]),
-        "read_reference" => first(&[("id", "")]),
+        "read_reference" | "data_summary" => first(&[("id", "")]),
+        "calculate" => first(&[("expression", "")]),
         "remember" => first(&[("content", "")]),
         "delegate" => first(&[("role", ""), ("task", "")]),
         "edit_file" => need_str(o, "path", "").or_else(|| match o.get("edits") {
@@ -388,12 +400,15 @@ pub fn example(name: &str) -> String {
         "fetch_url" => r#"{"url": "https://react.dev/reference/react/useState"}"#,
         "use_skill" => r#"{"name": "debugging"}"#,
         "read_reference" => r#"{"id": "<reference id from search_references>"}"#,
+        "calculate" => r#"{"expression": "(1250 * 0.19) + sqrt(144)"}"#,
+        "data_summary" => r#"{"id": "<file id from FILES IN THIS CONVERSATION>", "column": "price"}"#,
         "remember" => r#"{"kind": "convention", "content": "Components live in src/components."}"#,
         "delegate" => r#"{"role": "explorer", "task": "Find where routing is defined."}"#,
         "add_dependency" => r#"{"packages": ["date-fns"]}"#,
         "todo" => r#"{"items": [{"text": "Build the layout", "status": "active"}, {"text": "Add charts", "status": "pending"}]}"#,
         "run_check" => r#"{"check": "typecheck"}"#,
-        "project_facts" | "list_files" | "git_status" | "recent_changes" | "memory" | "capabilities" | "preview_errors" | "last_run_output" => "{}",
+        "project_brain" => r#"{"query": "where is formatPrice defined", "impact": ["src/lib/format.ts"]}"#,
+        "project_facts" | "list_files" | "git_status" | "recent_changes" | "memory" | "capabilities" | "runtime_info" | "preview_errors" | "last_run_output" => "{}",
         _ => return example("read_file"),
     };
     format!("<tool>{{\"name\": \"{name}\", \"args\": {args}}}</tool>")

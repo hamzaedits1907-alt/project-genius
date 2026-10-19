@@ -23,6 +23,89 @@ export interface Settings {
   autoCheckUpdates: boolean;
   internetAccess: boolean;
   assistantName: string;
+  provider: ProviderId;
+  limits: TaskLimits;
+}
+
+export type ProviderId = 'nvidia' | 'openai' | 'anthropic' | 'gemini' | 'custom';
+
+/** Limits on Genius's own work per task. 0 means "no limit" where noted. They do not control the provider's bill. */
+export interface TaskLimits {
+  /** 0 = no limit */
+  maxModelCalls: number;
+  /** 0 = no limit */
+  maxToolCalls: number;
+  /** 0 = no limit */
+  maxMinutes: number;
+  /** measured + estimated tokens; 0 = no limit */
+  maxTokens: number;
+  maxConcurrentTasks: number;
+  maxProviderRetries: number;
+}
+
+export interface ProviderCapabilities {
+  provider: ProviderId;
+  label: string;
+  wire: string;
+  streaming: boolean;
+  usageReporting: boolean;
+  modelListing: boolean;
+  imageInput: string;
+  autoRouting: boolean;
+  toolProtocol: string;
+  /** "live": run against the real API; "contract-tests": adapter tested against a stand-in only. */
+  verification: 'live' | 'contract-tests';
+  notes: string[];
+}
+
+export interface DiagStep {
+  id: string;
+  title: string;
+  status: 'ok' | 'warn' | 'fail' | 'skipped' | 'info';
+  detail: string;
+  hint: string | null;
+  ms: number | null;
+}
+
+export interface DiagReport {
+  provider: ProviderId;
+  label: string;
+  integrationVerified: 'live' | 'contract-tests';
+  host: string;
+  model: string | null;
+  ok: boolean;
+  verdict: string;
+  steps: DiagStep[];
+  checkedAt: string;
+}
+
+export interface BrainOverview {
+  projectType: string[];
+  languages: [string, number][];
+  entryPoints: string[];
+  commands: { purpose: string; command: string; source: string }[];
+  modules: { path: string; files: number; lines: number; languages: string[] }[];
+  keyFiles: { path: string; importedBy: number; reason: string }[];
+  externalDeps: [string, number][];
+  files: number;
+  lines: number;
+  symbols: number;
+  unresolvedImports: number;
+  tests: number;
+  indexedAt: string;
+  truncated: boolean;
+  provenance: string;
+}
+
+export interface BrainAnswer {
+  indexedAt: string;
+  provenance: string;
+  hits: { path: string; kind: string; name: string; line: number; score: number }[];
+  excerpts: { path: string; line: number; text: string }[];
+  impact: { changed: string[]; unknown: string[]; affected: { path: string; depth: number; via: string }[]; tests: string[]; truncated: boolean; note: string } | null;
+  notes: { kind: string; origin: string; updated: string; text: string; stale: string[] }[];
+  pastChanges: { title: string; status: string; when: string; files: string[] }[];
+  gitHistory: { path: string; short: string; date: string; subject: string }[];
 }
 
 /** A chat slash command. `prompt` commands are expanded by the backend; `action` ones run in the UI. */
@@ -59,6 +142,11 @@ export interface UsageReport {
   totalTokens: number;
   calls: number;
   models: string[];
+  /** Characters ÷ 4 guess for requests whose provider reported no usage; never merged into the counts above. */
+  estimatedTokens?: number;
+  /** measured (all requests reported usage) | estimated (none did) | mixed | none */
+  source?: 'measured' | 'estimated' | 'mixed' | 'none';
+  toolCalls?: number;
 }
 
 export interface UpdateAsset {
@@ -610,6 +698,8 @@ export interface AgentStep {
 }
 
 export interface AgentReport {
+  /** What the evidence supports: failed | verified (changes + a passing real check) | completed_unverified | answered. */
+  lifecycle?: 'failed' | 'blocked' | 'verified' | 'completed_unverified' | 'answered';
   steps: number;
   filesRead: string[];
   searches: number;
@@ -627,6 +717,8 @@ export interface AgentReport {
   autopilot?: { applied: string[]; checks: { check: string; ok: boolean }[] } | null;
   /** Changeset ids recorded as the checkpoint for this turn. */
   checkpoint?: string[] | null;
+  /** Set when one of Genius's own limits stopped the task. */
+  budget?: { stoppedBy: { limit: string; used: number; max: number } | null; profileStop?: string | null } | null;
 }
 
 export interface Capability {

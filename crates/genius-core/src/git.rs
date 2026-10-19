@@ -264,21 +264,21 @@ impl Git {
         }
         let n = format!("-n{}", limit.clamp(1, 500));
         let out = self.run(dir, &["log", &n, "--pretty=format:%H%x1f%h%x1f%an%x1f%ae%x1f%aI%x1f%s%x1e"]).await?;
-        Ok(out
-            .stdout
-            .split('\x1e')
-            .filter_map(|rec| {
-                let f: Vec<&str> = rec.trim_matches(['\n', '\r']).split('\x1f').collect();
-                (f.len() == 6).then(|| Commit {
-                    sha: f[0].into(),
-                    short: f[1].into(),
-                    author: f[2].into(),
-                    email: f[3].into(),
-                    date: f[4].into(),
-                    subject: f[5].into(),
-                })
-            })
-            .collect())
+        Ok(parse_commits(&out.stdout))
+    }
+
+    /// The most recent commits that touched `path`. Empty (not an error) when the folder is not a
+    /// repository, has no commits, or the path has no history.
+    pub async fn file_log(&self, dir: &Path, path: &str, limit: usize) -> Result<Vec<Commit>> {
+        if path.starts_with('-') || path.contains('\0') || !self.is_repo_root(dir).await.unwrap_or(false) {
+            return Ok(vec![]);
+        }
+        if self.raw(dir, &["rev-parse", "--verify", "HEAD"], false).await?.exit_code != 0 {
+            return Ok(vec![]);
+        }
+        let n = format!("-n{}", limit.clamp(1, 50));
+        let out = self.raw(dir, &["log", &n, "--pretty=format:%H%x1f%h%x1f%an%x1f%ae%x1f%aI%x1f%s%x1e", "--", path], false).await?;
+        Ok(if out.exit_code == 0 { parse_commits(&out.stdout) } else { vec![] })
     }
 
     pub async fn commit_files(&self, dir: &Path, sha: &str) -> Result<Vec<(String, String)>> {
@@ -600,6 +600,16 @@ pub fn parse_status(raw: &str) -> RepoStatus {
         }
     }
     st
+}
+
+fn parse_commits(stdout: &str) -> Vec<Commit> {
+    stdout
+        .split('\x1e')
+        .filter_map(|rec| {
+            let f: Vec<&str> = rec.trim_matches(['\n', '\r']).split('\x1f').collect();
+            (f.len() == 6).then(|| Commit { sha: f[0].into(), short: f[1].into(), author: f[2].into(), email: f[3].into(), date: f[4].into(), subject: f[5].into() })
+        })
+        .collect()
 }
 
 #[cfg(test)]

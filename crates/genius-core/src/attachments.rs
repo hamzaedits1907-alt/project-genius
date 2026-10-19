@@ -83,6 +83,21 @@ pub fn supported_extensions() -> Vec<String> {
     v
 }
 
+/// The image type of `bytes` by its magic number (PNG, JPEG, GIF, WebP).
+pub fn sniff_image(bytes: &[u8]) -> Option<&'static str> {
+    if bytes.starts_with(&[0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A]) {
+        Some("image/png")
+    } else if bytes.starts_with(&[0xFF, 0xD8, 0xFF]) {
+        Some("image/jpeg")
+    } else if bytes.starts_with(b"GIF87a") || bytes.starts_with(b"GIF89a") {
+        Some("image/gif")
+    } else if bytes.len() >= 12 && &bytes[..4] == b"RIFF" && &bytes[8..12] == b"WEBP" {
+        Some("image/webp")
+    } else {
+        None
+    }
+}
+
 fn utf8(bytes: &[u8], name: &str) -> Result<String> {
     let s = String::from_utf8(bytes.to_vec()).map_err(|_| GeniusError::Validation(format!("{name} is not valid UTF-8 text")))?;
     Ok(s.trim_start_matches('\u{feff}').to_string())
@@ -241,7 +256,13 @@ pub fn parse(name: &str, bytes: &[u8]) -> Result<(String, String, String, Option
             if bytes.len() as u64 > MAX_IMAGE_BYTES {
                 return Err(GeniusError::Validation(format!("images are limited to {} MB", MAX_IMAGE_BYTES / 1_048_576)));
             }
-            return Ok((kind.into(), mime.into(), String::new(), Some(base64::engine::general_purpose::STANDARD.encode(bytes)), meta));
+            // The bytes decide the type, not the extension: a renamed or corrupt file would otherwise
+            // reach the model as an "image" it cannot decode and fail with an opaque provider error.
+            let real = sniff_image(bytes).ok_or_else(|| GeniusError::Validation(format!("{name} is not a PNG, JPEG, GIF or WebP image (the file contents do not match its extension), so it cannot be analysed")))?;
+            if real != mime {
+                meta["mimeCorrected"] = json!({ "from": mime, "to": real });
+            }
+            return Ok((kind.into(), real.into(), String::new(), Some(base64::engine::general_purpose::STANDARD.encode(bytes)), meta));
         }
         "zip" => {
             let entries = zip_safe_entries(bytes)?;
@@ -387,7 +408,10 @@ impl Genius {
     pub fn attachment_preview(&self, project_id: &str, id: &str) -> Result<Value> {
         let a = self.attachment(project_id, id)?;
         let preview: String = a.text.chars().take(4000).collect();
-        Ok(json!({ "attachment": a, "preview": preview }))
+        // Images: the stored bytes as a data URL, so the chat can show the picture that was analysed
+        // (thumbnail in the composer, and again when a conversation is reopened from history).
+        let image_url = if a.kind == "image" { a.data_b64.as_ref().map(|d| format!("data:{};base64,{d}", a.mime)) } else { None };
+        Ok(json!({ "attachment": a, "preview": preview, "imageUrl": image_url }))
     }
 
     pub fn set_attachment_scope(&self, project_id: &str, id: &str, scope: &str) -> Result<Attachment> {
@@ -408,8 +432,11 @@ impl Genius {
     }
 
     /// Attachments sent with one message (any scope), validated to belong to the project.
-    pub fn attachments_for_message(&self, project_id: &str, ids: &[String]) -> Result<Vec<Attachment>> {
+    pub async fn attachments_for_message(&self, project_id: &str, ids: &[String]) -> Result<Vec<Attachment>> {
         let mut out = Vec::new();
+        // Only asked when an image is attached. `resolve_models` loads the model list when it has
+        // never been fetched (first run), instead of declaring "no vision model" from an empty cache.
+        let mut vision_route: Option<bool> = None;
         for id in ids.iter().take(10) {
             let a = self.attachment(project_id, id)?;
             if a.status != "ready" {
@@ -417,9 +444,12 @@ impl Genius {
             }
             // Images go to a model verified to see them, or are described by a vision model
             // for the main model (vision handoff).
-            let selected_sees = self.settings()?.model.as_deref().and_then(|m| self.vision_probe(m)) == Some(true);
-            let handoff = !self.resolve_models_cached(crate::router::ModelRole::Vision, crate::settings::Effort::Max).unwrap_or_default().is_empty();
-            if a.kind == "image" && !selected_sees && !handoff {
+            if a.kind == "image" && vision_route.is_none() {
+                let selected_sees = self.settings()?.model.as_deref().and_then(|m| self.vision_probe(m)) == Some(true);
+                let handoff = !self.resolve_models(crate::router::ModelRole::Vision, crate::settings::Effort::Max).await.unwrap_or_default().is_empty();
+                vision_route = Some(selected_sees || handoff);
+            }
+            if a.kind == "image" && vision_route == Some(false) {
                 return Err(GeniusError::Validation(format!(
                     "{} is an image, but none of your available models is known to read images. Refresh the model list in Settings → AI provider (Genius then hands images to a vision model), or verify image input for the selected model.",
                     a.name
@@ -557,11 +587,26 @@ mod tests {
 
     #[test]
     fn images_are_stored_as_base64_with_size_limit() {
-        let (k, mime, t, d, _) = parse("shot.png", b"\x89PNG....").unwrap();
+        let (k, mime, t, d, _) = parse("shot.png", b"\x89PNG\r\n\x1a\n....").unwrap();
         assert_eq!((k.as_str(), mime.as_str(), t.as_str()), ("image", "image/png", ""));
         assert!(d.is_some());
-        let big = vec![0u8; (MAX_IMAGE_BYTES + 1) as usize];
+        let mut big = b"\x89PNG\r\n\x1a\n".to_vec();
+        big.resize((MAX_IMAGE_BYTES + 1) as usize, 0);
         assert!(parse("big.png", &big).is_err());
+    }
+
+    #[test]
+    fn image_type_comes_from_the_bytes_not_the_extension() {
+        assert_eq!(sniff_image(b"\x89PNG\r\n\x1a\nxx"), Some("image/png"));
+        assert_eq!(sniff_image(&[0xFF, 0xD8, 0xFF, 0xE1, 0]), Some("image/jpeg"));
+        assert_eq!(sniff_image(b"GIF89a...."), Some("image/gif"));
+        assert_eq!(sniff_image(b"RIFF\x00\x00\x00\x00WEBPVP8 "), Some("image/webp"));
+        assert_eq!(sniff_image(b"<svg xmlns='http://www.w3.org/2000/svg'/>"), None, "SVG is text and can carry script: not an image payload");
+        assert_eq!(sniff_image(b"hello"), None);
+        let (_, mime, _, _, meta) = parse("renamed.png", &[0xFF, 0xD8, 0xFF, 0xE0, 1, 2, 3]).unwrap();
+        assert_eq!(mime, "image/jpeg");
+        assert_eq!(meta["mimeCorrected"]["from"], "image/png");
+        assert!(parse("fake.jpg", b"not an image at all").unwrap_err().to_string().contains("not a PNG, JPEG, GIF or WebP image"));
     }
 
     #[test]

@@ -117,7 +117,7 @@ function TaskPanel({ mission, task }: { mission: Mission; task: MissionTask }) {
         <dt>Assigned to</dt><dd>{agentName(task.assigneeAgentId)}</dd>
         <dt>Depends on</dt><dd>{deps.length ? deps.map((d) => d.title).join(', ') : 'nothing'}</dd>
         <dt>Priority</dt><dd>{task.priority}</dd>
-        <dt>Usage</dt><dd>{task.usage.tokens.toLocaleString()} tokens · {task.usage.calls} calls</dd>
+        <dt>Usage</dt><dd>{task.usage.tokens.toLocaleString('en-US')} tokens · {task.usage.calls} calls</dd>
         {task.startedAt && (<><dt>Started</dt><dd>{timeAgo(task.startedAt)}</dd></>)}
         {task.endedAt && (<><dt>Ended</dt><dd>{timeAgo(task.endedAt)}</dd></>)}
         {task.workspace && (<><dt>Isolated copy</dt><dd className="mono small">{task.workspace}</dd></>)}

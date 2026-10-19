@@ -17,6 +17,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio_util::sync::CancellationToken;
 
+use crate::provider::ProviderKind;
 use crate::redact::redact;
 
 pub const DEFAULT_BASE_URL: &str = "https://integrate.api.nvidia.com/v1";
@@ -24,27 +25,27 @@ pub const DEFAULT_BASE_URL: &str = "https://integrate.api.nvidia.com/v1";
 #[derive(Debug, Clone, thiserror::Error, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ProviderError {
-    #[error("No NVIDIA API key is saved. Add one in Settings → AI Provider.")]
+    #[error("No API key is saved for the selected provider. Add one in Settings → AI Provider.")]
     MissingKey,
     #[error("No model is selected. Choose a model in Settings → AI Provider.")]
     NoModel,
-    #[error("NVIDIA rejected the API key (HTTP {status}). Check that the key is correct and active. {message}")]
+    #[error("The provider rejected the API key (HTTP {status}). Check that the key is correct, active and belongs to the selected provider. {message}")]
     Auth { status: u16, message: String },
     #[error("The model '{model}' is not available to this key (HTTP {status}). {message}")]
     ModelUnavailable { model: String, status: u16, message: String },
-    #[error("Rate limited by NVIDIA (HTTP 429). {message}")]
+    #[error("Rate limited by the provider (HTTP 429). {message}")]
     RateLimited { retry_after_secs: Option<u64>, message: String },
-    #[error("NVIDIA reports the account has no remaining credits or quota (HTTP {status}). {message}")]
+    #[error("The provider reports the account has no remaining credits or quota (HTTP {status}). {message}")]
     Quota { status: u16, message: String },
     #[error("The request was rejected (HTTP {status}); the selected model may not support a parameter Genius sent. {message}")]
     BadRequest { status: u16, message: String },
-    #[error("NVIDIA server error (HTTP {status}). Try again shortly. {message}")]
+    #[error("Provider server error (HTTP {status}). Try again shortly. {message}")]
     Server { status: u16, message: String },
-    #[error("Network error contacting NVIDIA: {0}")]
+    #[error("Network error contacting the provider: {0}")]
     Network(String),
-    #[error("The request to NVIDIA timed out: {0}")]
+    #[error("The request to the provider timed out: {0}")]
     Timeout(String),
-    #[error("Unexpected response from NVIDIA: {0}")]
+    #[error("Unexpected response from the provider: {0}")]
     Malformed(String),
     #[error("Request cancelled.")]
     Cancelled,
@@ -71,7 +72,7 @@ impl ProviderError {
     fn retryable(&self) -> bool {
         matches!(
             self,
-            ProviderError::RateLimited { .. } | ProviderError::Server { status: 502..=504, .. } | ProviderError::Network(_)
+            ProviderError::RateLimited { .. } | ProviderError::Server { status: 502..=504 | 529, .. } | ProviderError::Network(_)
         )
     }
 }
@@ -151,8 +152,18 @@ pub struct ChatResult {
     pub usage: Option<Value>,
     /// True when the model emitted reasoning (separate `reasoning_content` or inline `<think>`).
     pub had_reasoning: bool,
-    /// The model that produced this reply.
+    /// The model id Genius **requested** for this reply (what was sent in the request body).
     pub model: String,
+    /// The model id the provider **reported** in its response, when it reported one. It can differ
+    /// from [`model`](Self::model) (aliases, routing, dated snapshots); neither is ever invented.
+    #[serde(default)]
+    pub reported_model: Option<String>,
+    /// Milliseconds from sending the request to the first content or reasoning token.
+    #[serde(default)]
+    pub first_token_ms: Option<u64>,
+    /// Milliseconds the whole call took, including retries.
+    #[serde(default)]
+    pub total_ms: u64,
     /// Reasoning text (never part of `content`), clipped to [`MAX_REASONING_CHARS`].
     pub reasoning: String,
 }
@@ -164,7 +175,7 @@ pub const MAX_REASONING_CHARS: usize = 20_000;
 pub type ParamMemory = Arc<Mutex<HashMap<String, HashSet<String>>>>;
 
 /// Optional body parameters that are dropped (and remembered) when a server rejects them.
-const OPTIONAL_PARAMS: [&str; 3] = ["stream_options", "chat_template_kwargs", "reasoning_effort"];
+const OPTIONAL_PARAMS: [&str; 5] = ["stream_options", "chat_template_kwargs", "reasoning_effort", "temperature", "top_p"];
 
 #[derive(Clone)]
 pub struct NvidiaClient {
@@ -174,6 +185,7 @@ pub struct NvidiaClient {
     pub idle_timeout: Duration,
     pub max_retries: u32,
     params: ParamMemory,
+    kind: ProviderKind,
 }
 
 impl NvidiaClient {
@@ -184,7 +196,18 @@ impl NvidiaClient {
             .user_agent(concat!("ProjectGenius/", env!("CARGO_PKG_VERSION")))
             .build()
             .map_err(|e| ProviderError::Network(e.to_string()))?;
-        Ok(Self { http, base_url: base, api_key, idle_timeout: Duration::from_secs(180), max_retries: 3, params: ParamMemory::default() })
+        Ok(Self { http, base_url: base, api_key, idle_timeout: Duration::from_secs(180), max_retries: 3, params: ParamMemory::default(), kind: ProviderKind::Nvidia })
+    }
+
+    /// Talk to another provider (default: NVIDIA / OpenAI chat-completions).
+    pub fn with_kind(mut self, kind: ProviderKind) -> Self {
+        self.base_url = crate::provider::normalize_root(kind, &self.base_url);
+        self.kind = kind;
+        self
+    }
+
+    pub fn kind(&self) -> ProviderKind {
+        self.kind
     }
 
     /// Share the memory of rejected optional parameters with other clients.
@@ -208,17 +231,17 @@ impl NvidiaClient {
 
     /// GET /models. Authenticated when a key is available.
     pub async fn list_models(&self) -> PResult<Vec<ModelInfo>> {
-        let mut req = self.http.get(format!("{}/models", self.base_url)).timeout(Duration::from_secs(30));
+        let mut req = self.http.get(crate::provider::models_endpoint(self.kind, &self.base_url)).timeout(Duration::from_secs(30));
         if let Some(k) = &self.api_key {
-            req = req.bearer_auth(k);
+            req = apply_auth(req, self.kind, k);
         }
         let resp = req.send().await.map_err(net_err)?;
         let status = resp.status().as_u16();
         let body = resp.text().await.map_err(net_err)?;
         if !(200..300).contains(&status) {
-            return Err(classify(status, &body, None, None));
+            return Err(crate::provider::classify_error(self.kind, status, &body, None, None));
         }
-        parse_models(&body)
+        crate::provider::parse_models(self.kind, &body)
     }
 
     /// Verify that the key is accepted. Uses the model listing when the key is honoured by it;
@@ -275,13 +298,31 @@ impl NvidiaClient {
         let mut attempt = 0;
         let mut stream = opts.stream;
         let mut opts = opts.clone();
+        let started = std::time::Instant::now();
         loop {
             attempt += 1;
-            let body = build_chat_body_with(model, messages, &opts, stream, &self.rejected_params(model));
-            let res = self.chat_once(model, &body, stream, cancel, &mut on_delta, &mut on_reasoning).await;
+            let body = crate::provider::build_body(self.kind, model, messages, &opts, stream, &self.rejected_params(model));
+            // 0: no token yet (the clock is shared by both callbacks; atomics keep the future `Send`)
+            let first_token = std::sync::atomic::AtomicU64::new(0);
+            let mark = || {
+                let _ = first_token.compare_exchange(0, (started.elapsed().as_millis() as u64).max(1), std::sync::atomic::Ordering::Relaxed, std::sync::atomic::Ordering::Relaxed);
+            };
+            let res = {
+                let mut on_delta = |d: &str| {
+                    mark();
+                    on_delta(d)
+                };
+                let mut on_reasoning = |d: &str| {
+                    mark();
+                    on_reasoning(d)
+                };
+                self.chat_once(model, &body, stream, cancel, &mut on_delta, &mut on_reasoning).await
+            };
             match res {
                 Ok(mut r) => {
                     r.model = model.to_string();
+                    r.first_token_ms = Some(first_token.load(std::sync::atomic::Ordering::Relaxed)).filter(|t| *t > 0);
+                    r.total_ms = started.elapsed().as_millis() as u64;
                     if r.reasoning.len() > MAX_REASONING_CHARS {
                         r.reasoning = r.reasoning.chars().take(MAX_REASONING_CHARS).collect();
                     }
@@ -330,10 +371,7 @@ impl NvidiaClient {
         on_reasoning: &mut impl FnMut(&str),
     ) -> PResult<ChatResult> {
         let key = self.key()?;
-        let mut req = self
-            .http
-            .post(format!("{}/chat/completions", self.base_url))
-            .bearer_auth(key)
+        let mut req = apply_auth(self.http.post(crate::provider::chat_endpoint(self.kind, &self.base_url, model, stream)), self.kind, key)
             .header("Accept", if stream { "text/event-stream" } else { "application/json" })
             .json(body);
         if !stream {
@@ -352,7 +390,7 @@ impl NvidiaClient {
             .and_then(|v| v.trim().parse::<u64>().ok());
         if !(200..300).contains(&status) {
             let text = resp.text().await.unwrap_or_default();
-            return Err(classify(status, &text, Some(model), retry_after));
+            return Err(crate::provider::classify_error(self.kind, status, &text, Some(model), retry_after));
         }
         let is_sse = resp
             .headers()
@@ -361,6 +399,9 @@ impl NvidiaClient {
             .map(|v| v.contains("text/event-stream"))
             .unwrap_or(false);
 
+        if self.kind.wire() != crate::provider::Wire::OpenAiChat {
+            return self.read_native(resp, is_sse, cancel, on_delta, on_reasoning).await;
+        }
         if !is_sse {
             let text = tokio::select! {
                 _ = cancel.cancelled() => return Err(ProviderError::Cancelled),
@@ -420,6 +461,9 @@ impl NvidiaClient {
                 if let Some(u) = v.get("usage").filter(|u| !u.is_null()) {
                     result.usage = Some(u.clone());
                 }
+                if result.reported_model.is_none() {
+                    result.reported_model = reported_model(&v);
+                }
                 let Some(choice) = v.get("choices").and_then(|c| c.get(0)) else { continue };
                 let delta = &choice["delta"];
                 if let Some(r) = reasoning_of(delta) {
@@ -465,6 +509,70 @@ impl NvidiaClient {
     }
 }
 
+impl NvidiaClient {
+    /// Read the reply of a native-wire provider (Anthropic Messages, Gemini): streamed events or one JSON body.
+    async fn read_native(&self, resp: reqwest::Response, is_sse: bool, cancel: &CancellationToken, on_delta: &mut impl FnMut(&str), on_reasoning: &mut impl FnMut(&str)) -> PResult<ChatResult> {
+        let mut state = crate::provider::StreamState::new(self.kind);
+        let mut sse = SseParser::default();
+        if !is_sse {
+            let text = tokio::select! {
+                _ = cancel.cancelled() => return Err(ProviderError::Cancelled),
+                t = resp.text() => t.map_err(net_err)?,
+            };
+            if !text.trim_start().starts_with("data:") {
+                let r = crate::provider::parse_completion(self.kind, &text)?;
+                if !r.reasoning.is_empty() {
+                    on_reasoning(&r.reasoning);
+                }
+                if !r.content.is_empty() {
+                    on_delta(&r.content);
+                }
+                return Ok(r);
+            }
+            // SSE sent with a wrong content type: parse the buffered body as a stream.
+            let mut events = sse.push(&text);
+            events.extend(sse.push("\n\n"));
+            for data in events {
+                state.feed(&data, &mut *on_delta, &mut *on_reasoning)?;
+            }
+            return state.finish();
+        }
+        let mut bytes = resp.bytes_stream();
+        loop {
+            let next = tokio::select! {
+                _ = cancel.cancelled() => return Err(ProviderError::Cancelled),
+                _ = tokio::time::sleep(self.idle_timeout) => {
+                    return Err(ProviderError::Timeout(format!("no data received for {}s while streaming", self.idle_timeout.as_secs())))
+                }
+                n = bytes.next() => n,
+            };
+            let Some(chunk) = next else { break };
+            let chunk = chunk.map_err(net_err)?;
+            for data in sse.push(&String::from_utf8_lossy(&chunk)) {
+                state.feed(&data, &mut *on_delta, &mut *on_reasoning)?;
+                if state.done {
+                    return state.finish();
+                }
+            }
+        }
+        state.finish()
+    }
+}
+
+/// Add the provider's authentication header(s); the values are marked sensitive so they stay out of debug output.
+fn apply_auth(mut req: reqwest::RequestBuilder, kind: ProviderKind, key: &str) -> reqwest::RequestBuilder {
+    for (name, value) in crate::provider::auth_headers(kind, key) {
+        match reqwest::header::HeaderValue::from_str(&value) {
+            Ok(mut v) => {
+                v.set_sensitive(true);
+                req = req.header(name, v);
+            }
+            Err(_) => req = req.header(name, "invalid-key-characters"), // a key with control characters is refused by the provider as unauthorised
+        }
+    }
+    req
+}
+
 /// Reasoning text of a stream delta or message (`reasoning_content`, or `reasoning` on some servers).
 fn reasoning_of(v: &Value) -> Option<&str> {
     v.get("reasoning_content").or_else(|| v.get("reasoning")).and_then(|r| r.as_str()).filter(|r| !r.is_empty())
@@ -484,6 +592,9 @@ fn parse_sse_body(text: &str, on_delta: &mut impl FnMut(&str), on_reasoning: &mu
         let v: Value = serde_json::from_str(&data).map_err(|e| ProviderError::Malformed(format!("invalid stream chunk: {e}")))?;
         if let Some(u) = v.get("usage").filter(|u| !u.is_null()) {
             result.usage = Some(u.clone());
+        }
+        if result.reported_model.is_none() {
+            result.reported_model = reported_model(&v);
         }
         if let Some(r) = v.pointer("/choices/0/delta").and_then(reasoning_of) {
             on_reasoning(r);
@@ -623,12 +734,17 @@ pub fn build_chat_body_with(model: &str, messages: &[ChatMessage], opts: &ChatOp
     let mut body = json!({
         "model": model,
         "messages": wire,
-        "temperature": opts.temperature,
-        "top_p": opts.top_p,
         "max_tokens": opts.max_tokens,
         "stream": stream,
     });
     let allowed = |p: &str| !skip.contains(p);
+    // Sampling parameters become optional once a model has rejected them (some hosted models refuse a custom temperature).
+    if allowed("temperature") {
+        body["temperature"] = json!(opts.temperature);
+    }
+    if allowed("top_p") {
+        body["top_p"] = json!(opts.top_p);
+    }
     if stream && allowed("stream_options") {
         body["stream_options"] = json!({ "include_usage": true });
     }
@@ -766,7 +882,15 @@ pub fn parse_completion(body: &str) -> PResult<ChatResult> {
         had_reasoning: !reasoning.is_empty(),
         reasoning,
         model: String::new(),
+        reported_model: reported_model(&v),
+        first_token_ms: None,
+        total_ms: 0,
     })
+}
+
+/// The `model` field of a provider response or stream chunk, if it carries a non-empty one.
+fn reported_model(v: &Value) -> Option<String> {
+    v.get("model").and_then(|m| m.as_str()).map(str::trim).filter(|m| !m.is_empty()).map(String::from)
 }
 
 /// Incremental Server-Sent-Events parser: returns the `data:` payload of each complete event.

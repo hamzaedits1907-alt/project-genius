@@ -143,6 +143,7 @@ async fn continuous_conversation_inspects_then_proposes_targeted_changes() {
     let report = &msgs[1].meta["report"];
     assert_eq!(report["filesRead"], json!(["src/App.tsx"]));
     assert_eq!(report["changeset"]["status"], "proposed");
+    assert_eq!(report["lifecycle"], "completed_unverified", "changes exist but no real build or test passed yet");
     assert!(report["notVerified"].as_array().unwrap().iter().any(|n| n.as_str().unwrap().contains("No build or test")));
     assert_eq!(g.db.get_conversation(&conv.id).unwrap().title, "Add a sidebar", "titled from the first message");
 
@@ -480,4 +481,21 @@ async fn xml_dialect_writes_files_and_repeated_failures_are_blocked() {
     assert_eq!(steps[0].tool, "write_file");
     assert!(steps[0].ok, "{}", steps[0].summary);
     assert!(steps.iter().filter(|s| s.summary.contains("blocked")).count() >= 1, "{:?}", steps.iter().map(|s| &s.summary).collect::<Vec<_>>());
+}
+
+/// Root cause of the flaky live_nvidia failure: in a small project the source files are inlined
+/// into the prompt ("CURRENT FILES"), so a model that answers about src/App.tsx WITHOUT calling
+/// read_file is behaving correctly. A file outside the snapshot (`.txt`) can only be known through
+/// the tool. This pins both facts so the live test's design stays honest.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn small_project_sources_are_inlined_so_a_read_is_not_required() {
+    let (_tmp, g, pid, log, _server) = setup(|_system, _last, _msgs| "<final>The h1 says Dashboard.</final>".into()).await;
+    g.workspace(&pid).unwrap().write_text("notes/launch-code.txt", "The launch code is NEEDLE-1234.\n").unwrap();
+    let conv = g.db.create_conversation(&pid, "Q").unwrap();
+    let r = run(&g, &pid, &conv.id, "What does the h1 in src/App.tsx say?", AgentMode::Plan).await;
+    assert_eq!(r["status"], json!(EventStatus::Completed), "{r}");
+    assert!(g.agent_steps(r["taskId"].as_str().unwrap()).unwrap().is_empty(), "answered from the inlined snapshot, no tool call needed");
+    let sent = log.lock().unwrap()[0].to_string();
+    assert!(sent.contains("<<<CURRENT: src/App.tsx>>>") && sent.contains("<h1>Dashboard</h1>"), "source file is in the prompt");
+    assert!(!sent.contains("NEEDLE-1234") && !sent.contains("launch-code.txt<<<"), "a .txt file is NOT inlined: only read_file can reveal it");
 }

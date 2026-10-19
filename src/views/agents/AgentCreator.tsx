@@ -238,7 +238,7 @@ export default function AgentCreator({ initial, onClose, onSaved }: { initial: A
             <Section title="Budgets" hint="Hard limits per task. The agent stops when any limit is reached.">
               <div className="ag-budgets">
                 {(Object.keys(BUDGET_LABELS) as (keyof AgentBudget)[]).map((k) => (
-                  <Field key={k} label={`${BUDGET_LABELS[k].label} (max ${BUDGET_MAX[k].toLocaleString()})`} htmlFor={`ag-b-${k}`} hint={BUDGET_LABELS[k].hint}>
+                  <Field key={k} label={`${BUDGET_LABELS[k].label} (max ${BUDGET_MAX[k].toLocaleString('en-US')})`} htmlFor={`ag-b-${k}`} hint={BUDGET_LABELS[k].hint}>
                     <input id={`ag-b-${k}`} type="number" className="input" min={1} max={BUDGET_MAX[k]} value={Number.isNaN(draft.budget[k]) ? '' : draft.budget[k]} onChange={(e) => setBudget(k, e.target.value)} aria-invalid={shown(`budget.${k}`) ? true : undefined} />
                     <ErrorText>{shown(`budget.${k}`)}</ErrorText>
                   </Field>

@@ -45,13 +45,17 @@ pub enum ModelRole {
     Plan,
     /// Whole-app generation.
     Code,
+    /// Everyday conversation (Genius Chat): answer quality matters, but a reply that takes a
+    /// minute does not feel like a conversation, so speed weighs more than for agent work.
+    Chat,
 }
 
 impl ModelRole {
-    pub const ALL: [ModelRole; 6] = [ModelRole::Agent, ModelRole::Code, ModelRole::Plan, ModelRole::Subagent, ModelRole::Quick, ModelRole::Vision];
+    pub const ALL: [ModelRole; 7] = [ModelRole::Agent, ModelRole::Code, ModelRole::Plan, ModelRole::Subagent, ModelRole::Quick, ModelRole::Vision, ModelRole::Chat];
 
     pub fn as_str(&self) -> &'static str {
         match self {
+            ModelRole::Chat => "chat",
             ModelRole::Agent => "agent",
             ModelRole::Subagent => "subagent",
             ModelRole::Quick => "quick",
@@ -155,7 +159,7 @@ fn routable(m: &ModelInfo) -> bool {
 
 /// Known vision-capable model (by id pattern; a vision probe can confirm or refute it).
 pub fn is_vision(model: &str) -> bool {
-    family(&model.to_lowercase()).is_some_and(|f| f.tags & VISION != 0)
+    family(&model.to_lowercase()).is_some_and(|f| f.tags & VISION != 0) || crate::provider::declared_vision(model)
 }
 
 /// Bonus for newer releases within a family.
@@ -199,6 +203,11 @@ fn score(id: &str, f: &Family, role: ModelRole, effort: Effort) -> Option<f32> {
             Effort::Balanced => q * 0.5 + s * 0.5,
             Effort::Fast => q * 0.35 + s * 0.65,
         },
+        ModelRole::Chat => match effort {
+            Effort::Max => q * 0.9 + s * 0.1,
+            Effort::Balanced => q * 0.55 + s * 0.45,
+            Effort::Fast => q * 0.4 + s * 0.6,
+        },
     })
 }
 
@@ -226,9 +235,9 @@ pub fn estimate_tokens(chars: usize) -> usize {
 fn latency_weight(role: ModelRole, effort: Effort) -> f32 {
     match (role, effort) {
         (_, Effort::Max) => 0.0,
-        (ModelRole::Quick | ModelRole::Subagent, Effort::Fast) => 14.0,
+        (ModelRole::Quick | ModelRole::Subagent | ModelRole::Chat, Effort::Fast) => 14.0,
         (_, Effort::Fast) => 10.0,
-        (ModelRole::Quick | ModelRole::Subagent, Effort::Balanced) => 8.0,
+        (ModelRole::Quick | ModelRole::Subagent | ModelRole::Chat, Effort::Balanced) => 8.0,
         (_, Effort::Balanced) => 2.0,
     }
 }
@@ -244,6 +253,7 @@ pub fn observed_adjustment(st: Option<&ModelStats>, role: ModelRole, effort: Eff
     let tool_weight = match role {
         ModelRole::Agent | ModelRole::Subagent => 50.0,
         ModelRole::Code | ModelRole::Plan => 15.0,
+        ModelRole::Chat => 20.0,
         ModelRole::Quick | ModelRole::Vision => 0.0,
     };
     a -= st.malformed_rate() as f32 * tool_weight;
@@ -493,6 +503,14 @@ impl Genius {
 
     /// Fallback chain from a given model list (see [`resolve_models`](Self::resolve_models)).
     fn chain_for(&self, s: &Settings, models: &[ModelInfo], role: ModelRole, effort: Effort, request_chars: usize) -> Result<Vec<String>> {
+        if !crate::provider::ProviderKind::from_id_or_default(&s.provider).capabilities().auto_routing {
+            // Auto routing knows NVIDIA model families only. Every other provider runs the model the user chose.
+            let m = s.model.clone().filter(|m| !m.trim().is_empty()).ok_or(ProviderError::NoModel)?;
+            if role == ModelRole::Vision && !self.is_vision_capable(&m) {
+                return Ok(vec![]);
+            }
+            return Ok(vec![m]);
+        }
         let failed = self.failed_models.lock().unwrap().clone();
         let mut auto = rank(models, role, effort, &failed, &self.observed(request_chars));
         if role == ModelRole::Vision {
@@ -719,6 +737,18 @@ mod tests {
             assert!(["nemotron-3-nano", "gpt-oss-20b", "qwen3-next"].iter().any(|f| fastest[0].contains(f)), "{fastest:?}");
             assert_eq!(pick(CATALOG, role, Effort::Max)[0], "nvidia/nemotron-3-super-120b-a12b");
         }
+    }
+
+    #[test]
+    fn chat_prefers_a_quick_answer_over_the_slowest_giant() {
+        let ids: Vec<&str> = CATALOG.iter().copied().chain(["nvidia/nemotron-3-ultra-550b-a55b"]).collect();
+        let balanced = pick(&ids, ModelRole::Chat, Effort::Balanced);
+        assert_ne!(balanced[0], "nvidia/nemotron-3-ultra-550b-a55b", "a 550B reasoning model is not the everyday chat default: {balanced:?}");
+        assert!(["qwen3-next", "nemotron-3-nano", "gpt-oss-120b", "nemotron-3-super"].iter().any(|f| balanced[0].contains(f)), "{balanced:?}");
+        let fast = pick(&ids, ModelRole::Chat, Effort::Fast);
+        assert!(["qwen3-next", "nemotron-3-nano", "gpt-oss-20b"].iter().any(|f| fast[0].contains(f)), "{fast:?}");
+        // agent work keeps its quality-first order: the giant stays a top candidate there
+        assert!(pick(&ids, ModelRole::Agent, Effort::Max).iter().take(2).any(|m| m.contains("nemotron-3-ultra") || m.contains("nemotron-3-super")));
     }
 
     #[test]

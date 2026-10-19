@@ -99,7 +99,7 @@ export default function ReferencesPanel() {
               <Badge>{a.kind}</Badge>
               <span className="faint tiny grow">
                 {bytes(a.size)}
-                {a.chars ? ` · ${a.chars.toLocaleString()} chars` : ''}
+                {a.chars ? ` · ${a.chars.toLocaleString('en-US')} chars` : ''}
               </span>
               {a.status === 'ready' && (
                 <select className="input sm" aria-label={`Availability of ${a.name}`} value={a.scope} onChange={(e) => void act(() => api.setAttachmentScope(projectId, a.id, e.target.value as Attachment['scope']))}>
