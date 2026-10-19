@@ -11,7 +11,7 @@ import AdminPanel from './AdminPanel';
 import AuthScreen from './AuthScreen';
 import AccountSettings from './AccountSettings';
 import CodeView from './CodeView';
-import { accessToken, localOnly, sb, supabaseConfigured, useAuth } from './auth';
+import { accessToken, localOnly, sb, supabaseConfigured, useAuth, type Announcement } from './auth';
 import { setRuntime } from './context';
 import { MemoryStore } from './store';
 import { SupabaseStore } from './supabaseStore';
@@ -44,8 +44,12 @@ function Notice({ title, children }: { title: string; children: React.ReactNode 
   );
 }
 
-function Announcements() {
-  const items = useAuth((s) => s.context?.announcements ?? []);
+// A selector must return the SAME value while nothing changed: a fresh [] on every call makes zustand v5 loop
+// forever (React error #185, a blank page right after sign-in on the deployed site).
+const NO_ANNOUNCEMENTS: Announcement[] = [];
+
+export function Announcements() {
+  const items = useAuth((s) => s.context?.announcements ?? NO_ANNOUNCEMENTS);
   const [hidden, setHidden] = useState<string[]>(() => {
     try {
       return JSON.parse(sessionStorage.getItem('genius.announce.hidden') ?? '[]') as string[];

@@ -5,9 +5,12 @@ import '../styles/chat.css';
 import '../styles/genius.css';
 import './web.css';
 import WebApp from './WebApp';
+import { RootBoundary } from './RootBoundary';
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
-    <WebApp />
+    <RootBoundary>
+      <WebApp />
+    </RootBoundary>
   </StrictMode>,
 );

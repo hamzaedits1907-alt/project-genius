@@ -9,6 +9,9 @@
 
 [build.environment]
   NODE_VERSION = "20"
+  # The Supabase URL and anon (publishable) key are PUBLIC by design and end up in the browser bundle on purpose;
+  # without this, Netlify secret scanning can fail the build because it finds those values in the output.
+  SECRETS_SCAN_OMIT_KEYS = "VITE_SUPABASE_URL,VITE_SUPABASE_ANON_KEY"
 
 [functions]
   node_bundler = "esbuild"
