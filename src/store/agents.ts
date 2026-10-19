@@ -2,10 +2,11 @@
 // and `genius://agent-status` / `genius://agent-log` / `genius://mission-update` events.
 import { create } from 'zustand';
 import { api, errorMessage } from '../lib/api';
+import { isTerminalMission } from '../lib/agents';
 import type { AgentDraft, AgentRuntime, AgentTaskLog, AgentTemplate, CustomAgent, Mission, Project, Team } from '../lib/types';
 import { useApp } from './app';
 
-export type AgentsTab = 'agents' | 'missions' | 'teams';
+export type AgentsTab = 'run' | 'agents' | 'missions' | 'teams';
 const MAX_LOG = 300;
 
 interface AgentsState {
@@ -39,6 +40,8 @@ interface AgentsState {
   deleteTeam: (id: string) => Promise<boolean>;
   runTask: (agentId: string, projectId: string, task: string) => Promise<Mission | null>;
   createMission: (projectId: string, goal: string, teamId: string | null) => Promise<Mission | null>;
+  /** Agent Mode: create a mission, show it, and start it by itself as soon as the plan is ready. */
+  launchMission: (projectId: string, goal: string, teamId: string | null) => Promise<Mission | null>;
   missionAction: (kind: 'start' | 'pause' | 'resume' | 'cancel', missionId: string) => Promise<Mission | null>;
   taskAction: (kind: 'cancel' | 'retry' | 'approve' | 'reject' | 'reprioritize', taskId: string, priority?: number) => Promise<Mission | null>;
 }
@@ -55,8 +58,15 @@ export function upsertMission(list: Mission[], m: Mission): Mission[] {
   return next;
 }
 
-export const useAgents = create<AgentsState>((set) => {
-  const putMission = (m: Mission) => set((s) => ({ missions: upsertMission(s.missions, m) }));
+/** Missions the user launched from Agent Mode: started automatically once planning produced a plan. */
+const autoStart = new Set<string>();
+
+export const useAgents = create<AgentsState>((set, get) => {
+  const putMission = (m: Mission) => {
+    set((s) => ({ missions: upsertMission(s.missions, m) }));
+    if (m.status === 'ready' && autoStart.delete(m.id)) void get().missionAction('start', m.id);
+    else if (isTerminalMission(m.status) || (m.status === 'ready' && m.tasks.length === 0)) autoStart.delete(m.id);
+  };
   return {
     loaded: false,
     loading: false,
@@ -68,7 +78,7 @@ export const useAgents = create<AgentsState>((set) => {
     missions: [],
     projects: [],
     logs: {},
-    tab: 'agents',
+    tab: 'run',
     selectedAgentId: null,
     selectedMissionId: null,
     selectedTaskId: null,
@@ -184,6 +194,21 @@ export const useAgents = create<AgentsState>((set) => {
         return m;
       } catch (e) {
         fail('Could not create the mission', e);
+        return null;
+      }
+    },
+    launchMission: async (projectId, goal, teamId) => {
+      try {
+        const m = await api.createMission(projectId, goal, teamId);
+        autoStart.add(m.id);
+        set((s) => ({ missions: upsertMission(s.missions, m), selectedMissionId: m.id, selectedTaskId: null }));
+        if (m.status === 'ready') {
+          autoStart.delete(m.id);
+          await get().missionAction('start', m.id);
+        }
+        return m;
+      } catch (e) {
+        fail('Could not start the mission', e);
         return null;
       }
     },

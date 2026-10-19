@@ -1,4 +1,4 @@
-import { Component, useEffect, type ErrorInfo, type ReactNode } from 'react';
+import { Component, useEffect, useState, type ErrorInfo, type ReactNode } from 'react';
 import { X } from 'lucide-react';
 import ChatHome from './views/chat/ChatHome';
 import ResearchView from './views/chat/ResearchView';
@@ -15,6 +15,8 @@ import Workspace from './views/workspace/Workspace';
 import ApprovalDialog from './views/ApprovalDialog';
 import UpdateDialog from './views/UpdateDialog';
 import AgentsView from './views/agents/AgentsView';
+import ProjectsView from './views/ProjectsView';
+import { ShortcutsDialog } from './components/ShortcutsDialog';
 import CommandPalette from './components/CommandPalette';
 import { Sidebar, startNewChat } from './components/Sidebar';
 
@@ -92,6 +94,7 @@ export default function App() {
   const setCollapsed = useApp((s) => s.setSidebarCollapsed);
   const showUpdate = useApp((s) => s.showUpdate);
   const setShowUpdate = useApp((s) => s.setShowUpdate);
+  const [shortcuts, setShortcuts] = useState(false);
 
   // Backend events: released even if the app unmounts before `listen` resolves (StrictMode
   // mounts twice in development; the old code leaked the first set and delivered every event twice).
@@ -122,6 +125,9 @@ export default function App() {
       } else if (mod && e.shiftKey && (e.key === 'O' || e.key === 'o')) {
         e.preventDefault();
         startNewChat(useApp.getState().route.name === 'research' ? 'research' : 'chat');
+      } else if (mod && e.key === '/') {
+        e.preventDefault();
+        setShortcuts((v) => !v);
       } else if (mod && !e.shiftKey && (e.key === 'b' || e.key === 'B')) {
         e.preventDefault();
         setCollapsed(!useApp.getState().sidebarCollapsed);
@@ -143,11 +149,13 @@ export default function App() {
           {route.name === 'settings' && <SettingsView initialTab={route.tab} />}
           {route.name === 'project' && <Workspace projectId={route.id} />}
           {route.name === 'agents' && <AgentsView initialTab={route.tab} />}
+          {route.name === 'projects' && <ProjectsView />}
         </ErrorBoundary>
       </main>
       {approvals.length > 0 && <ApprovalDialog request={approvals[0]} remaining={approvals.length - 1} />}
       {showUpdate && <UpdateDialog onClose={() => setShowUpdate(false)} />}
       <CommandPalette />
+      {shortcuts && <ShortcutsDialog onClose={() => setShortcuts(false)} />}
       <Toasts />
     </div>
   );

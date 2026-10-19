@@ -284,11 +284,46 @@ pub async fn fetch_with(raw_url: &str, policy: WebPolicy) -> Result<Page> {
     }
     let raw = String::from_utf8_lossy(&body).into_owned();
     let looks_html = ct.contains("html") || (ct.is_empty() && raw.trim_start().get(..15).is_some_and(|s| s.to_ascii_lowercase().starts_with("<!doctype html") || s.to_ascii_lowercase().starts_with("<html")));
-    let (title, text) = if looks_html { html_to_text(&raw) } else { (None, raw) };
+    let (title, mut text) = if looks_html { html_to_text(&raw) } else { (None, raw.clone()) };
+    if looks_html {
+        if let Some(note) = html_extras(&raw, &text) {
+            text = format!("{}
+
+{note}", text.trim_end());
+        }
+    }
     Ok(Page { url: url.to_string(), status, content_type: ct, title, text, truncated })
 }
 
 // ----------------------------------------------------------------------------- html → text
+
+static META_TAG: LazyLock<Regex> = LazyLock::new(|| Regex::new(r#"(?is)<meta\b[^>]*>"#).unwrap());
+static META_KEY: LazyLock<Regex> = LazyLock::new(|| Regex::new(r#"(?is)\b(?:name|property)\s*=\s*["'](description|og:title|og:description|og:site_name|twitter:description)["']"#).unwrap());
+static META_VAL: LazyLock<Regex> = LazyLock::new(|| Regex::new(r#"(?is)\bcontent\s*=\s*["']([^"']*)["']"#).unwrap());
+static SCRIPT_SRC: LazyLock<Regex> = LazyLock::new(|| Regex::new(r#"(?is)<script\b[^>]*\bsrc\s*=\s*["']([^"']+)["']"#).unwrap());
+
+/// What the readable text leaves out: the page's own description (meta tags) and, when the page is
+/// a script-built app shell with almost no text, an explicit note, so a model reports what is there
+/// and does not guess at features, logins or technology it cannot see.
+pub fn html_extras(raw_html: &str, text: &str) -> Option<String> {
+    let mut lines: Vec<String> = Vec::new();
+    for tag in META_TAG.find_iter(raw_html).map(|m| m.as_str()) {
+        if let (Some(k), Some(v)) = (META_KEY.captures(tag), META_VAL.captures(tag)) {
+            let v = decode_entities(v[1].trim());
+            if !v.is_empty() && !text.contains(&v) {
+                lines.push(format!("{}: {v}", &k[1]));
+            }
+        }
+    }
+    let scripts = SCRIPT_SRC.captures_iter(raw_html).count();
+    let shell = text.chars().filter(|c| !c.is_whitespace()).count() < 400 && (scripts > 0 || raw_html.to_ascii_lowercase().contains("<script"));
+    if shell {
+        lines.push(format!("NOTE: the readable text of this page is very short and it loads {scripts} script file(s): its content is probably built in the browser by JavaScript, which Genius does not run. Only the static HTML above could be read. Describe only what appears above; do not state or guess features, accounts, login, databases or technologies that are not visible in it."));
+    }
+    (!lines.is_empty()).then(|| format!("PAGE METADATA (from the HTML head):
+{}", lines.join("
+")))
+}
 
 static TITLE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?is)<title[^>]*>(.*?)</title>").unwrap());
 static COMMENT: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?s)<!--.*?-->").unwrap());
@@ -363,6 +398,18 @@ mod tests {
 </div>
 <div class="result"><h2><a class="result__a" href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fexample.com%2Fno-snippet">No snippet</a></h2></div>
 </body></html>"#;
+
+    #[test]
+    fn script_built_pages_are_labelled_instead_of_guessed_at() {
+        let html = r#"<html><head><title>Connect</title><meta name="description" content="A flight crew portal &amp; hub"><meta property="og:title" content="Connect"></head><body><div id="root"></div><script type="module" src="/assets/index-abc.js"></script></body></html>"#;
+        let (_, text) = html_to_text(html);
+        let note = html_extras(html, &text).unwrap();
+        assert!(note.contains("description: A flight crew portal & hub") && note.contains("og:title: Connect"), "{note}");
+        assert!(note.contains("built in the browser") && note.contains("do not state or guess"), "{note}");
+        let rich = format!("<html><body><p>{}</p></body></html>", "Real article text. ".repeat(60));
+        let (_, t) = html_to_text(&rich);
+        assert!(html_extras(&rich, &t).is_none(), "an ordinary page gets no note");
+    }
 
     #[test]
     fn parses_duckduckgo_results() {

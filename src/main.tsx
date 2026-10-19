@@ -3,6 +3,7 @@ import { createRoot } from 'react-dom/client';
 import App from './App';
 import './styles/global.css';
 import './styles/chat.css';
+import './styles/genius.css';
 
 // Block the webview's default context menu outside text fields (desktop-app feel).
 document.addEventListener('contextmenu', (e) => {

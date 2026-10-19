@@ -10,6 +10,7 @@ import { Button } from '../../components/ui';
 import { GeniusAvatar } from '../../components/GeniusAvatar';
 import { Markdown } from '../../components/Markdown';
 import { Menu } from '../../components/Menu';
+import { ModelChip } from '../../components/ModelChip';
 import { type MessageActions } from '../workspace/assistant/Message';
 import { QuickSetup } from '../Home';
 import { AttachmentThumb, ChatMessage } from './ChatMessage';
@@ -268,6 +269,7 @@ export default function ChatView({ mode }: { mode: ChatMode }) {
         <button className={`gx-pill ${mode === 'research' ? 'on' : ''}`} aria-pressed={mode === 'research'} onClick={switchMode} title={mode === 'research' ? 'Researching with cited sources. Click to go back to everyday chat.' : 'Switch to Research: plan queries, read sources, write a cited report'}>
           Research
         </button>
+        <ModelChip />
         <span className="spacer" />
         {task && !text.trim() ? (
           <button className="send-btn stop" aria-label="Stop" title="Stop" onClick={() => void api.cancelTask(task.id).catch((e) => toast('bad', errorMessage(e)))}>
@@ -363,7 +365,7 @@ export default function ChatView({ mode }: { mode: ChatMode }) {
                         </div>
                       </div>
                     ) : (
-                      <ChatMessage m={m} name={settings?.assistantName || 'Genius'} isLast={i === st.messages.length - 1} busy={busy} workspaceId={st.workspaceId} onAnswer={(t) => void st.send(mode, t)} actions={actions} prevUser={m.role === 'assistant' ? st.messages.slice(0, i).reverse().find((x) => x.role === 'user') : undefined} />
+                      <ChatMessage m={m} name={settings?.assistantName || 'Genius'} isLast={i === st.messages.length - 1} busy={busy} workspaceId={st.workspaceId} onAnswer={(t) => void st.send(mode, t)} actions={actions} sources={mode === 'research' ? st.sources : undefined} prevUser={m.role === 'assistant' ? st.messages.slice(0, i).reverse().find((x) => x.role === 'user') : undefined} />
                     )}
                     {v && !v.ok && (
                       <div className="callout warn small" role="note" aria-label="Citation check">

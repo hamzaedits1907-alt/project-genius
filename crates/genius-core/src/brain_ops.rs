@@ -3,7 +3,7 @@
 //! history). See `brain.rs` for what each part can and cannot be trusted for.
 
 use crate::app::Genius;
-use crate::brain::{self, BrainIndex, Hit, Impact, IndexStats, Overview};
+use crate::brain::{self, BrainIndex, CallInfo, Hit, Impact, IndexStats, Overview};
 use crate::error::Result;
 use serde::Serialize;
 use serde_json::json;
@@ -56,6 +56,8 @@ pub struct BrainAnswer {
     pub hits: Vec<Hit>,
     pub excerpts: Vec<Excerpt>,
     pub impact: Option<Impact>,
+    /// Verified: where a symbol is defined and which files use it.
+    pub callers: Option<CallInfo>,
     /// Recorded, not verified against the code today.
     pub notes: Vec<Note>,
     pub past_changes: Vec<PastChange>,
@@ -82,6 +84,11 @@ impl Genius {
     /// Verified facts for `query` and/or the files in `impact_of`, plus the recorded knowledge about
     /// the same files. `allow` hides paths the caller must not see (a custom agent's scope).
     pub async fn brain_ask(&self, project_id: &str, query: &str, impact_of: &[String], allow: &(dyn Fn(&str) -> bool + Sync)) -> Result<BrainAnswer> {
+        self.brain_ask_with(project_id, query, impact_of, None, allow).await
+    }
+
+    /// [`brain_ask`](Self::brain_ask) plus `callers_of`: the definition and the users of one symbol.
+    pub async fn brain_ask_with(&self, project_id: &str, query: &str, impact_of: &[String], callers_of: Option<&str>, allow: &(dyn Fn(&str) -> bool + Sync)) -> Result<BrainAnswer> {
         let (ix, _) = self.brain_refresh(project_id)?;
         let ws = self.workspace(project_id)?;
         let mut hits: Vec<Hit> = if query.trim().is_empty() { vec![] } else { brain::search(&ix, query, 40) };
@@ -107,8 +114,15 @@ impl Genius {
             impact = Some(i);
         }
 
+        let callers = callers_of.filter(|s| !s.trim().is_empty()).map(|s| {
+            let mut c = brain::callers(&ix, s, 40);
+            c.definitions.retain(|d| allow(&d.path));
+            c.callers.retain(|x| allow(&x.path));
+            c
+        });
+
         // Files the answer is about: hits and the changed files.
-        let mut about: Vec<String> = hits.iter().map(|h| h.path.clone()).chain(impact.iter().flat_map(|i| i.changed.clone())).collect();
+        let mut about: Vec<String> = hits.iter().map(|h| h.path.clone()).chain(impact.iter().flat_map(|i| i.changed.clone())).chain(callers.iter().flat_map(|c| c.definitions.iter().map(|d| d.path.clone()))).collect();
         about.sort();
         about.dedup();
         about.truncate(8);
@@ -159,7 +173,7 @@ impl Genius {
             }
         }
 
-        Ok(BrainAnswer { indexed_at: ix.indexed_at.clone(), provenance: brain::PROVENANCE, hits, excerpts, impact, notes, past_changes, git_history })
+        Ok(BrainAnswer { indexed_at: ix.indexed_at.clone(), provenance: brain::PROVENANCE, hits, excerpts, impact, callers, notes, past_changes, git_history })
     }
 }
 
@@ -167,7 +181,7 @@ impl BrainAnswer {
     /// Text for a model: the verified part and the recorded part are labelled differently on purpose.
     pub fn render(&self, max_chars: usize) -> String {
         let mut s = format!("PROJECT BRAIN — VERIFIED SOURCE FACTS (file scan at {}; pattern-based, not a compiler)\n", &self.indexed_at[..19.min(self.indexed_at.len())]);
-        if self.hits.is_empty() && self.impact.is_none() {
+        if self.hits.is_empty() && self.impact.is_none() && self.callers.is_none() {
             s.push_str("No matching symbols or files.\n");
         }
         for h in &self.hits {
@@ -192,6 +206,27 @@ impl BrainAnswer {
             }
             if !i.tests.is_empty() {
                 s.push_str(&format!("Tests to run/check: {}\n", i.tests.join(", ")));
+            }
+        }
+        if let Some(c) = &self.callers {
+            s.push_str(&format!("\nSYMBOL {} — definition and users ({})\n", c.symbol, c.note));
+            if c.definitions.is_empty() {
+                s.push_str("- no definition found in the scanned files (it may come from a library or be generated)\n");
+            }
+            for d in &c.definitions {
+                s.push_str(&format!("- defined as {} at {}:{}\n", d.kind, d.path, d.line));
+            }
+            if c.ambiguous {
+                s.push_str("- the name is defined in several files: matches below may belong to another symbol\n");
+            }
+            for x in &c.callers {
+                s.push_str(&format!("- used in {}{}\n", x.path, if x.imports_definition { " (imports the definition)" } else { " (same name only)" }));
+            }
+            if c.callers.is_empty() {
+                s.push_str("- no other scanned file calls it\n");
+            }
+            if c.truncated {
+                s.push_str("- (list truncated)\n");
             }
         }
         if !self.notes.is_empty() || !self.past_changes.is_empty() || !self.git_history.is_empty() {

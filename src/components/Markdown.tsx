@@ -1,6 +1,6 @@
 import { Fragment, useState, type ReactNode } from 'react';
 import { Check, Copy } from 'lucide-react';
-import { openUrl } from '@tauri-apps/plugin-opener';
+import { isPublicHttpUrl, openExternal } from '../lib/platform';
 import katex from 'katex';
 import 'katex/dist/katex.min.css';
 
@@ -11,9 +11,19 @@ import 'katex/dist/katex.min.css';
  * `\[…\]`) is typeset by KaTeX with `trust: false` (no links, no raw HTML), so a formula in a
  * model answer can't inject markup either.
  */
-export function Markdown({ text }: { text: string }) {
-  return <div className="md">{blocks(text)}</div>;
+/** A numbered source of a research answer: `[n]` in the text points at this page. */
+export interface CiteSource {
+  n: number;
+  url: string;
+  title?: string;
 }
+
+export function Markdown({ text, sources }: { text: string; sources?: CiteSource[] }) {
+  const cites = sources?.length ? new Map(sources.filter((s) => isPublicHttpUrl(s.url)).map((s) => [s.n, s])) : undefined;
+  return <div className="md">{blocks(text, cites)}</div>;
+}
+
+type Cites = Map<number, CiteSource> | undefined;
 
 type Block = { kind: 'code'; lang: string; body: string } | { kind: 'h'; level: number; body: string } | { kind: 'ul' | 'ol'; items: string[] } | { kind: 'quote'; body: string } | { kind: 'p'; body: string } | { kind: 'hr' } | { kind: 'table'; head: string[]; rows: string[][] } | { kind: 'foot'; items: { n: string; text: string }[] } | { kind: 'math'; body: string };
 
@@ -125,19 +135,19 @@ export function parseBlocks(text: string): Block[] {
   return out;
 }
 
-function blocks(text: string): ReactNode {
+function blocks(text: string, cites: Cites): ReactNode {
   return parseBlocks(text).map((b, i) => {
     switch (b.kind) {
       case 'code':
         return <CodeBlock key={i} lang={b.lang} body={b.body} />;
       case 'h':
-        return b.level <= 2 ? <h3 key={i}>{inline(b.body)}</h3> : <h4 key={i}>{inline(b.body)}</h4>;
+        return b.level <= 2 ? <h3 key={i}>{inline(b.body, cites)}</h3> : <h4 key={i}>{inline(b.body, cites)}</h4>;
       case 'ul':
-        return <ul key={i}>{b.items.map((it, j) => <li key={j}>{inline(it)}</li>)}</ul>;
+        return <ul key={i}>{b.items.map((it, j) => <li key={j}>{inline(it, cites)}</li>)}</ul>;
       case 'ol':
-        return <ol key={i}>{b.items.map((it, j) => <li key={j}>{inline(it)}</li>)}</ol>;
+        return <ol key={i}>{b.items.map((it, j) => <li key={j}>{inline(it, cites)}</li>)}</ol>;
       case 'quote':
-        return <blockquote key={i}>{inline(b.body)}</blockquote>;
+        return <blockquote key={i}>{inline(b.body, cites)}</blockquote>;
       case 'hr':
         return <hr key={i} />;
       case 'math':
@@ -147,11 +157,11 @@ function blocks(text: string): ReactNode {
           <div className="md-table" key={i}>
             <table>
               <thead>
-                <tr>{b.head.map((c, j) => <th key={j}>{inline(c)}</th>)}</tr>
+                <tr>{b.head.map((c, j) => <th key={j}>{inline(c, cites)}</th>)}</tr>
               </thead>
               <tbody>
                 {b.rows.map((r, j) => (
-                  <tr key={j}>{r.map((c, k) => <td key={k}>{inline(c)}</td>)}</tr>
+                  <tr key={j}>{r.map((c, k) => <td key={k}>{inline(c, cites)}</td>)}</tr>
                 ))}
               </tbody>
             </table>
@@ -162,13 +172,13 @@ function blocks(text: string): ReactNode {
           <ol className="footnotes" key={i} aria-label="Sources">
             {b.items.map((it) => (
               <li key={it.n} id={`src-${it.n}`} value={Number(it.n)}>
-                {inline(it.text)}
+                {inline(it.text, cites)}
               </li>
             ))}
           </ol>
         );
       default:
-        return <p key={i}>{inline(b.body)}</p>;
+        return <p key={i}>{inline(b.body, cites)}</p>;
     }
   });
 }
@@ -206,7 +216,7 @@ function CodeBlock({ lang, body }: { lang: string; body: string }) {
 
 const TOKEN = /(`[^`]+`)|(\*\*[^*]+\*\*)|(__[^_]+__)|(\*[^*\s][^*]*\*)|(_[^_\s][^_]*_)|(\[[^\]]+\]\((https?:\/\/[^)\s]+)\))|(https?:\/\/[^\s)]+)|((?<!\w)\[\d{1,3}\](?!\())|(\$(?![\s$])[^$\n`]+?(?<![\s\\])\$(?!\d))|(\\\([^\n]+?\\\))/g;
 
-export function inline(text: string): ReactNode {
+export function inline(text: string, cites?: Cites): ReactNode {
   const parts: ReactNode[] = [];
   let last = 0;
   let k = 0;
@@ -220,14 +230,7 @@ export function inline(text: string): ReactNode {
     else if (m[6]) parts.push(<Link key={k++} href={m[7]}>{t.slice(1, t.indexOf(']'))}</Link>);
     else if (m[8]) parts.push(<Link key={k++} href={t}>{t}</Link>);
     else if (m[9]) {
-      const n = t.slice(1, -1);
-      parts.push(
-        <sup key={k++} className="cite">
-          <a href={`#src-${n}`} title={`Source ${n}`} onClick={(e) => { e.preventDefault(); window.dispatchEvent(new CustomEvent('genius-cite', { detail: Number(n) })); }}>
-            {n}
-          </a>
-        </sup>,
-      );
+      parts.push(<Cite key={k++} n={Number(t.slice(1, -1))} source={cites?.get(Number(t.slice(1, -1)))} />);
     }
     else if (m[10]) parts.push(<Formula key={k++} tex={t.slice(1, -1)} />);
     else if (m[11]) parts.push(<Formula key={k++} tex={t.slice(2, -2)} />);
@@ -251,13 +254,49 @@ function withBreaks(s: string, key: number) {
   );
 }
 
+/**
+ * A citation marker. With a known public source it is a real link to that page; clicking highlights the
+ * entry in the Sources panel when one is showing, otherwise opens the page. Without a source record it
+ * is plain text: there is no address to point at, and an in-page anchor would become a bogus
+ * `tauri.localhost` URL inside the desktop app.
+ */
+function Cite({ n, source }: { n: number; source?: CiteSource }) {
+  if (!source) {
+    return (
+      <sup className="cite">
+        <span className="cite-plain" title={`Source ${n}`}>{n}</span>
+      </sup>
+    );
+  }
+  return (
+    <sup className="cite">
+      <a
+        href={source.url}
+        title={source.title ? `${source.title} — ${source.url}` : source.url}
+        rel="noopener noreferrer"
+        onClick={(e) => {
+          e.preventDefault();
+          const ev = new CustomEvent('genius-cite', { detail: { n, handled: false } });
+          window.dispatchEvent(ev);
+          if (!(ev.detail as { handled: boolean }).handled) void openExternal(source.url);
+        }}
+      >
+        {n}
+      </a>
+    </sup>
+  );
+}
+
 function Link({ href, children }: { href: string; children: ReactNode }) {
+  // Links that point at the app itself or at the user's machine are not shown as links.
+  if (!isPublicHttpUrl(href)) return <span className="link-removed" title="This address is local to your computer, so it is not shown as a link.">{children}</span>;
   return (
     <a
       href={href}
+      rel="noopener noreferrer"
       onClick={(e) => {
         e.preventDefault();
-        void openUrl(href).catch(() => window.open(href, '_blank', 'noopener'));
+        void openExternal(href);
       }}
       title={href}
     >

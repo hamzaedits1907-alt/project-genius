@@ -73,7 +73,7 @@ pub struct ToolSpec {
 
 const TOOLS: &[ToolSpec] = &[
     ToolSpec { name: "project_facts", args: "{}", description: "Verified summary of the project: frameworks, dependencies, npm scripts, entry points, routes, components, tests, config, file tree.", read_only: true },
-    ToolSpec { name: "project_brain", args: r#"{"query"?: string, "impact"?: [string, ...]}"#, description: "Project Brain. \"query\": find the symbols/files that match a question (name or words) with the code around them, plus what earlier tasks, memory and Git recorded about those files. \"impact\": list the files that import the given files (what a change may affect) and the tests to run. Verified facts and recorded history are labelled separately; it is a pattern scan, not a compiler.", read_only: true },
+    ToolSpec { name: "project_brain", args: r#"{"query"?: string, "impact"?: [string, ...], "callers"?: string}"#, description: "Project Brain. \"callers\": a symbol name; returns where it is defined and which files use it. \"query\": find the symbols/files that match a question (name or words) with the code around them, plus what earlier tasks, memory and Git recorded about those files. \"impact\": list the files that import the given files (what a change may affect) and the tests to run. Verified facts and recorded history are labelled separately; it is a pattern scan, not a compiler.", read_only: true },
     ToolSpec { name: "list_files", args: r#"{"prefix"?: string}"#, description: "List project files (path and size), optionally under a folder prefix.", read_only: true },
     ToolSpec { name: "search", args: r#"{"query": string, "prefix"?: string}"#, description: "Case-insensitive text search across project source files (optionally under a folder). Returns path:line: text.", read_only: true },
     ToolSpec { name: "read_file", args: r#"{"path": string, "startLine"?: number, "endLine"?: number} or {"paths": [string, ...]}"#, description: "Read one file with line numbers (optionally a line range), or up to 10 whole files at once with \"paths\". Returns your own pending edits when you changed the file in this task.", read_only: true },
@@ -320,8 +320,24 @@ fn next_call_tag(masked: &str, from: usize) -> Option<(usize, &'static str, &'st
     CALL_TAGS.iter().filter_map(|(o, c)| masked[from..].find(o).map(|i| (from + i, *o, *c))).min_by_key(|t| t.0)
 }
 
-/// Parse one model turn.
+/// Tool names that may be written as their own tag (`<web_search {…}>`, `<todo>{…}</todo>`). Single-word
+/// names such as `search` or `todo` are only read as calls when JSON follows (see `toolcall::named_tag_calls`).
+fn tag_tool_names() -> Vec<&'static str> {
+    tool_names()
+}
+
+/// Parse one model turn. Calls written as `<web_search {"query": "…"}>` are rewritten to the
+/// canonical form first, so every dialect shares one validation and execution path.
 pub fn parse_turn(text: &str) -> Turn {
+    let masked = mask_blocks(text);
+    let code_free = crate::toolcall::mask_code(&masked);
+    if let Some(rewritten) = crate::toolcall::rewrite_named_tags(text, &code_free, &tag_tool_names()) {
+        return parse_turn_canonical(&rewritten);
+    }
+    parse_turn_canonical(text)
+}
+
+fn parse_turn_canonical(text: &str) -> Turn {
     let masked = mask_blocks(text);
     let mut calls = Vec::new();
     let mut pos = 0;
@@ -754,6 +770,8 @@ struct BrainArgs {
     query: Option<String>,
     #[serde(default)]
     impact: Option<Vec<String>>,
+    #[serde(default)]
+    callers: Option<String>,
 }
 #[derive(Deserialize)]
 struct QueryArgs {
@@ -1373,6 +1391,7 @@ impl Genius {
         let builder = run.role == Role::Main && run.mode == AgentMode::Build;
         let limits = self.settings()?.limits;
         let mut verify_rounds = 0;
+        let mut residue_rounds = 0usize;
         let mut used = 0usize;
         let mut iteration = 0usize;
         loop {
@@ -1451,6 +1470,19 @@ impl Genius {
                 continue;
             };
             if !builder {
+                // Raw tool syntax must never reach the user: ask the model once or twice to use the
+                // protocol (or answer without tools), then strip whatever is left.
+                let names = tag_tool_names();
+                if crate::toolcall::has_residue(&final_text, &names) {
+                    if residue_rounds < 2 && !last {
+                        residue_rounds += 1;
+                        messages.push(ChatMessage::assistant(text.clone()));
+                        messages.push(ChatMessage::user(format!("Your last message contained raw tool-call text that Genius could not run, so nothing was executed. Call a tool only in this exact form: {} — or, if you need no tool, answer with <final>…</final> and no tags. Do not write <tool_result> yourself.", crate::toolcall::example("web_search"))));
+                        continue;
+                    }
+                    let cleaned = crate::toolcall::strip_residue(&final_text, &names);
+                    return Ok(if cleaned.trim().is_empty() { "I couldn't complete that lookup (my tool call was malformed). Please ask again.".to_string() } else { cleaned });
+                }
                 return Ok(final_text);
             }
 
@@ -1887,13 +1919,13 @@ impl Genius {
                 let a: BrainArgs = typed(name, args)?;
                 let query = a.query.unwrap_or_default();
                 let impact = a.impact.unwrap_or_default();
-                if query.trim().is_empty() && impact.is_empty() {
-                    return Err(GeniusError::Validation("give a \"query\" (what to find) and/or \"impact\" (files that will change)".into()));
+                if query.trim().is_empty() && impact.is_empty() && a.callers.as_deref().is_none_or(|c| c.trim().is_empty()) {
+                    return Err(GeniusError::Validation("give a \"query\" (what to find), \"impact\" (files that will change) and/or \"callers\" (a symbol name)".into()));
                 }
                 // A scoped custom agent only ever sees paths inside its scope.
                 let profile = run.profile.clone();
                 let allow = move |p: &str| profile.as_ref().is_none_or(|pr| pr.path_ok(p));
-                let ans = self.brain_ask(run.project_id, &query, &impact, &allow).await?;
+                let ans = self.brain_ask_with(run.project_id, &query, &impact, a.callers.as_deref(), &allow).await?;
                 Ok(ToolOutcome::ok(format!("Project Brain: {} match(es){}", ans.hits.len(), ans.impact.as_ref().map(|i| format!(", {} file(s) affected", i.affected.len())).unwrap_or_default()), clip(&ans.render(MAX_RESULT), MAX_RESULT), json!({ "query": query, "hits": ans.hits.len(), "impact": ans.impact.as_ref().map(|i| i.affected.len()), "indexedAt": ans.indexed_at })))
             }
             "list_files" => {
@@ -2174,7 +2206,7 @@ impl Genius {
                 let field = |k: &str| last.and_then(|c| c.get(k)).and_then(|v| v.as_str()).map(String::from);
                 let served = field("model");
                 let reported = field("reportedModel");
-                let mut t = String::from("RUNTIME FACTS (measured by Genius from this answer's real requests; authoritative — nothing else is known about the model):\n- provider: NVIDIA API (OpenAI-compatible endpoint)\n");
+                let mut t = format!("RUNTIME FACTS (measured by Genius from this answer's real requests; authoritative — nothing else is known about the model):\n- provider: {}\n", crate::provider::ProviderKind::from_id_or_default(&s.provider).label());
                 t.push_str(&format!("- model selection: {}\n", if s.is_auto() { "automatic (Genius picks a model per request)".to_string() } else { format!("manual (the user chose {} in Settings)", s.model.clone().unwrap_or_default()) }));
                 match &served {
                     Some(m) => t.push_str(&format!("- model that served the previous step of this answer: {m}{}\n", match &reported { Some(r) if r != m => format!(" (the provider's response labelled it \"{r}\")"), Some(_) => " (the provider's response confirms this id)".into(), None => " (the provider's response did not state a model)".into() })),

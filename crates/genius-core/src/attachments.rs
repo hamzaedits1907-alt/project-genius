@@ -67,6 +67,7 @@ pub fn classify(name: &str) -> Option<(&'static str, &'static str)> {
         "json" => ("json", "application/json"),
         "pdf" => ("pdf", "application/pdf"),
         "docx" => ("docx", "application/vnd.openxmlformats-officedocument.wordprocessingml.document"),
+        "xlsx" => ("csv", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"),
         "png" => ("image", "image/png"),
         "jpg" | "jpeg" => ("image", "image/jpeg"),
         "gif" => ("image", "image/gif"),
@@ -78,7 +79,7 @@ pub fn classify(name: &str) -> Option<(&'static str, &'static str)> {
 }
 
 pub fn supported_extensions() -> Vec<String> {
-    let mut v: Vec<String> = ["txt", "log", "md", "markdown", "csv", "tsv", "json", "pdf", "docx", "png", "jpg", "jpeg", "gif", "webp", "zip"].iter().map(|s| s.to_string()).collect();
+    let mut v: Vec<String> = ["txt", "log", "md", "markdown", "csv", "tsv", "json", "pdf", "docx", "xlsx", "png", "jpg", "jpeg", "gif", "webp", "zip"].iter().map(|s| s.to_string()).collect();
     v.extend(CODE_EXT.iter().map(|s| s.to_string()));
     v
 }
@@ -136,6 +137,111 @@ pub fn docx_text(bytes: &[u8]) -> Result<String> {
         }
     }
     Ok(out.trim().to_string())
+}
+
+// ----------------------------------------------------------------------------- XLSX
+
+const XLSX_MAX_ROWS: usize = 200_000;
+const XLSX_MAX_COLS: usize = 256;
+
+fn zip_text(zip: &mut zip::ZipArchive<std::io::Cursor<&[u8]>>, name: &str) -> Option<String> {
+    let entry = zip.by_name(name).ok()?;
+    if entry.size() > ZIP_MAX_ENTRY {
+        return None;
+    }
+    let mut s = String::new();
+    entry.take(ZIP_MAX_ENTRY).read_to_string(&mut s).ok()?;
+    Some(s)
+}
+
+/// Column letters of a cell reference (`"AB12"` → 27, zero based).
+fn column_index(cell_ref: &str) -> usize {
+    let mut n = 0usize;
+    for c in cell_ref.chars().take_while(|c| c.is_ascii_alphabetic()) {
+        n = n * 26 + (c.to_ascii_uppercase() as usize - 'A' as usize + 1);
+    }
+    n.saturating_sub(1)
+}
+
+fn csv_cell(v: &str) -> String {
+    if v.contains([',', '"', '\n', '\r']) {
+        format!("\"{}\"", v.replace('"', "\"\""))
+    } else {
+        v.to_string()
+    }
+}
+
+/// Text of an OOXML string element: every `<t>` of a shared string item or inline string, joined.
+fn xml_texts(fragment: &str) -> String {
+    static T: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| regex::Regex::new(r"(?s)<t(?:\s[^>]*)?>(.*?)</t>").unwrap());
+    T.captures_iter(fragment).map(|c| unescape_xml(&c[1])).collect::<Vec<_>>().join("")
+}
+
+/// Sheets of an XLSX workbook as CSV text: `(sheet name, csv)`, in workbook order. Values are what
+/// the file stores (cached formula results; dates stay serial numbers). Nothing is executed.
+pub fn xlsx_sheets(bytes: &[u8]) -> Result<Vec<(String, String)>> {
+    static SHEET: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| regex::Regex::new(r#"(?s)<sheet\b([^>]*)/?>"#).unwrap());
+    static ATTR: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| regex::Regex::new(r#"([\w:]+)="([^"]*)""#).unwrap());
+    static SI: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| regex::Regex::new(r"(?s)<si\b[^>]*>(.*?)</si>").unwrap());
+    static ROW: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| regex::Regex::new(r"(?s)<row\b[^>]*>(.*?)</row>").unwrap());
+    static CELL: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| regex::Regex::new(r#"(?s)<c\b([^>]*?)(?:/>|>(.*?)</c>)"#).unwrap());
+    static V: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| regex::Regex::new(r"(?s)<v>(.*?)</v>").unwrap());
+    let mut zip = zip::ZipArchive::new(std::io::Cursor::new(bytes)).map_err(|e| GeniusError::Validation(format!("not a valid XLSX file: {e}")))?;
+    if zip.len() > ZIP_MAX_ENTRIES {
+        return Err(GeniusError::Validation("the XLSX archive has too many entries".into()));
+    }
+    let workbook = zip_text(&mut zip, "xl/workbook.xml").ok_or_else(|| GeniusError::Validation("the XLSX has no xl/workbook.xml (is it an .xls file or encrypted?)".into()))?;
+    let rels = zip_text(&mut zip, "xl/_rels/workbook.xml.rels").unwrap_or_default();
+    let shared: Vec<String> = zip_text(&mut zip, "xl/sharedStrings.xml").map(|x| SI.captures_iter(&x).map(|c| xml_texts(&c[1])).collect()).unwrap_or_default();
+    let attrs = |s: &str| -> std::collections::HashMap<String, String> { ATTR.captures_iter(s).map(|c| (c[1].to_string(), unescape_xml(&c[2]))).collect() };
+    let targets: std::collections::HashMap<String, String> = regex::Regex::new(r"(?s)<Relationship\b([^>]*)/?>")
+        .expect("valid regex")
+        .captures_iter(&rels)
+        .filter_map(|c| {
+            let a = attrs(&c[1]);
+            Some((a.get("Id")?.clone(), a.get("Target")?.clone()))
+        })
+        .collect();
+    let mut out = Vec::new();
+    for (i, c) in SHEET.captures_iter(&workbook).enumerate() {
+        let a = attrs(&c[1]);
+        let name = a.get("name").cloned().unwrap_or_else(|| format!("Sheet{}", i + 1));
+        let target = a.get("r:id").and_then(|id| targets.get(id)).cloned().unwrap_or_else(|| format!("worksheets/sheet{}.xml", i + 1));
+        let path = if let Some(abs) = target.strip_prefix('/') { abs.to_string() } else { format!("xl/{target}") };
+        let Some(xml) = zip_text(&mut zip, &path) else { continue };
+        let mut lines: Vec<String> = Vec::new();
+        for row in ROW.captures_iter(&xml).take(XLSX_MAX_ROWS) {
+            let mut cells: Vec<String> = Vec::new();
+            for cell in CELL.captures_iter(&row[1]) {
+                let ca = attrs(&cell[1]);
+                let col = ca.get("r").map(|r| column_index(r)).unwrap_or(cells.len()).min(XLSX_MAX_COLS);
+                let inner = cell.get(2).map_or("", |m| m.as_str());
+                let raw = V.captures(inner).map(|v| unescape_xml(&v[1])).unwrap_or_default();
+                let value = match ca.get("t").map(String::as_str) {
+                    Some("s") => raw.trim().parse::<usize>().ok().and_then(|n| shared.get(n).cloned()).unwrap_or_default(),
+                    Some("inlineStr") => xml_texts(inner),
+                    Some("b") => if raw.trim() == "1" { "TRUE".into() } else { "FALSE".into() },
+                    _ => raw,
+                };
+                while cells.len() <= col {
+                    cells.push(String::new());
+                }
+                cells[col] = value;
+            }
+            while cells.last().is_some_and(|c| c.is_empty()) {
+                cells.pop();
+            }
+            lines.push(cells.iter().map(|c| csv_cell(c)).collect::<Vec<_>>().join(","));
+        }
+        while lines.last().is_some_and(|l| l.is_empty()) {
+            lines.pop();
+        }
+        out.push((name, lines.join("\n")));
+    }
+    if out.is_empty() {
+        return Err(GeniusError::Validation("the XLSX contains no readable worksheet".into()));
+    }
+    Ok(out)
 }
 
 fn unescape_xml(s: &str) -> String {
@@ -233,6 +339,19 @@ pub fn parse(name: &str, bytes: &[u8]) -> Result<(String, String, String, Option
     let mut meta = json!({});
     let text = match kind {
         "text" | "markdown" | "code" => utf8(bytes, name)?,
+        "csv" if name.to_ascii_lowercase().ends_with(".xlsx") => {
+            let sheets = xlsx_sheets(bytes)?;
+            let names: Vec<&str> = sheets.iter().map(|(n, _)| n.as_str()).collect();
+            let (first_name, first) = sheets.iter().find(|(_, c)| !c.trim().is_empty()).unwrap_or(&sheets[0]);
+            meta["format"] = json!("xlsx");
+            meta["sheets"] = json!(names);
+            meta["sheetUsed"] = json!(first_name);
+            meta["rows"] = json!(first.lines().count());
+            meta["header"] = json!(first.lines().next().unwrap_or("").chars().take(300).collect::<String>());
+            let dates = "Dates are shown as the serial numbers stored in the file.";
+            meta["note"] = json!(if sheets.len() > 1 { format!("Only the sheet \"{first_name}\" is read as a table; the other {} sheet(s) are not included: {}. {dates}", sheets.len() - 1, names.iter().filter(|n| **n != first_name.as_str()).copied().collect::<Vec<_>>().join(", ")) } else { dates.to_string() });
+            first.clone()
+        }
         "csv" => {
             let t = utf8(bytes, name)?;
             meta["rows"] = json!(t.lines().count());
@@ -247,7 +366,7 @@ pub fn parse(name: &str, bytes: &[u8]) -> Result<(String, String, String, Option
         "pdf" => {
             let t = pdf_extract::extract_text_from_mem(bytes).map_err(|e| GeniusError::Validation(format!("could not read text from the PDF: {e}")))?;
             if t.trim().is_empty() {
-                return Err(GeniusError::Validation("the PDF has no extractable text layer (scanned image PDFs are not supported)".into()));
+                return Err(GeniusError::Validation("the PDF has no extractable text layer, so it is probably a scan and Genius cannot read it as text. Attach its pages as images (PNG or JPEG) instead: a vision-capable model can read them".into()));
             }
             t
         }
@@ -583,6 +702,25 @@ mod tests {
         let (k, _, t, _, _) = parse("req.docx", &z).unwrap();
         assert_eq!(k, "docx");
         assert!(t.contains("Login page"));
+    }
+
+    #[test]
+    fn xlsx_sheets_become_csv_with_shared_strings_gaps_and_quotes() {
+        let wb = br#"<workbook><sheets><sheet name="Sales" sheetId="1" r:id="rId1"/><sheet name="Notes" sheetId="2" r:id="rId2"/></sheets></workbook>"#;
+        let rels = br#"<Relationships><Relationship Id="rId1" Type="x" Target="worksheets/sheet1.xml"/><Relationship Id="rId2" Type="x" Target="worksheets/sheet2.xml"/></Relationships>"#;
+        let ss = br#"<sst><si><t>city</t></si><si><t>sales</t></si><si><r><t>Ber</t></r><r><t>lin, DE</t></r></si></sst>"#;
+        let s1 = br#"<worksheet><sheetData><row r="1"><c r="A1" t="s"><v>0</v></c><c r="B1" t="s"><v>1</v></c><c r="D1" t="inlineStr"><is><t>flag</t></is></c></row><row r="2"><c r="A2" t="s"><v>2</v></c><c r="B2"><v>12.5</v></c><c r="D2" t="b"><v>1</v></c></row></sheetData></worksheet>"#;
+        let s2 = br#"<worksheet><sheetData><row r="1"><c r="A1" t="inlineStr"><is><t>hi</t></is></c></row></sheetData></worksheet>"#;
+        let z = make_zip(&[("xl/workbook.xml", wb), ("xl/_rels/workbook.xml.rels", rels), ("xl/sharedStrings.xml", ss), ("xl/worksheets/sheet1.xml", s1), ("xl/worksheets/sheet2.xml", s2)]);
+        let sheets = xlsx_sheets(&z).unwrap();
+        assert_eq!(sheets[0], ("Sales".to_string(), "city,sales,,flag\n\"Berlin, DE\",12.5,,TRUE".to_string()));
+        assert_eq!(sheets[1].1, "hi");
+        let (kind, mime, text, _, meta) = parse("report.xlsx", &z).unwrap();
+        assert_eq!(kind, "csv");
+        assert!(mime.contains("spreadsheetml") && text.starts_with("city,sales") && meta["sheets"] == json!(["Sales", "Notes"]));
+        assert!(meta["note"].as_str().unwrap().contains("Notes"), "{meta}");
+        assert!(parse("broken.xlsx", b"not a zip").is_err());
+        assert!(parse("old.xlsx", &make_zip(&[("x.txt", b"hi")])).unwrap_err().to_string().contains("workbook"));
     }
 
     #[test]

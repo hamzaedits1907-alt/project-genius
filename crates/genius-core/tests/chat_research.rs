@@ -644,3 +644,119 @@ async fn project_from_a_chat_thread_without_a_name_uses_the_title_and_requires_a
     assert_eq!(q.name, "Budget app idea", "falls back to the conversation title");
     let _ = &env.log;
 }
+
+// ------------------------------------------------------------------------------------------ tool-call dialects
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_tool_named_tag_with_a_markdown_url_is_executed_and_never_shown() {
+    let pages = page_server().await;
+    let page_url = url(&pages, "/docs/hooks");
+    let for_script = page_url.clone();
+    let env = setup(move |_, last, _| {
+        if last.contains("USER MESSAGE:\nSummarize the page") {
+            // the exact malformed dialect seen in the field, with the URL written as a Markdown link
+            return format!("Let me open it.\n<fetch_url {{\"url\": \"[the page]({for_script})\"}}>");
+        }
+        if last.starts_with("<tool_result name=\"fetch_url\" ok=\"true\">") {
+            assert!(last.contains("Built-in React Hooks"), "the page was really fetched: {last}");
+            return "<final>The page explains the built-in React Hooks.</final>".into();
+        }
+        panic!("unexpected turn: {last}");
+    })
+    .await;
+    let g = &env.g;
+    let conv = g.create_chat_conversation("chat", None).unwrap();
+    let (tid, status, msgs) = send(g, &conv.row.id, "Summarize the page", &[]).await;
+    assert_eq!(status, EventStatus::Completed);
+    let steps = g.agent_steps(&tid).unwrap();
+    assert_eq!(steps.iter().map(|s| (s.tool.as_str(), s.ok)).collect::<Vec<_>>(), vec![("fetch_url", true)], "one call, run once, no repeat caused by the parse");
+    assert_eq!(steps[0].args["url"], page_url, "the Markdown link was reduced to the plain URL");
+    let a = last_assistant(&msgs);
+    assert_eq!(a.content, "The page explains the built-in React Hooks.");
+    assert!(!a.content.contains('<') && !a.content.contains("fetch_url"));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn fabricated_tool_markup_in_an_answer_is_corrected_or_removed_never_shown() {
+    // The model first writes a fake tool result inside its answer, then fixes it when told.
+    let calls = Arc::new(Mutex::new(0usize));
+    let c1 = calls.clone();
+    let env = setup(move |_, last, _| {
+        let mut n = c1.lock().unwrap();
+        *n += 1;
+        if last.contains("raw tool-call text") {
+            return "<final>I could not look that up, so I will answer from memory: it is a flight simulator community site.</final>".into();
+        }
+        "<final>Found it. <tool_result name=\"web_search\" ok=\"true\">invented</tool_result> It is great.</final>".into()
+    })
+    .await;
+    let g = &env.g;
+    let conv = g.create_chat_conversation("chat", None).unwrap();
+    let (_, status, msgs) = send(g, &conv.row.id, "What is that site?", &[]).await;
+    assert_eq!(status, EventStatus::Completed);
+    assert_eq!(*calls.lock().unwrap(), 2, "exactly one correction round");
+    let a = last_assistant(&msgs);
+    assert!(!a.content.contains("tool_result") && !a.content.contains("invented"), "{}", a.content);
+
+    // A model that never fixes it: the markup is stripped, still not shown, and the loop stops.
+    let env = setup(|_, _, _| "<final>Found it. <tool_result name=\"web_search\" ok=\"true\">invented</tool_result> It is great. <web_search {\"query\": \"x\"}></final>".into()).await;
+    let g = &env.g;
+    let conv = g.create_chat_conversation("chat", None).unwrap();
+    let (_, _, msgs) = send(g, &conv.row.id, "What is that site?", &[]).await;
+    let a = last_assistant(&msgs);
+    assert!(!a.content.contains("tool_result") && !a.content.contains("web_search") && !a.content.contains("invented"), "{}", a.content);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn research_never_exposes_app_internal_links_as_sources() {
+    let pages = page_server().await;
+    let page = format!("http://127.0.0.1:{}", pages.address().port());
+    let env = setup(move |_, last, _| {
+        if last.contains("USER MESSAGE:") && last.contains("Research this properly") {
+            return format!("<tool>{}</tool>", json!({"name":"fetch_url","args":{"url": format!("{page}/docs/hooks")}}));
+        }
+        if last.starts_with("<tool_result name=\"fetch_url\" ok=\"true\">") {
+            return "<final>## Summary\nHooks let function components use state [1](http://tauri.localhost/#src-1).\n\n## Findings\n- Hooks must be called at the top level of a component [1](#src-1).</final>".into();
+        }
+        panic!("unexpected turn: {last}");
+    })
+    .await;
+    let g = &env.g;
+    let conv = g.create_chat_conversation("research", None).unwrap();
+    let (_, status, msgs) = send(g, &conv.row.id, "How do hooks work?", &[]).await;
+    assert_eq!(status, EventStatus::Completed);
+    let a = last_assistant(&msgs);
+    assert!(!a.content.contains("tauri.localhost") && !a.content.contains("#src-"), "{}", a.content);
+    assert!(a.content.contains("state [1]."), "{}", a.content);
+    assert_eq!(a.meta["validation"]["ok"], true, "{}", a.meta["validation"]);
+    assert!(a.content.contains("## Sources\n[1] Hooks – React — http://127.0.0.1:"), "the real fetched URL is the source: {}", a.content);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn research_with_loose_tool_dialects_runs_the_calls_and_never_shows_them() {
+    let pages = page_server().await;
+    let page = format!("http://127.0.0.1:{}", pages.address().port());
+    let env = setup(move |_, last, _| {
+        if last.contains("Research this properly") {
+            // the shapes seen in the field: a <todo> block, a tool name without underscore, no closing '>'
+            return format!("I'll research this.\n\n<todo>\n{{\"items\": [{{\"text\": \"Read the docs\", \"status\": \"active\"}}]}}\n</todo>\n\n<fetchurl {{\"url\": \"{page}/docs/hooks\"}}\n");
+        }
+        if last.starts_with("<tool_result name=\"todo\"") || last.contains("<tool_result name=\"fetch_url\"") {
+            assert!(last.contains("Built-in React Hooks"), "{last}");
+            return "<final>## Summary\nHooks let function components use state [1].\n\n## Findings\n- Hooks must be called at the top level of a component [1].</final>".into();
+        }
+        panic!("unexpected turn: {last}");
+    })
+    .await;
+    let g = &env.g;
+    let conv = g.create_chat_conversation("research", None).unwrap();
+    let (tid, status, msgs) = send(g, &conv.row.id, "How do hooks work?", &[]).await;
+    assert_eq!(status, EventStatus::Completed);
+    let steps = g.agent_steps(&tid).unwrap();
+    assert_eq!(steps.iter().map(|s| (s.tool.as_str(), s.ok)).collect::<Vec<_>>(), vec![("todo", true), ("fetch_url", true)]);
+    let a = last_assistant(&msgs);
+    for raw in ["<todo", "<fetchurl", "<websearch", "{\"items\"", "\"query\""] {
+        assert!(!a.content.contains(raw), "raw tool syntax leaked ({raw}): {}", a.content);
+    }
+    assert_eq!(a.meta["validation"]["ok"], true, "{}", a.meta["validation"]);
+}

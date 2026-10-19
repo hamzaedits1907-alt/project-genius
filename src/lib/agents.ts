@@ -358,6 +358,74 @@ export function missionTone(s: MissionStatus): Tone {
 }
 
 export const isTerminalMission = (s: MissionStatus) => s === 'completed' || s === 'failed' || s === 'cancelled';
+
+/**
+ * What a task or mission has really achieved. "Done" is not "verified": a model's say-so proves
+ * nothing, so work only counts as verified when a real build or test passed on it.
+ */
+export type Outcome = 'planning' | 'pending' | 'running' | 'waiting' | 'blocked' | 'paused' | 'verified' | 'completed_unverified' | 'checks_failed' | 'failed' | 'cancelled';
+
+export const OUTCOME_LABEL: Record<Outcome, string> = {
+  planning: 'Planning',
+  pending: 'Waiting',
+  running: 'Running',
+  waiting: 'Needs your approval',
+  blocked: 'Blocked',
+  paused: 'Paused',
+  verified: 'Verified',
+  completed_unverified: 'Completed, not verified',
+  checks_failed: 'Checks failed',
+  failed: 'Failed',
+  cancelled: 'Cancelled',
+};
+export const outcomeLabel = (o: Outcome) => OUTCOME_LABEL[o];
+
+export function taskOutcome(t: MissionTask): Outcome {
+  switch (t.status) {
+    case 'pending':
+    case 'ready':
+      return 'pending';
+    case 'running':
+    case 'reviewing':
+      return 'running';
+    case 'awaiting_approval':
+      return 'waiting';
+    case 'blocked':
+      return 'blocked';
+    case 'failed':
+      return 'failed';
+    case 'cancelled':
+      return 'cancelled';
+    case 'done':
+      if (t.verification.build === 'failed' || t.verification.tests === 'failed') return 'checks_failed';
+      return t.verification.build === 'passed' || t.verification.tests === 'passed' ? 'verified' : 'completed_unverified';
+  }
+}
+
+export function missionOutcome(m: Mission): Outcome {
+  switch (m.status) {
+    case 'planning':
+      return 'planning';
+    case 'ready':
+      return 'pending';
+    case 'paused':
+      return 'paused';
+    case 'running':
+    case 'integrating':
+    case 'verifying':
+      return m.tasks.some((t) => t.status === 'awaiting_approval') ? 'waiting' : 'running';
+    case 'failed':
+      return 'failed';
+    case 'cancelled':
+      return 'cancelled';
+    case 'completed': {
+      const done = m.tasks.filter((t) => t.status === 'done').map(taskOutcome);
+      if (done.length === 0) return 'completed_unverified';
+      if (done.includes('checks_failed')) return 'checks_failed';
+      return done.every((o) => o === 'verified') ? 'verified' : 'completed_unverified';
+    }
+  }
+}
 export const canStartMission = (m: Mission) => m.status === 'ready';
 export const canPauseMission = (m: Mission) => m.status === 'running';
 export const canResumeMission = (m: Mission) => m.status === 'paused';

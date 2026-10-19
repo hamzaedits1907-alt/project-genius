@@ -19,6 +19,7 @@ export const settings: T.Settings = {
   autoCheckUpdates: true,
   internetAccess: true,
   assistantName: 'Genius',
+  productCreator: 'Hamza',
   modelMode: 'auto',
   effort: 'max',
   thinking: true,

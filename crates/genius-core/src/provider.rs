@@ -117,13 +117,18 @@ impl ProviderKind {
             model_listing: true,
             image_input: "by-model",
             auto_routing: live,
+            auto_selection: match self {
+                ProviderKind::Nvidia => "tuned",
+                ProviderKind::OpenAi | ProviderKind::Anthropic | ProviderKind::Gemini => "by-family",
+                ProviderKind::Custom => "manual-only",
+            },
             tool_protocol: "genius-text-tools",
             verification: if live { "live" } else { "contract-tests" },
             notes: match self {
                 ProviderKind::Nvidia => vec!["Auto model routing, reasoning switches and vision probing are tuned for NVIDIA NIM models."],
-                ProviderKind::OpenAi => vec!["Standard chat-completions path. Choose the model yourself (Auto routing is NVIDIA-only).", "Verified by contract tests only; no live OpenAI call has been made."],
-                ProviderKind::Anthropic => vec!["Native Messages API. Choose the model yourself (Auto routing is NVIDIA-only).", "Only `temperature` is sent (current Claude models reject temperature together with top_p); extended-thinking switches are not sent.", "Verified by contract tests only; no live Anthropic call has been made."],
-                ProviderKind::Gemini => vec!["Native generateContent API. Choose the model yourself (Auto routing is NVIDIA-only).", "Thinking switches are not sent.", "Verified by contract tests only; no live Gemini call has been made."],
+                ProviderKind::OpenAi => vec!["Standard chat-completions path. Auto picks the best known GPT/o-series model your key lists; you can also choose one yourself.", "Verified by contract tests only; no live OpenAI call has been made."],
+                ProviderKind::Anthropic => vec!["Native Messages API. Auto picks the best known Claude model your key lists; you can also choose one yourself.", "Only `temperature` is sent (current Claude models reject temperature together with top_p); extended-thinking switches are not sent.", "Verified by contract tests only; no live Anthropic call has been made."],
+                ProviderKind::Gemini => vec!["Native generateContent API. Auto picks the best known Gemini model your key lists; you can also choose one yourself.", "Thinking switches are not sent.", "Verified by contract tests only; no live Gemini call has been made."],
                 ProviderKind::Custom => vec!["Works for servers that implement /models and /chat/completions the OpenAI way; provider-specific features are not assumed.", "Not verified against any particular server."],
             },
         }
@@ -144,6 +149,9 @@ pub struct ProviderCapabilities {
     /// Image input depends on the model; Genius decides per model (see `router::is_vision`).
     pub image_input: &'static str,
     pub auto_routing: bool,
+    /// How Auto picks a model: "tuned" (NVIDIA families, observed latency and failures), "by-family"
+    /// (best known family among the models the key lists) or "manual-only" (the model you chose).
+    pub auto_selection: &'static str,
     pub tool_protocol: &'static str,
     /// "live" (run against the real API) or "contract-tests" (adapter tested, API not called).
     pub verification: &'static str,

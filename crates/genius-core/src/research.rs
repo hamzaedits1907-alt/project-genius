@@ -570,6 +570,26 @@ pub fn validate(report: &str, sources: &[SourceRef]) -> Validation {
     v
 }
 
+/// Links that point at the application itself are not sources: `[1](#src-1)`, `http://tauri.localhost/#src-1`
+/// (what an in-page anchor becomes inside the desktop WebView), `ipc.localhost`, `asset.localhost`. They are
+/// replaced by their label (or by the bare `[n]` marker); real public URLs are untouched.
+pub fn strip_app_links(report: &str) -> String {
+    static MD: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\[([^\]]*)\]\(\s*<?([^)\s>]*)>?[^)]*\)").unwrap());
+    static BARE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)\(?https?://(?:[a-z0-9-]+\.)?(?:tauri|ipc|asset)\.localhost[^\s)>\]]*\)?").unwrap());
+    let internal = |target: &str| -> bool {
+        let t = target.trim();
+        if t.starts_with('#') {
+            return true;
+        }
+        match reqwest::Url::parse(t) {
+            Ok(u) => u.host_str().is_some_and(|h| h.eq_ignore_ascii_case("tauri.localhost") || h.ends_with(".tauri.localhost") || h.eq_ignore_ascii_case("ipc.localhost") || h.eq_ignore_ascii_case("asset.localhost")),
+            Err(_) => false,
+        }
+    };
+    let linked = MD.replace_all(report, |c: &regex::Captures| if !internal(&c[2]) { c[0].to_string() } else if !c[1].is_empty() && c[1].chars().all(|d| d.is_ascii_digit() || d == ',' || d == ' ') { format!("[{}]", &c[1]) } else { c[1].to_string() });
+    BARE.replace_all(&linked, "").into_owned()
+}
+
 /// Remove the report's own Sources/References section (Genius appends a generated one so titles
 /// and URLs always come from the ledger). Returns the report without it.
 pub fn strip_sources_section(report: &str) -> String {
@@ -626,6 +646,17 @@ mod tests {
 
     fn refs(items: &[(i64, &str)]) -> Vec<SourceRef> {
         items.iter().map(|(n, u)| SourceRef { n: *n, urls: vec![norm_url(u)] }).collect()
+    }
+
+    #[test]
+    fn links_to_the_app_itself_are_never_sources() {
+        assert_eq!(strip_app_links("Hooks batch updates [1](#src-1) and more [2](http://tauri.localhost/#src-2)."), "Hooks batch updates [1] and more [2].");
+        assert_eq!(strip_app_links("See http://tauri.localhost/#src-3 now"), "See  now");
+        assert_eq!(strip_app_links("See [the docs](https://react.dev/learn) and [x](https://ipc.localhost/y)."), "See [the docs](https://react.dev/learn) and x.");
+        // a public address that merely contains the word is untouched
+        assert_eq!(strip_app_links("[a](https://tauri.app/start)"), "[a](https://tauri.app/start)");
+        // a report that says how to run a dev server is not a source either way
+        assert_eq!(strip_app_links("Run it on http://localhost:3000"), "Run it on http://localhost:3000");
     }
 
     #[test]

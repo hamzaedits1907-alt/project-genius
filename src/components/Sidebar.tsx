@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { ArrowDownCircle, Bot, Code2, Command, FolderOpen, Globe2, MessageSquare, PanelLeftClose, PanelLeftOpen, Paperclip, Pencil, Search, Settings as SettingsIcon, SquarePen, Trash2 } from 'lucide-react';
+import { ArrowDownCircle, Bot, Code2, Command, FolderKanban, FolderOpen, Globe2, MessageSquare, PanelLeftClose, PanelLeftOpen, Paperclip, Pencil, Search, Settings as SettingsIcon, SquarePen, Trash2 } from 'lucide-react';
 import { api } from '../lib/api';
 import { groupByRecency } from '../lib/chat';
 import type { ChatConversation, ChatMode, Project } from '../lib/types';
@@ -11,6 +11,8 @@ import { useWorkspace } from '../store/workspace';
 import { GeniusAvatar } from './GeniusAvatar';
 import { openCommandPalette, shortcutLabel } from './CommandPalette';
 import { FilesDialog } from '../views/chat/FilesDialog';
+import { capabilities } from '../lib/platform';
+import { AccountBlock } from './AccountBlock';
 
 /** Start a blank conversation in `mode` and show it (nothing is created until the first message is sent). */
 export function startNewChat(mode: ChatMode = 'chat') {
@@ -47,6 +49,7 @@ export function Sidebar() {
     void useChat.getState().loadAll();
   }, []);
   useEffect(() => {
+    if (!capabilities.localProjects) return;
     api.listProjects().then((p) => setProjects([...p].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)).slice(0, 5))).catch(() => undefined);
   }, [route.name, openProjectId]);
 
@@ -70,7 +73,8 @@ export function Sidebar() {
     { key: 'research', label: 'Research', icon: <Globe2 size={16} />, on: route.name === 'research', go: () => navigate({ name: 'research' }) },
     { key: 'code', label: 'Code', icon: <Code2 size={16} />, on: ['home', 'create', 'project'].includes(route.name), go: () => navigate({ name: 'home' }), badge: approvals.length },
     { key: 'agents', label: 'Agents', icon: <Bot size={16} />, on: route.name === 'agents', go: () => navigate({ name: 'agents' }), badge: agentApprovals },
-  ];
+    { key: 'projects', label: 'Projects', icon: <FolderKanban size={16} />, on: route.name === 'projects', go: () => navigate({ name: 'projects' }) },
+  ].filter((n) => capabilities.localProjects || n.key !== 'code');
   const updateReady = !!update?.available && update.latestVersion !== skipped;
 
   if (collapsed) {
@@ -207,6 +211,7 @@ export function Sidebar() {
           </button>
         )}
         <span className="spacer" />
+        <AccountBlock />
         <button className={route.name === 'settings' ? 'on' : ''} onClick={() => navigate({ name: 'settings' })} aria-label="Settings" title="Settings (Ctrl+,)">
           <SettingsIcon size={15} /> <span>Settings</span>
         </button>

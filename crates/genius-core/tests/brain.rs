@@ -195,3 +195,35 @@ fn malformed_brain_calls_are_rejected_before_running() {
     assert!(validate("project_brain", &json!({ "query": "x" }), false).is_ok());
     assert!(validate("project_brain", &json!({ "impact": ["a.ts"] }), false).is_ok());
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn callers_and_callees_follow_call_like_uses_and_prefer_files_that_import_the_definition() {
+    let tmp = tempfile::tempdir().unwrap();
+    let g = genius(tmp.path());
+    let pid = seed(&g, "Shop");
+    let ws = g.workspace(&pid).unwrap();
+    // an unrelated file that happens to use the same name without importing the definition
+    ws.write_text("src/other.ts", "export function report() { return formatPrice(9); }\n").unwrap();
+    let a = g.brain_ask_with(&pid, "", &[], Some("formatPrice"), &all).await.unwrap();
+    let c = a.callers.as_ref().unwrap();
+    assert_eq!(c.definitions.len(), 1);
+    assert_eq!((c.definitions[0].path.as_str(), c.definitions[0].line), ("src/lib/price.ts", 1));
+    let by_path: Vec<(&str, bool)> = c.callers.iter().map(|x| (x.path.as_str(), x.imports_definition)).collect();
+    assert_eq!(by_path[0], ("src/App.tsx", true), "the importer comes first: {by_path:?}");
+    assert!(by_path.contains(&("src/other.ts", false)), "{by_path:?}");
+    assert!(!by_path.iter().any(|(p, _)| *p == "src/lib/price.ts"), "the defining file is not its own caller");
+    let text = a.render(4000);
+    assert!(text.contains("defined as function at src/lib/price.ts:1") && text.contains("src/App.tsx (imports the definition)") && text.contains("src/other.ts (same name only)"), "{text}");
+    // a scoped agent sees only what its scope allows
+    let only_lib = |p: &str| p.starts_with("src/lib/");
+    let scoped = g.brain_ask_with(&pid, "", &[], Some("formatPrice"), &only_lib).await.unwrap();
+    let visible: Vec<String> = scoped.callers.unwrap().callers.into_iter().map(|c| c.path).collect();
+    assert_eq!(visible, vec!["src/lib/price.test.ts".to_string()], "only callers inside the scope are visible");
+    // what a file calls
+    let (ix, _) = g.brain_refresh(&pid).unwrap();
+    let out = genius_core::brain::callees(&ix, "src/App.tsx", 20);
+    assert!(out.contains(&("formatPrice".to_string(), "src/lib/price.ts".to_string())), "{out:?}");
+    // the tool accepts "callers" alone
+    assert!(genius_core::toolcall::validate("project_brain", &json!({ "callers": "formatPrice" }), false).is_ok());
+    assert!(genius_core::toolcall::validate("project_brain", &json!({}), false).is_err());
+}

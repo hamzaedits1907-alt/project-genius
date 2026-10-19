@@ -23,6 +23,7 @@ export interface Settings {
   autoCheckUpdates: boolean;
   internetAccess: boolean;
   assistantName: string;
+  productCreator: string;
   provider: ProviderId;
   limits: TaskLimits;
 }
@@ -52,6 +53,8 @@ export interface ProviderCapabilities {
   modelListing: boolean;
   imageInput: string;
   autoRouting: boolean;
+  /** How Auto picks a model: tuned (NVIDIA), by-family (OpenAI, Anthropic, Gemini) or manual-only (custom endpoint). */
+  autoSelection?: 'tuned' | 'by-family' | 'manual-only';
   toolProtocol: string;
   /** "live": run against the real API; "contract-tests": adapter tested against a stand-in only. */
   verification: 'live' | 'contract-tests';
@@ -868,6 +871,11 @@ export interface MissionTask {
   startedAt: string | null;
   endedAt: string | null;
   usage: { tokens: number; calls: number };
+  /** Files the task changed in its isolated copy (reported by the runtime). */
+  changedPaths?: string[];
+  /** The acceptance check of the task: whether the result meets what the goal asked for, with the evidence given. */
+  acceptance?: { checked: boolean; met: boolean; verdict?: string; unmet?: string[]; evidence?: string };
+  attempts?: number;
 }
 
 export type MissionStatus = 'planning' | 'ready' | 'running' | 'paused' | 'integrating' | 'verifying' | 'completed' | 'failed' | 'cancelled';

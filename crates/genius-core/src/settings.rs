@@ -96,6 +96,9 @@ pub struct Settings {
     pub internet_access: bool,
     /// Display name of the assistant.
     pub assistant_name: String,
+    /// Who created the Project Genius product (what the assistant says when asked who built it).
+    /// This is about the product, never about the person using it.
+    pub product_creator: String,
     /// Which provider API the saved key belongs to: "nvidia" | "openai" | "anthropic" | "gemini" |
     /// "custom" (any OpenAI-compatible endpoint at `base_url`). See `provider.rs`.
     pub provider: String,
@@ -125,6 +128,7 @@ impl Default for Settings {
             auto_check_updates: true,
             internet_access: true,
             assistant_name: "Genius".into(),
+            product_creator: "Hamza".into(),
             provider: "nvidia".into(),
             limits: crate::budget::TaskLimits::default(),
         }
@@ -176,6 +180,9 @@ impl Settings {
             return Err(GeniusError::Validation("unknown provider".into()));
         }
         self.limits.validate().map_err(GeniusError::Validation)?;
+        if self.product_creator.trim().chars().count() > 80 {
+            return Err(GeniusError::Validation("product creator must be at most 80 characters".into()));
+        }
         let name_len = self.assistant_name.trim().chars().count();
         if !(1..=40).contains(&name_len) {
             return Err(GeniusError::Validation("assistant name must be 1 to 40 characters".into()));

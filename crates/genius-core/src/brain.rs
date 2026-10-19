@@ -23,7 +23,7 @@ use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 use std::sync::LazyLock;
 
-pub const INDEX_VERSION: u32 = 1;
+pub const INDEX_VERSION: u32 = 2;
 const MAX_SOURCE_FILES: usize = 3000;
 const MAX_FILE_BYTES: u64 = 400_000;
 const MAX_SYMBOLS_PER_FILE: usize = 60;
@@ -54,6 +54,9 @@ pub struct FileNode {
     pub external: Vec<String>,
     /// Relative imports that matched no project file.
     pub unresolved: Vec<String>,
+    /// Names the file calls or instantiates (call-like patterns; see [`callers`]).
+    #[serde(default)]
+    pub calls: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -136,6 +139,7 @@ struct Parsed {
     /// Raw import specifiers to resolve.
     specs: Vec<String>,
     lines: usize,
+    calls: Vec<String>,
 }
 
 fn parse_source(lang: &str, path: &str, text: &str) -> Parsed {
@@ -196,7 +200,7 @@ fn parse_source(lang: &str, path: &str, text: &str) -> Parsed {
     let _ = path;
     specs.sort();
     specs.dedup();
-    Parsed { symbols, specs, lines: text.lines().count() }
+    Parsed { symbols, specs, lines: text.lines().count(), calls: call_names(lang, text) }
 }
 
 /// Normalise `a/b/../c` → `a/c`; `None` when the path climbs out of the project.
@@ -378,7 +382,7 @@ pub fn build(ws: &Workspace, previous: Option<&BrainIndex>) -> crate::error::Res
             continue;
         };
         let parsed = parse_source(lang, &f.path, &text);
-        raw.insert(f.path.clone(), (FileNode { lang: lang.into(), size: f.size, fp, lines: parsed.lines, is_test: is_test_path(&f.path), symbols: parsed.symbols, imports: vec![], external: vec![], unresolved: vec![] }, parsed.specs, false));
+        raw.insert(f.path.clone(), (FileNode { lang: lang.into(), size: f.size, fp, lines: parsed.lines, is_test: is_test_path(&f.path), symbols: parsed.symbols, imports: vec![], external: vec![], unresolved: vec![], calls: parsed.calls }, parsed.specs, false));
         stats.scanned += 1;
     }
     stats.removed = prev.map(|p| p.files.keys().filter(|k| !raw.contains_key(*k)).count()).unwrap_or(0);
@@ -436,6 +440,123 @@ pub fn build(ws: &Workspace, previous: Option<&BrainIndex>) -> crate::error::Res
     }
     manifests.sort_by(|a, b| a.path.cmp(&b.path));
     Ok((BrainIndex { version: INDEX_VERSION, indexed_at: chrono::Utc::now().to_rfc3339(), files, manifests, skipped, truncated }, stats))
+}
+
+// ------------------------------------------------------------------------------------ call relations
+
+/// Identifiers that look like calls: `name(`, `new Name`, JSX `<Name`, Rust `Type::func(`. Language
+/// keywords and very short names are dropped. This is a text pattern, not name resolution.
+fn call_names(lang: &str, text: &str) -> Vec<String> {
+    static CALL: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"([A-Za-z_$][\w$]*)\s*(?:::<[^>]*>)?\(").unwrap());
+    static NEW: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\bnew\s+([A-Z][\w$]*)").unwrap());
+    static JSX: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"<([A-Z][\w$]*)[\s/>]").unwrap());
+    static RS_PATH: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\b([A-Z]\w*)::\w+").unwrap());
+    const KEYWORDS: &[&str] = &[
+        "if", "for", "while", "switch", "catch", "function", "return", "typeof", "await", "async", "else", "match", "fn", "def", "class", "super", "self", "Some", "None", "Ok", "Err", "Box", "Vec", "String", "Option", "Result", "assert", "assert_eq", "println", "format", "vec", "print", "len", "str", "int", "map", "filter", "push", "from", "into", "unwrap", "clone", "join", "get", "set", "has", "new", "require", "import", "export", "constructor", "lambda", "with", "range", "enumerate", "isinstance", "useState", "useEffect", "useMemo", "useRef", "useCallback",
+    ];
+    let mut seen: BTreeSet<String> = BTreeSet::new();
+    let mut add = |n: &str| {
+        if n.len() >= 3 && !KEYWORDS.contains(&n) && seen.len() < 400 {
+            seen.insert(n.to_string());
+        }
+    };
+    for l in text.lines() {
+        for c in CALL.captures_iter(l) {
+            let at = c.get(0).map_or(0, |m| m.start());
+            let before = l[..at].trim_end();
+            // `fn name(`, `def name(`, `function name(`, `class Name(` declare the name; they are not calls
+            if ["fn", "def", "function", "class"].iter().any(|k| before.ends_with(k) && before.len() >= k.len() && before[..before.len() - k.len()].chars().last().is_none_or(|ch| !ch.is_alphanumeric() && ch != '_')) {
+                continue;
+            }
+            add(&c[1]);
+        }
+        if matches!(lang, "typescript" | "javascript") {
+            for c in NEW.captures_iter(l) {
+                add(&c[1]);
+            }
+            for c in JSX.captures_iter(l) {
+                add(&c[1]);
+            }
+        }
+        if lang == "rust" {
+            for c in RS_PATH.captures_iter(l) {
+                add(&c[1]);
+            }
+        }
+    }
+    seen.into_iter().collect()
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct Definition {
+    pub path: String,
+    pub kind: String,
+    pub line: usize,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct Caller {
+    pub path: String,
+    /// The calling file imports the file that defines the symbol (so the match is likely the same symbol).
+    pub imports_definition: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Default, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct CallInfo {
+    pub symbol: String,
+    pub definitions: Vec<Definition>,
+    pub callers: Vec<Caller>,
+    /// The name is defined in more than one file, so name matches may belong to another symbol.
+    pub ambiguous: bool,
+    pub truncated: bool,
+    pub note: &'static str,
+}
+
+pub const CALL_NOTE: &str = "Callers are files whose text contains a call-like use of the name (a pattern scan, not name resolution): those that import the defining file are likely real, the others only share the name.";
+
+/// Where `symbol` is defined and which scanned files use it.
+pub fn callers(ix: &BrainIndex, symbol: &str, limit: usize) -> CallInfo {
+    let symbol = symbol.trim();
+    let definitions: Vec<Definition> = ix.files.iter().flat_map(|(p, n)| n.symbols.iter().filter(|s| s.name == symbol).map(|s| Definition { path: p.clone(), kind: s.kind.clone(), line: s.line })).collect();
+    let def_files: HashSet<&str> = definitions.iter().map(|d| d.path.as_str()).collect();
+    let mut found: Vec<Caller> = ix
+        .files
+        .iter()
+        .filter(|(p, n)| !def_files.contains(p.as_str()) && n.calls.iter().any(|c| c == symbol))
+        .map(|(p, n)| Caller { path: p.clone(), imports_definition: n.imports.iter().any(|i| def_files.contains(i.as_str())) })
+        .collect();
+    found.sort_by(|a, b| b.imports_definition.cmp(&a.imports_definition).then(a.path.cmp(&b.path)));
+    let truncated = found.len() > limit;
+    found.truncate(limit);
+    CallInfo { symbol: symbol.to_string(), ambiguous: def_files.len() > 1, definitions, callers: found, truncated, note: CALL_NOTE }
+}
+
+/// Symbols defined elsewhere in the project that `path` calls: `(name, defining file)`. Definitions in
+/// files it imports win over same-named ones elsewhere.
+pub fn callees(ix: &BrainIndex, path: &str, limit: usize) -> Vec<(String, String)> {
+    let Some(node) = ix.files.get(path) else { return vec![] };
+    let mut defs: HashMap<&str, Vec<&str>> = HashMap::new();
+    for (p, n) in &ix.files {
+        if p != path {
+            for s in n.symbols.iter().filter(|s| matches!(s.kind.as_str(), "function" | "class" | "component" | "struct" | "impl" | "const")) {
+                defs.entry(s.name.as_str()).or_default().push(p.as_str());
+            }
+        }
+    }
+    let mut out = Vec::new();
+    for c in &node.calls {
+        let Some(files) = defs.get(c.as_str()) else { continue };
+        if let Some(f) = files.iter().find(|f| node.imports.iter().any(|i| i == **f)).or_else(|| (files.len() == 1).then(|| &files[0])) {
+            out.push((c.clone(), f.to_string()));
+        }
+        if out.len() >= limit {
+            break;
+        }
+    }
+    out
 }
 
 // ------------------------------------------------------------------------------------- queries

@@ -8,6 +8,7 @@ import { runtimeOf, useAgents, type AgentsTab } from '../../store/agents';
 import { useApp } from '../../store/app';
 import { Badge, Button, Callout, Modal } from '../../components/ui';
 import AgentCreator from './AgentCreator';
+import AgentMode from './AgentMode';
 import AgentWorkspace from './AgentWorkspace';
 import AgentsGlance from './AgentsGlance';
 import MissionControl from './MissionControl';
@@ -149,6 +150,7 @@ export default function AgentsView({ initialTab }: { initialTab?: AgentsTab }) {
   const edit = (a: CustomAgent) => setCreator(a);
   const duplicate = (a: CustomAgent) => setCreator(duplicateAgent(a));
   const tabs: { key: AgentsTab; label: string }[] = [
+    { key: 'run', label: 'Agent Mode' },
     { key: 'agents', label: 'Agents' },
     { key: 'missions', label: 'Mission Control' },
     { key: 'teams', label: 'Teams' },
@@ -172,11 +174,12 @@ export default function AgentsView({ initialTab }: { initialTab?: AgentsTab }) {
         <Badge tone="accent"><Sparkles size={11} /> {advanced ? 'Advanced' : 'Simple'}</Badge>
       </div>
       <div className="ag-body" role="tabpanel" id="ag-panel" aria-labelledby={`ag-tab-${tab}`}>
-        {loaded && loadError && tab !== 'agents' && (
+        {loaded && loadError && tab !== 'agents' && tab !== 'run' && (
           <div style={{ padding: '10px 16px' }}>
             <Callout tone="bad" title="Some data could not be loaded">{loadError}</Callout>
           </div>
         )}
+        {tab === 'run' && <AgentMode />}
         {tab === 'agents' &&
           (advanced ? (
             <AgentWorkspace advanced onCreate={() => setChoosing(true)} onEdit={edit} onDuplicate={duplicate} />

@@ -92,6 +92,26 @@ const NOVER: (&str, f32) = ("", 0.0);
 
 /// First match wins, so specific entries come before generic ones.
 const FAMILIES: &[Family] = &[
+    // --- Anthropic Claude (native Messages API; every current model reads images)
+    fam(&["claude", "fable"], &[], NOVER, 98.0, 40.0, VISION | REASONING | CODER),
+    fam(&["claude", "opus"], &[], NOVER, 95.0, 45.0, VISION | REASONING | CODER),
+    fam(&["claude", "sonnet"], &[], NOVER, 90.0, 70.0, VISION | REASONING | CODER),
+    fam(&["claude", "haiku"], &[], NOVER, 76.0, 92.0, VISION | CODER),
+    // --- Google Gemini
+    fam(&["gemini", "flash-lite"], &[], NOVER, 70.0, 96.0, VISION),
+    fam(&["gemini", "flash"], &[], NOVER, 82.0, 85.0, VISION | REASONING),
+    fam(&["gemini", "pro"], &[], NOVER, 93.0, 45.0, VISION | REASONING | CODER),
+    // --- OpenAI
+    fam(&["gpt-5", "nano"], &[], NOVER, 70.0, 96.0, VISION),
+    fam(&["gpt-5", "mini"], &[], NOVER, 84.0, 82.0, VISION | REASONING),
+    fam(&["gpt-5"], &["chat"], NOVER, 95.0, 50.0, VISION | REASONING | CODER),
+    fam(&["gpt-4.1", "nano"], &[], NOVER, 62.0, 96.0, VISION),
+    fam(&["gpt-4.1", "mini"], &[], NOVER, 76.0, 88.0, VISION),
+    fam(&["gpt-4.1"], &[], NOVER, 88.0, 70.0, VISION | CODER),
+    fam(&["gpt-4o", "mini"], &[], NOVER, 66.0, 92.0, VISION),
+    fam(&["gpt-4o"], &[], NOVER, 80.0, 75.0, VISION),
+    fam(&["o4-mini"], &[], NOVER, 82.0, 60.0, VISION | REASONING),
+    fam(&["o3"], &["mini"], NOVER, 90.0, 30.0, VISION | REASONING),
     // --- vision-capable
     fam(&["nemotron", "vl"], &[], NOVER, 78.0, 85.0, VISION | REASONING),
     fam(&["qwen", "vl"], &[], ("/qwen", 2.5), 82.0, 55.0, VISION),
@@ -154,7 +174,7 @@ fn family(id: &str) -> Option<&'static Family> {
 /// Never route to non-chat models (embeddings, rerankers, guards, speech, OCR, base models).
 fn routable(m: &ModelInfo) -> bool {
     let l = m.id.to_lowercase();
-    matches!(infer_category(&m.id), "chat" | "code") && !["reward", "-base", "nemoguard", "translate"].iter().any(|x| l.contains(x))
+    matches!(infer_category(&m.id), "chat" | "code") && !["reward", "-base", "nemoguard", "translate", "dall-e", "gpt-image", "moderation", "realtime", "audio", "transcribe", "imagen", "veo-", "-live", "computer-use", "search-preview", "robotics", "aqa"].iter().any(|x| l.contains(x))
 }
 
 /// Known vision-capable model (by id pattern; a vision probe can confirm or refute it).
@@ -503,8 +523,11 @@ impl Genius {
 
     /// Fallback chain from a given model list (see [`resolve_models`](Self::resolve_models)).
     fn chain_for(&self, s: &Settings, models: &[ModelInfo], role: ModelRole, effort: Effort, request_chars: usize) -> Result<Vec<String>> {
-        if !crate::provider::ProviderKind::from_id_or_default(&s.provider).capabilities().auto_routing {
-            // Auto routing knows NVIDIA model families only. Every other provider runs the model the user chose.
+        let kind = crate::provider::ProviderKind::from_id_or_default(&s.provider);
+        // OpenAI, Anthropic and Gemini choose among the models their /models listing returns, by family.
+        let generic_auto = s.is_auto() && matches!(kind, crate::provider::ProviderKind::OpenAi | crate::provider::ProviderKind::Anthropic | crate::provider::ProviderKind::Gemini);
+        if !kind.capabilities().auto_routing && !generic_auto {
+            // Custom endpoints run the model the user chose (their model names are unknowable).
             let m = s.model.clone().filter(|m| !m.trim().is_empty()).ok_or(ProviderError::NoModel)?;
             if role == ModelRole::Vision && !self.is_vision_capable(&m) {
                 return Ok(vec![]);
@@ -650,6 +673,27 @@ impl Genius {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn listed(ids: &[&str]) -> Vec<ModelInfo> {
+        models(ids)
+    }
+
+    #[test]
+    fn native_providers_are_ranked_by_family_and_never_pick_non_chat_models() {
+        let none = HashSet::new();
+        let claude = listed(&["claude-haiku-5-5", "claude-opus-5-5", "claude-sonnet-5-5", "claude-fable-5-1"]);
+        assert_eq!(rank(&claude, ModelRole::Agent, Effort::Max, &none, &Observed::default())[0], "claude-fable-5-1", "quality leads at Max");
+        assert_eq!(rank(&claude, ModelRole::Chat, Effort::Fast, &none, &Observed::default())[0], "claude-haiku-5-5", "speed leads for quick chat");
+        let openai = listed(&["text-embedding-3-large", "dall-e-3", "gpt-image-1", "gpt-4o-mini", "gpt-5", "gpt-5-mini", "omni-moderation-latest", "gpt-4o-realtime-preview", "tts-1", "whisper-1"]);
+        let picked = rank(&openai, ModelRole::Agent, Effort::Max, &none, &Observed::default());
+        assert_eq!(picked[0], "gpt-5");
+        for bad in ["text-embedding-3-large", "dall-e-3", "gpt-image-1", "omni-moderation-latest", "gpt-4o-realtime-preview", "tts-1", "whisper-1"] {
+            assert!(!picked.contains(&bad.to_string()), "{bad} is not a chat model");
+        }
+        let gemini = listed(&["models/gemini-2.5-flash-lite", "models/gemini-2.5-pro", "models/gemini-2.5-flash", "models/gemini-embedding-001"]);
+        assert_eq!(rank(&gemini, ModelRole::Agent, Effort::Max, &none, &Observed::default())[0], "models/gemini-2.5-pro");
+        assert_eq!(rank(&gemini, ModelRole::Vision, Effort::Fast, &none, &Observed::default()).len(), 3, "all Gemini chat models read images");
+    }
 
     /// Ids from the build.nvidia.com catalog (plus non-chat models that must never be picked).
     const CATALOG: &[&str] = &[

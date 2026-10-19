@@ -1,13 +1,19 @@
 import { useEffect, useState } from 'react';
 import { BadgeCheck, ShieldAlert } from 'lucide-react';
-import { openUrl } from '@tauri-apps/plugin-opener';
+import { openExternal } from '../../lib/platform';
 import type { ResearchSource } from '../../lib/types';
 
 /** The sources ledger of a research conversation: only pages that were really fetched. */
 export function SourcesPanel({ sources }: { sources: ResearchSource[] }) {
   const [hl, setHl] = useState<number | null>(null);
   useEffect(() => {
-    const on = (e: Event) => setHl(Number((e as CustomEvent).detail));
+    const on = (e: Event) => {
+      const d = (e as CustomEvent<{ n: number; handled: boolean } | number>).detail;
+      const n = typeof d === 'number' ? d : d.n;
+      if (typeof d === 'object') d.handled = true; // a panel is showing: the page does not need to open
+      setHl(n);
+      document.getElementById(`ledger-${n}`)?.scrollIntoView?.({ block: 'nearest', behavior: 'smooth' });
+    };
     window.addEventListener('genius-cite', on);
     return () => window.removeEventListener('genius-cite', on);
   }, []);
@@ -28,7 +34,7 @@ export function SourcesPanel({ sources }: { sources: ResearchSource[] }) {
                   title={s.url}
                   onClick={(e) => {
                     e.preventDefault();
-                    void openUrl(s.url).catch(() => window.open(s.url, '_blank', 'noopener'));
+                    void openExternal(s.url);
                   }}
                 >
                   {s.title || s.url}

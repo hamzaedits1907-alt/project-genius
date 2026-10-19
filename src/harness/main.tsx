@@ -7,6 +7,7 @@ import { createRoot } from 'react-dom/client';
 import App from '../App';
 import '../styles/global.css';
 import '../styles/chat.css';
+import '../styles/genius.css';
 import { installIpc, settings, type Handler } from '../test/ipc';
 import { useApp } from '../store/app';
 import { useChat } from '../store/chat';

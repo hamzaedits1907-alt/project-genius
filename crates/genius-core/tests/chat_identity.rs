@@ -352,3 +352,34 @@ Paris,\"1,000\"
     let (_, msgs) = send(g, &other.row.id, "Total and average sales, and 19% of the total?", &[]).await;
     assert!(last_assistant(&msgs).content.contains("can't read that file"), "{}", last_assistant(&msgs).content);
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_product_creator_is_configured_and_never_confused_with_the_user() {
+    let env = setup(Some("meta/llama-3.3-70b-instruct"), &[], None, |_| "<final>Project Genius was created by Hamza.</final>".into()).await;
+    let g = &env.g;
+    let conv = g.create_chat_conversation("chat", None).unwrap();
+    let (status, _) = send(g, &conv.row.id, "Hi, I'm Sara. Who created you?", &[]).await;
+    assert_eq!(status, EventStatus::Completed);
+    let system = system_of(&env.log.lock().unwrap()[0]);
+    assert!(system.contains("Project Genius was created by Hamza"), "{system}");
+    assert!(system.contains("never assume the user is Hamza"), "the creator is not the user: {system}");
+    assert!(system.contains("do not say \"a team\""), "{system}");
+
+    // The creator is a setting, not a hard-coded string.
+    let mut s = g.settings().unwrap();
+    s.product_creator = "Ada".into();
+    g.save_settings(&s).unwrap();
+    send(g, &conv.row.id, "And who made Genius?", &[]).await;
+    let second = system_of(&env.log.lock().unwrap()[1]);
+    assert!(second.contains("created by Ada") && !second.contains("created by Hamza"), "{second}");
+
+    // The earlier turns are carried, so what was established (the user's name) is still in context.
+    let bodies = env.log.lock().unwrap().clone();
+    let all: String = bodies[1]["messages"].as_array().unwrap().iter().map(|m| m["content"].as_str().unwrap_or("").to_string()).collect::<Vec<_>>().join("\n");
+    assert!(all.contains("I'm Sara"), "follow-ups keep the conversation facts");
+    s.product_creator = String::new();
+    g.save_settings(&s).unwrap();
+    send(g, &conv.row.id, "Who built you?", &[]).await;
+    let third = system_of(&env.log.lock().unwrap()[2]);
+    assert!(third.contains("do not invent a team") && !third.contains("created by"), "{third}");
+}

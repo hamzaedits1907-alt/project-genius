@@ -265,6 +265,23 @@ pub fn normalize(name: &str, args: Value) -> (String, Value) {
                 o.insert("edits".into(), edits);
             }
         }
+        "fetch_url" => {
+            if let Some(Value::Array(a)) = o.get("url") {
+                if let Some(f) = a.iter().find_map(|v| v.as_str()).map(String::from) {
+                    o.insert("url".into(), Value::String(f));
+                }
+            }
+            if let Some(Value::String(u)) = o.get("url") {
+                let cleaned = clean_url(u);
+                o.insert("url".into(), Value::String(cleaned));
+            }
+        }
+        "web_search" => {
+            if let Some(Value::String(q)) = o.get("query") {
+                let trimmed = q.trim().trim_matches(|c| c == '"' || c == '\'').trim().to_string();
+                o.insert("query".into(), Value::String(trimmed));
+            }
+        }
         "read_file" => {
             if o.get("path").is_some_and(|p| p.is_array()) && !o.contains_key("paths") {
                 let p = o.remove("path").unwrap_or_default();
@@ -338,7 +355,8 @@ pub fn validate(name: &str, args: &Value, inline_files: bool) -> Result<(), ArgE
         "delete_file" | "git_diff" => first(&[("path", "")]),
         "search" | "web_search" | "search_references" => first(&[("query", "")]),
         "project_brain" => match (o.get("query"), o.get("impact")) {
-            (None, None) => Some(ArgError { code: "brain:empty".into(), message: "give \"query\" (what to find) and/or \"impact\" (a list of file paths)".into() }),
+            (None, None) if matches!(o.get("callers"), Some(Value::String(s)) if !s.trim().is_empty()) => None,
+            (None, None) => Some(ArgError { code: "brain:empty".into(), message: "give \"query\" (what to find), \"impact\" (a list of file paths) and/or \"callers\" (a symbol name)".into() }),
             (_, Some(v)) if !v.as_array().is_some_and(|a| a.iter().all(|p| p.is_string())) => Some(ArgError { code: "impact:type".into(), message: "\"impact\" must be a list of file path strings".into() }),
             (Some(Value::String(_)), _) | (None, _) => None,
             (Some(v), _) => Some(ArgError { code: "query:type".into(), message: format!("\"query\" must be a string, got {}", kind(v)) }),
@@ -407,7 +425,7 @@ pub fn example(name: &str) -> String {
         "add_dependency" => r#"{"packages": ["date-fns"]}"#,
         "todo" => r#"{"items": [{"text": "Build the layout", "status": "active"}, {"text": "Add charts", "status": "pending"}]}"#,
         "run_check" => r#"{"check": "typecheck"}"#,
-        "project_brain" => r#"{"query": "where is formatPrice defined", "impact": ["src/lib/format.ts"]}"#,
+        "project_brain" => r#"{"query": "where is formatPrice defined", "impact": ["src/lib/format.ts"], "callers": "formatPrice"}"#,
         "project_facts" | "list_files" | "git_status" | "recent_changes" | "memory" | "capabilities" | "runtime_info" | "preview_errors" | "last_run_output" => "{}",
         _ => return example("read_file"),
     };
@@ -438,6 +456,301 @@ pub fn guess_name(body: &str, known: &[&str]) -> Option<String> {
     let raw = RE.captures(body)?.get(1)?.as_str().to_string();
     let c = canonical_tool(&raw, known);
     known.contains(&c.as_str()).then_some(c)
+}
+
+// ----------------------------------------------------------------------------- tool-named tags
+
+/// Text with fenced code blocks and inline code blanked out (byte offsets preserved), so syntax shown
+/// *as an example* in an answer is never read as a call and never stripped.
+pub fn mask_code(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    let blank = |s: &str| s.chars().map(|c| if c == '\n' { "\n".to_string() } else { " ".repeat(c.len_utf8()) }).collect::<String>();
+    while let Some(i) = rest.find('`') {
+        out.push_str(&rest[..i]);
+        let after = &rest[i..];
+        let ticks = after.chars().take_while(|c| *c == '`').count();
+        let fence = "`".repeat(ticks);
+        match after[ticks..].find(&fence) {
+            Some(j) if ticks >= 3 || !after[ticks..ticks + j].contains('\n') => {
+                let end = ticks + j + ticks;
+                out.push_str(&blank(&after[..end]));
+                rest = &after[end..];
+            }
+            _ => {
+                out.push_str(&after[..ticks]);
+                rest = &after[ticks..];
+            }
+        }
+    }
+    out.push_str(rest);
+    out
+}
+
+/// A call written as an XML-ish tag that carries the tool's own name: `<web_search {"query": "x"}>`,
+/// `<web_search query="x"/>`, `<fetch_url>https://…</fetch_url>`, `<web_search>{"query": "x"}</web_search>`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct TagCall {
+    pub start: usize,
+    pub end: usize,
+    pub name: String,
+    /// `Err` when the arguments could not be read (the call is reported as malformed, never shown).
+    pub args: std::result::Result<Value, String>,
+}
+
+fn parse_attrs(head: &str) -> Option<Map<String, Value>> {
+    static ATTR: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| regex::Regex::new(r#"([A-Za-z_][\w-]*)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'>]+))"#).unwrap());
+    let mut o = Map::new();
+    let mut covered = 0usize;
+    for c in ATTR.captures_iter(head) {
+        let v = c.get(2).or_else(|| c.get(3)).or_else(|| c.get(4)).map_or("", |m| m.as_str());
+        covered += c.get(0).map_or(0, |m| m.as_str().len());
+        let value = match v {
+            "true" => Value::Bool(true),
+            "false" => Value::Bool(false),
+            n if !n.is_empty() && n.len() < 10 && n.chars().all(|ch| ch.is_ascii_digit()) => json!(n.parse::<u64>().unwrap_or(0)),
+            s => Value::String(s.to_string()),
+        };
+        o.insert(c[1].to_string(), value);
+    }
+    (!o.is_empty() && covered * 2 >= head.trim().len()).then_some(o)
+}
+
+/// Arguments from what stands between the tool name and the closing `>` of its tag.
+fn tag_args(head: &str, name: &str) -> Option<Value> {
+    let h = head.trim().trim_end_matches('/').trim();
+    if h.is_empty() {
+        return Some(json!({}));
+    }
+    if h.starts_with('{') || h.starts_with('[') {
+        let v = crate::agent::lenient_json(h).ok()?;
+        return if v.is_object() { Some(v) } else { PRIMARY.iter().find(|(t, _)| *t == name).map(|(_, k)| json!({ *k: v })) };
+    }
+    if let Some(o) = parse_attrs(h) {
+        return Some(Value::Object(o));
+    }
+    let primary = PRIMARY.iter().find(|(t, _)| *t == name).map(|(_, k)| *k)?;
+    let bare = h.trim_matches(|c| c == '"' || c == '\'');
+    (!bare.is_empty()).then(|| json!({ primary: bare }))
+}
+
+/// Length of the balanced JSON object/array that starts `s` (string- and escape-aware), if it closes.
+fn balanced_json_len(s: &str) -> Option<usize> {
+    let mut depth = 0usize;
+    let (mut in_str, mut esc) = (false, false);
+    for (i, c) in s.char_indices() {
+        if in_str {
+            if esc {
+                esc = false;
+            } else if c == '\\' {
+                esc = true;
+            } else if c == '"' {
+                in_str = false;
+            }
+            continue;
+        }
+        match c {
+            '"' => in_str = true,
+            '{' | '[' => depth += 1,
+            '}' | ']' => {
+                depth = depth.checked_sub(1)?;
+                if depth == 0 {
+                    return Some(i + c.len_utf8());
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+/// Tool-named tags in `masked` (a copy of the reply with code and file blocks blanked out). The tag name may
+/// be spelled loosely (`<websearch …>`, `<Web-Search …>`); a name made of one plain word (`<todo>`,
+/// `<search>`) counts only when JSON follows it, because such words are also ordinary HTML and prose.
+/// The arguments may be JSON with or without a closing `>` (`<web_search {"query": "x"}`), attributes,
+/// or the text between an opening and a closing tag.
+pub fn named_tag_calls(masked: &str, known: &[&str]) -> Vec<TagCall> {
+    static OPEN: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| regex::Regex::new(r"<([A-Za-z][A-Za-z0-9_-]*)").unwrap());
+    let mut out: Vec<TagCall> = Vec::new();
+    let mut from = 0;
+    while let Some(m) = OPEN.captures_at(masked, from) {
+        let whole = m.get(0).unwrap();
+        let start = whole.start();
+        let head_start = whole.end();
+        from = head_start;
+        let canon = canonical_tool(&m[1], known);
+        if !known.contains(&canon.as_str()) {
+            continue;
+        }
+        let rest = &masked[head_start..];
+        let lead = rest.len() - rest.trim_start().len();
+        let body = rest.trim_start();
+        let json_next = body.starts_with('{') || body.starts_with('[');
+        // `<todo>{…}</todo>`: the JSON comes after the closing '>'
+        let json_after_gt = body.strip_prefix('>').map(|b| b.trim_start()).is_some_and(|b| b.starts_with('{') || b.starts_with('['));
+        let plain_word = !canon.contains('_');
+        if plain_word && !(json_next || json_after_gt) {
+            continue;
+        }
+        if !rest.starts_with(|c: char| c.is_whitespace() || c == '>' || c == '/' || c == '{' || c == '[') && !rest.is_empty() {
+            continue; // `<web_searches…`, `<todo-list…`: a different word
+        }
+        // 1. JSON straight after the name, with or without a closing '>'
+        if json_next {
+            if let Some(len) = balanced_json_len(body) {
+                if let Some(args) = tag_args(&body[..len], &canon) {
+                    let mut end = head_start + lead + len;
+                    let tail = &masked[end..];
+                    let t = tail.trim_start();
+                    if let Some(after) = t.strip_prefix("/>").or_else(|| t.strip_prefix('>')) {
+                        end += tail.len() - after.len();
+                        let close = format!("</{}>", &m[1]);
+                        if let Some(c) = masked[end..].trim_start().strip_prefix(close.as_str()) {
+                            end = masked.len() - c.len();
+                        }
+                    }
+                    out.push(TagCall { start, end, name: canon, args: Ok(args) });
+                    from = end.max(start + 1);
+                    continue;
+                }
+            }
+        }
+        // 2. `<name>inner</name>` and attribute forms, up to the first '>' that makes the arguments readable
+        let gts: Vec<usize> = masked[head_start..].match_indices('>').map(|(i, _)| head_start + i).take(60).collect();
+        let found = gts.iter().find_map(|gt| tag_args(&masked[head_start..*gt], &canon).map(|a| (*gt, a)));
+        let (end, args) = match found {
+            Some((gt, mut args)) => {
+                let self_closing = masked[head_start..gt].trim_end().ends_with('/');
+                let mut end = gt + 1;
+                if !self_closing {
+                    let close = format!("</{}>", &m[1]);
+                    if let Some(c) = masked[end..].find(&close) {
+                        let inner = masked[end..end + c].trim();
+                        if !inner.is_empty() && args.as_object().is_some_and(|o| o.is_empty()) {
+                            match tag_args(inner, &canon) {
+                                Some(a) => args = a,
+                                None => {
+                                    let stop = end + c + close.len();
+                                    out.push(TagCall { start, end: stop, name: canon.clone(), args: Err(format!("the arguments of {canon} are not valid JSON")) });
+                                    from = stop;
+                                    continue;
+                                }
+                            }
+                        }
+                        end += c + close.len();
+                    }
+                }
+                (end, Ok(args))
+            }
+            None => {
+                // no readable arguments: swallow the tag up to the first '>' (or the rest of the line)
+                let end = gts.first().map(|g| g + 1).unwrap_or_else(|| masked[head_start..].find('\n').map_or(masked.len(), |n| head_start + n));
+                (end, Err(format!("the arguments of {canon} are not valid JSON")))
+            }
+        };
+        out.push(TagCall { start, end, name: canon, args });
+        from = end.max(start + 1);
+    }
+    out
+}
+
+/// The reply with every tool-named tag rewritten to the canonical `<tool>{…}</tool>` form (`None` when it has none).
+pub fn rewrite_named_tags(text: &str, masked: &str, known: &[&str]) -> Option<String> {
+    let calls = named_tag_calls(masked, known);
+    if calls.is_empty() {
+        return None;
+    }
+    let mut out = String::with_capacity(text.len());
+    let mut at = 0;
+    for c in calls {
+        out.push_str(&text[at..c.start]);
+        match &c.args {
+            Ok(args) => out.push_str(&format!("<tool>{}</tool>", json!({ "name": c.name, "args": args }))),
+            // an unreadable argument string is reported through the normal malformed-call path
+            Err(_) => out.push_str(&format!("<tool>{{\"name\": {}, \"arguments\": \"{{\"}}</tool>", Value::String(c.name.clone()))),
+        }
+        at = c.end;
+    }
+    out.push_str(&text[at..]);
+    Some(out)
+}
+
+static RESIDUE: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| regex::Regex::new(r"(?is)<\s*/?\s*(?:tool|tool_call|tool_result|function_call|function|invoke|parameter)\b").unwrap());
+
+/// Raw tool-call syntax left in a user-facing answer (outside code the user is meant to see).
+pub fn has_residue(text: &str, known: &[&str]) -> bool {
+    let masked = mask_code(text);
+    RESIDUE.is_match(&masked) || !named_tag_calls(&masked, known).is_empty()
+}
+
+/// An answer without protocol syntax: well-formed `<tool_result>` blocks and tool tags are removed, loose
+/// tags dropped. Code the answer shows on purpose (fences, inline code) is left alone.
+pub fn strip_residue(text: &str, known: &[&str]) -> String {
+    static BLOCK: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| regex::Regex::new(r"(?is)<\s*(tool_result|tool_call|tool|function_call|invoke)\b.*?<\s*/\s*(?:tool_result|tool_call|tool|function_call|invoke)\s*>").unwrap());
+    let masked = mask_code(text);
+    let mut spans: Vec<(usize, usize)> = named_tag_calls(&masked, known).into_iter().map(|c| (c.start, c.end)).collect();
+    spans.extend(BLOCK.find_iter(&masked).map(|m| (m.start(), m.end())));
+    spans.sort();
+    let mut out = String::new();
+    let mut at = 0;
+    for (s, e) in spans {
+        if s < at {
+            continue;
+        }
+        out.push_str(&text[at..s]);
+        at = e;
+    }
+    out.push_str(&text[at..]);
+    // loose open/close tags that remain
+    let masked_out = mask_code(&out);
+    let mut cleaned = String::new();
+    let mut last = 0;
+    for m in RESIDUE.find_iter(&masked_out) {
+        if m.start() < last {
+            continue;
+        }
+        let end = masked_out[m.end()..].find('>').map_or(masked_out.len(), |g| m.end() + g + 1);
+        cleaned.push_str(&out[last..m.start()]);
+        last = end;
+    }
+    cleaned.push_str(&out[last..]);
+    let collapsed = regex::Regex::new(r"\n{3,}").unwrap().replace_all(&cleaned, "\n\n").into_owned();
+    collapsed.trim().to_string()
+}
+
+/// A URL argument as the model may have written it: a Markdown link `[text](https://…)`, angle brackets,
+/// quotes, trailing punctuation, or a bare domain. Returns the plain URL (without checking it is safe:
+/// the fetcher does that).
+pub fn clean_url(raw: &str) -> String {
+    static MD: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| regex::Regex::new(r"^\[[^\]]*\]\(\s*<?([^)\s>]+)>?(?:\s+[^)]*)?\)").unwrap());
+    let mut t = raw.trim().trim_matches(|c| c == '"' || c == '\'' || c == '`').trim();
+    if let Some(c) = MD.captures(t) {
+        t = c.get(1).map_or(t, |m| m.as_str());
+    }
+    let t = t.trim_start_matches('<').trim_end_matches('>');
+    static EMBEDDED: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| regex::Regex::new(r#"https?://[^\s<>"']+"#).unwrap());
+    let mut t = match EMBEDDED.find(t) {
+        Some(m) if !t.starts_with("http") => m.as_str().to_string(),
+        _ => t.split_whitespace().next().unwrap_or("").to_string(),
+    };
+    // trailing sentence punctuation or an unbalanced ")" from "(see https://x.y/z)"
+    loop {
+        let strip = match t.chars().last() {
+            Some('.') | Some(',') | Some(';') | Some(':') | Some('!') | Some('?') | Some('"') | Some('\'') => true,
+            Some(')') => t.matches(')').count() > t.matches('(').count(),
+            _ => false,
+        };
+        if strip {
+            t.pop();
+        } else {
+            break;
+        }
+    }
+    let scheme_like = t.contains("://") || t.starts_with("mailto:") || t.starts_with("data:") || t.starts_with("javascript:");
+    if !t.is_empty() && !scheme_like && t.contains('.') && !t.starts_with('/') {
+        t = format!("https://{t}");
+    }
+    t
 }
 
 #[cfg(test)]
@@ -520,5 +833,84 @@ mod tests {
         assert_eq!(infer_tool(&json!({ "name": "Alice" })), None);
         assert_eq!(infer_tool(&json!({})), None);
         assert_eq!(guess_name(r#"{"name": "functions.write_files", "args": {"files": [oops"#, KNOWN).as_deref(), Some("write_files"));
+    }
+
+    const WEB: &[&str] = &["web_search", "fetch_url", "read_file", "todo"];
+
+    fn rewritten(text: &str) -> Option<String> {
+        rewrite_named_tags(text, &mask_code(text), WEB)
+    }
+
+    #[test]
+    fn tool_named_tags_become_canonical_calls() {
+        // the exact shape seen in the field
+        let r = rewritten(r#"Let me look. <web_search {"query": "lufthansa connect ptfs"}>"#).unwrap();
+        assert_eq!(r, r#"Let me look. <tool>{"name":"web_search","args":{"query":"lufthansa connect ptfs"}}</tool>"#);
+        // attribute form, self-closing, quoted URL containing '>' and '&'
+        let r = rewritten(r#"<fetch_url url="https://example.com/a?b=1&c=2"/>"#).unwrap();
+        assert!(r.contains(r#""url":"https://example.com/a?b=1&c=2""#), "{r}");
+        // inner text and inner JSON
+        assert!(rewritten("<web_search>rust async traits</web_search>").unwrap().contains(r#""query":"rust async traits""#));
+        assert!(rewritten(r#"<web_search>{"query": "a > b"}</web_search>"#).unwrap().contains(r#""query":"a > b""#));
+        // a '>' inside the JSON string does not end the tag early
+        assert!(rewritten(r#"<web_search {"query": "5 > 3 true?"}>"#).unwrap().contains(r#""query":"5 > 3 true?""#));
+        // a URL value with Markdown-looking text and unescaped quotes is still one call
+        let r = rewritten(r#"<fetch_url {"url": "[the site](https://lufthansa-connect-ptfs.netlify.app/)"}>"#).unwrap();
+        assert!(r.contains("lufthansa-connect-ptfs.netlify.app"), "{r}");
+        // examples shown in code are left alone, prose that merely mentions a tool is not a call
+        assert!(rewritten("Use `<web_search {\"query\": \"x\"}>` like this").is_none());
+        assert!(rewritten("```\n<web_search query=\"x\"/>\n```").is_none());
+        assert!(rewritten("The web_search tool is great.").is_none());
+        // unreadable arguments become a malformed call, never text
+        let r = rewritten(r#"<web_search {"query": }>"#).unwrap();
+        assert!(r.contains("\"arguments\""), "{r}");
+    }
+
+    #[test]
+    fn dialects_seen_in_research_are_calls_not_text() {
+        // exactly what a research answer showed: no underscore, no closing '>', several calls on one line, a <todo> block
+        let text = "I'll research.\n\n<todo>\n{\"items\": [{\"text\": \"Search\", \"status\": \"active\"}]}\n</todo>\n\n<websearch {\"query\": \"quantum physics definition\"} <websearch {\"query\": \"quantum mechanics textbook\"}\n<web_search {\"query\": \"quantum site:.edu OR site:.gov\"}";
+        let r = rewritten(text).unwrap();
+        assert_eq!(r.matches("<tool>").count(), 4, "{r}");
+        assert!(r.contains(r#""name":"todo","args":{"items""#) && r.contains(r#""name":"web_search","args":{"query":"quantum physics definition"}"#) && r.contains("quantum mechanics textbook") && r.contains("site:.edu OR site:.gov"), "{r}");
+        assert!(!r.contains("<websearch") && !r.contains("<todo>"), "{r}");
+        // plain words are ordinary prose/HTML unless JSON follows
+        assert!(rewritten("Use the <todo> list and <search> element in HTML.").is_none());
+        assert!(rewritten("<todo>buy milk</todo>").is_none());
+        // a different word that merely starts with a tool name
+        assert!(rewritten(r#"<web_searches {"query": "x"}>"#).is_none());
+        // loose spellings
+        assert!(rewritten(r#"<Web-Search {"query": "x"}>"#).unwrap().contains(r#""name":"web_search""#));
+        // residue detection and removal cover these too
+        assert!(has_residue(text, WEB));
+        assert_eq!(strip_residue("Hello <websearch {\"query\": \"x\"} there", WEB), "Hello  there");
+    }
+
+    #[test]
+    fn leftover_syntax_is_detected_and_removed() {
+        assert!(has_residue("Result: <tool_result name=\"x\">hi</tool_result>", WEB));
+        assert!(has_residue("Searching <web_search query=\"x\"> now", WEB));
+        assert!(!has_residue("Use `<tool>` blocks; also ```\n<tool>{}</tool>\n``` is shown code", WEB));
+        let cleaned = strip_residue("Here you go.\n<tool_result name=\"web_search\" ok=\"true\">secret data</tool_result>\nDone <web_search {\"query\": \"x\"}>", WEB);
+        assert_eq!(cleaned, "Here you go.\n\nDone");
+        assert_eq!(strip_residue("plain `<tool>` example", WEB), "plain `<tool>` example");
+    }
+
+    #[test]
+    fn urls_are_cleaned_before_fetching() {
+        assert_eq!(clean_url("https://a.example/x"), "https://a.example/x");
+        assert_eq!(clean_url("[docs](https://a.example/x)"), "https://a.example/x");
+        assert_eq!(clean_url("<https://a.example/x>"), "https://a.example/x");
+        assert_eq!(clean_url("\"https://a.example/x\"."), "https://a.example/x");
+        assert_eq!(clean_url("(see https://a.example/x)"), "https://a.example/x");
+        assert_eq!(clean_url("https://en.wikipedia.org/wiki/Rust_(programming_language)"), "https://en.wikipedia.org/wiki/Rust_(programming_language)");
+        assert_eq!(clean_url("a.example/page"), "https://a.example/page");
+        assert_eq!(clean_url("file:///etc/passwd"), "file:///etc/passwd", "unsafe schemes are not rewritten; the fetcher refuses them");
+        let (_, a) = normalize("fetch_url", json!({ "link": "[x](https://a.example/y)" }));
+        assert_eq!(a, json!({ "url": "https://a.example/y" }));
+        let (_, a) = normalize("fetch_url", json!({ "url": ["https://a.example/1", "https://a.example/2"] }));
+        assert_eq!(a, json!({ "url": "https://a.example/1" }));
+        let (_, a) = normalize("web_search", json!("\"cats\""));
+        assert_eq!(a, json!({ "query": "cats" }));
     }
 }

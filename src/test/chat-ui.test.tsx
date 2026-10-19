@@ -37,7 +37,7 @@ describe('sidebar navigation', () => {
     await flush();
     useChat.setState({ messages: [msg('m', 'user', 'keep me')] });
     const nav = screen.getByRole('navigation', { name: 'Workspaces' });
-    expect(within(nav).getAllByRole('button').map((b) => b.textContent)).toEqual(['Chat', 'Research', 'Code', 'Agents']);
+    expect(within(nav).getAllByRole('button').map((b) => b.textContent)).toEqual(['Chat', 'Research', 'Code', 'Agents', 'Projects']);
     expect(within(nav).getByRole('button', { name: 'Chat' }).getAttribute('aria-current')).toBe('page');
     fireEvent.click(within(nav).getByRole('button', { name: 'Research' }));
     expect(useApp.getState().route.name).toBe('research');

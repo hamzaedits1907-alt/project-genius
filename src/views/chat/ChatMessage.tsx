@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { openUrl } from '@tauri-apps/plugin-opener';
+import { openExternal } from '../../lib/platform';
 import { AlertTriangle, Check, ChevronDown, Copy, FileText, Globe2, ImageIcon, Pencil, RotateCcw, Undo2 } from 'lucide-react';
 import { api } from '../../lib/api';
 import { answerDetails, webSourcesOf } from '../../lib/chat';
@@ -7,7 +7,7 @@ import { clockTime } from '../../lib/logic';
 import { askOf, texts } from '../../lib/agent';
 import type { AgentReport, MessageRow } from '../../lib/types';
 import { Button, Modal } from '../../components/ui';
-import { Markdown } from '../../components/Markdown';
+import { Markdown, type CiteSource } from '../../components/Markdown';
 import { GeniusAvatar } from '../../components/GeniusAvatar';
 import type { MessageActions } from '../workspace/assistant/Message';
 
@@ -65,7 +65,7 @@ function Sources({ report }: { report: AgentReport | undefined }) {
           title={s.url}
           onClick={(e) => {
             e.preventDefault();
-            void openUrl(s.url).catch(() => window.open(s.url, '_blank', 'noopener'));
+            void openExternal(s.url);
           }}
         >
           {s.host}
@@ -75,7 +75,7 @@ function Sources({ report }: { report: AgentReport | undefined }) {
   );
 }
 
-export function ChatMessage({ m, name, isLast, busy, workspaceId, actions, prevUser, onAnswer }: { m: MessageRow; name: string; isLast: boolean; busy: boolean; workspaceId: string | null; actions: MessageActions; prevUser?: MessageRow; onAnswer: (text: string) => void }) {
+export function ChatMessage({ m, name, isLast, busy, workspaceId, actions, prevUser, onAnswer, sources }: { sources?: CiteSource[]; m: MessageRow; name: string; isLast: boolean; busy: boolean; workspaceId: string | null; actions: MessageActions; prevUser?: MessageRow; onAnswer: (text: string) => void }) {
   const meta = (m.meta ?? {}) as Record<string, unknown>;
   const atts = (meta.attachments as Att[] | undefined) ?? [];
   const report = meta.report as AgentReport | undefined;
@@ -168,7 +168,7 @@ export function ChatMessage({ m, name, isLast, busy, workspaceId, actions, prevU
             </div>
           </div>
         ) : (
-          <Markdown text={m.content} />
+          <Markdown text={m.content} sources={sources} />
         )}
         {ask && isLast && !busy && (
           <div className="gx-ask">
