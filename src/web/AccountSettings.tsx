@@ -4,7 +4,9 @@
 import { useState } from 'react';
 import { Check, X } from 'lucide-react';
 import { isWeb } from '../lib/platform';
+import { extraViews } from '../lib/extraViews';
 import AuthScreen from './AuthScreen';
+import KeyVaultCard from './KeyVaultCard';
 import { accountConfigSource, clearAccountConfig, saveAccountConfig, sb, supabaseConfigured, useAuth, type Limits } from './auth';
 
 const LIMIT_LABELS: [keyof Limits, string][] = [
@@ -93,6 +95,8 @@ export default function AccountSettings() {
           ))}
         </ul>
       </div>
+      <KeyVaultCard />
+      {extraViews.sync && (() => { const S = extraViews.sync; return <S />; })()}
       {limits && (
         <div className="card pad col" style={{ gap: 6, marginTop: 12 }}>
           <b>Your Genius limits</b>
@@ -118,8 +122,8 @@ export default function AccountSettings() {
       <div className="card pad col" style={{ gap: 6, marginTop: 12 }}>
         <b>Privacy</b>
         <ul className="small muted" style={{ margin: 0, paddingLeft: 18 }}>
-          <li>Your account stores your profile, plan and (in Genius Web) your conversations, visible only to you (enforced by the database).</li>
-          <li>Your AI provider key is never saved to your account or any Genius database and never synced between devices. {isWeb ? 'In this browser you choose in Settings → AI provider whether it is remembered on this device (encrypted) or kept only until the tab closes.' : 'On this computer it is kept in the operating system credential store.'}</li>
+          <li>Your account stores your profile, plan and your Chat and Research conversations (synced between Genius Desktop, Genius Web and the mobile apps), visible only to you (enforced by the database).</li>
+          <li>Your AI provider keys are saved in your account only if you create the key vault, and then only as ciphertext that is encrypted on your device with a passphrase nobody else has: the database and the site owner cannot read them. Without a vault they stay on this device. {isWeb ? 'In this browser you choose in Settings → AI provider whether a key is remembered on this device (encrypted) or kept only until the tab closes.' : 'On this computer they are kept in the operating system credential store.'}</li>
           <li>Prompts go from {isWeb ? 'your browser' : 'this app'} to the provider you chose{isWeb ? '; NVIDIA and custom endpoints go through the Genius relay, which forwards them and stores nothing' : ''}.</li>
         </ul>
       </div>

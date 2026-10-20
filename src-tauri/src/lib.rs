@@ -233,6 +233,16 @@ pub fn run() {
             commands::retry_mission_task,
             commands::approve_mission_task,
             commands::rewind_conversation,
+            commands::api_key_for,
+            commands::save_api_key_for,
+            commands::remove_api_key_for,
+            commands::sync_collect,
+            commands::sync_ack,
+            commands::sync_apply,
+            commands::sync_enqueue_all,
+            commands::sync_pending,
+            commands::sync_get,
+            commands::sync_set,
             commands::compact_conversation,
         ])
         .build(tauri::generate_context!())

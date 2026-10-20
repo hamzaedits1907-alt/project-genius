@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-save-api-key-for"
+description = "Enables the save_api_key_for command without any pre-configured scope."
+commands.allow = ["save_api_key_for"]
+
+[[permission]]
+identifier = "deny-save-api-key-for"
+description = "Denies the save_api_key_for command without any pre-configured scope."
+commands.deny = ["save_api_key_for"]

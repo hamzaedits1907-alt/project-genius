@@ -49,6 +49,7 @@ pub mod slash;
 pub mod spec;
 pub mod toolcall;
 pub mod supabase;
+pub mod sync;
 pub mod uilog;
 pub mod updater;
 pub mod project_context;

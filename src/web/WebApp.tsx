@@ -18,6 +18,9 @@ import { SupabaseStore } from './supabaseStore';
 import { createKeyVault } from './keyvault';
 import { WebRuntime } from './runtime';
 import { startLiveRefresh } from './liveSync';
+import { keyHooks } from '../lib/api';
+import { onKeyRemoved, onKeySaved, startKeySync, stopKeySync } from './keySync';
+import { webLocalKeys } from './keyPorts';
 import { noWebTools, proxyTools } from './webTools';
 
 extraViews.code = CodeView;
@@ -173,6 +176,19 @@ export default function WebApp() {
     if (!live || !userId) return;
     return startLiveRefresh(sb(), userId);
   }, [live, userId]);
+
+  // The account key vault: provider keys follow the account (encrypted in this browser before they leave it).
+  useEffect(() => {
+    if (!userId || localOnly) return;
+    keyHooks.saved = (p, k) => void onKeySaved(p, k);
+    keyHooks.removed = (p) => void onKeyRemoved(p);
+    void startKeySync(sb(), userId, webLocalKeys(vault));
+    return () => {
+      stopKeySync();
+      keyHooks.saved = undefined;
+      keyHooks.removed = undefined;
+    };
+  }, [userId, vault]);
 
   if (!ready) return <Notice title="Genius"><Loader2 className="spin" /></Notice>;
   if (!supabaseConfigured && !localOnly) {

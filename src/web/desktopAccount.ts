@@ -6,6 +6,8 @@ import { extraViews } from '../lib/extraViews';
 import { useApp } from '../store/app';
 import AccountSettings from './AccountSettings';
 import AdminPanel from './AdminPanel';
+import SyncCard from './SyncCard';
+import { startDesktopSync } from './desktopSync';
 import { supabaseConfigured, useAuth } from './auth';
 
 export function initDesktopAccount(): void {
@@ -13,6 +15,7 @@ export function initDesktopAccount(): void {
   // The owner admin panel is the same screen as on the web. Who may use it is decided by the database
   // (my_access().isAdmin and the SECURITY DEFINER admin functions), never by this registration.
   extraViews.admin = AdminPanel;
+  extraViews.sync = SyncCard;
   const openAccount = () => useApp.getState().navigate({ name: 'settings', tab: 'account' });
   const publish = () => {
     const { session, access, signOut } = useAuth.getState();
@@ -24,5 +27,8 @@ export function initDesktopAccount(): void {
   };
   publish();
   useAuth.subscribe(publish);
-  if (supabaseConfigured) void useAuth.getState().init();
+  if (supabaseConfigured) {
+    void useAuth.getState().init();
+    startDesktopSync(); // conversations follow the account while someone is signed in
+  }
 }

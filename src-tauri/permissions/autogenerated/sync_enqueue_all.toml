@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-sync-enqueue-all"
+description = "Enables the sync_enqueue_all command without any pre-configured scope."
+commands.allow = ["sync_enqueue_all"]
+
+[[permission]]
+identifier = "deny-sync-enqueue-all"
+description = "Denies the sync_enqueue_all command without any pre-configured scope."
+commands.deny = ["sync_enqueue_all"]

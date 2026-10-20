@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-sync-ack"
+description = "Enables the sync_ack command without any pre-configured scope."
+commands.allow = ["sync_ack"]
+
+[[permission]]
+identifier = "deny-sync-ack"
+description = "Denies the sync_ack command without any pre-configured scope."
+commands.deny = ["sync_ack"]

@@ -15,13 +15,28 @@ export function errorKind(e: unknown): string {
 
 const call = <R>(cmd: string, args?: Record<string, unknown>) => invoke<R>(cmd, args);
 
+/**
+ * Called after a provider key was saved or removed on this device, so the account key vault (when unlocked) can
+ * keep its encrypted copy in step. The key is only handed to the vault code, which encrypts it before it leaves.
+ */
+export const keyHooks: { saved?: (provider: T.ProviderId, key: string) => void; removed?: (provider: T.ProviderId) => void } = {};
+
 export const api = {
   // settings & AI
   getSettings: () => call<T.Settings>('get_settings'),
   saveSettings: (settings: T.Settings) => call<T.Settings>('save_settings', { settings }),
   keyStatus: () => call<T.KeyStatus>('key_status'),
-  saveApiKey: (key: string, remember?: boolean) => call<T.KeyStatus>('save_api_key', { key, remember: remember ?? false }),
-  removeApiKey: () => call<T.KeyStatus>('remove_api_key'),
+  saveApiKey: async (key: string, remember?: boolean) => {
+    const status = await call<T.KeyStatus>('save_api_key', { key, remember: remember ?? false });
+    if (keyHooks.saved) void call<T.Settings>('get_settings').then((s) => keyHooks.saved?.(s.provider, key.trim())).catch(() => undefined);
+    return status;
+  },
+  removeApiKey: async () => {
+    const provider = keyHooks.removed ? await call<T.Settings>('get_settings').then((s) => s.provider).catch(() => null) : null;
+    const status = await call<T.KeyStatus>('remove_api_key');
+    if (provider) keyHooks.removed?.(provider);
+    return status;
+  },
   testConnection: () => call<Record<string, unknown>>('test_connection'),
   diagnoseProvider: (deep: boolean) => call<T.DiagReport>('diagnose_provider', { deep }),
   providerCapabilities: () => call<T.ProviderCapabilities[]>('provider_capabilities'),

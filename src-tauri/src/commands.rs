@@ -932,6 +932,60 @@ pub fn approve_mission_task(g: G, task_id: String, approved: bool) -> Result<Mis
     g.approve_mission_task(&task_id, approved)
 }
 
+// ---------------------------------------------------------------- account key vault (per-provider keys)
+
+#[tauri::command]
+pub fn api_key_for(g: G, provider: String) -> Result<Option<String>> {
+    g.api_key_for(&provider)
+}
+
+#[tauri::command]
+pub fn save_api_key_for(g: G, provider: String, key: String) -> Result<()> {
+    g.save_api_key_for(&provider, &key)
+}
+
+#[tauri::command]
+pub fn remove_api_key_for(g: G, provider: String) -> Result<()> {
+    g.remove_api_key_for(&provider)
+}
+
+// ---------------------------------------------------------------- account sync (local database side)
+
+#[tauri::command]
+pub fn sync_collect(g: G, limit: Option<usize>) -> Result<genius_core::sync::Collected> {
+    g.sync_collect(limit.unwrap_or(200))
+}
+
+#[tauri::command]
+pub fn sync_ack(g: G, keys: Vec<genius_core::sync::OutKey>) -> Result<()> {
+    g.sync_ack(&keys)
+}
+
+#[tauri::command]
+pub fn sync_apply(g: G, batch: genius_core::sync::RemoteBatch) -> Result<genius_core::sync::ApplyReport> {
+    g.sync_apply(&batch)
+}
+
+#[tauri::command]
+pub fn sync_enqueue_all(g: G) -> Result<usize> {
+    g.sync_enqueue_all()
+}
+
+#[tauri::command]
+pub fn sync_pending(g: G) -> Result<i64> {
+    g.sync_pending()
+}
+
+#[tauri::command]
+pub fn sync_get(g: G, key: String) -> Result<Option<String>> {
+    g.sync_get(&key)
+}
+
+#[tauri::command]
+pub fn sync_set(g: G, key: String, value: String) -> Result<()> {
+    g.sync_set(&key, &value)
+}
+
 // ---------------------------------------------------------------- Genius Chat / Research
 
 #[tauri::command]

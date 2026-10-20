@@ -1,3 +1,4 @@
+import { useKeyVault } from '../web/keySync';
 import { useEffect, useRef, useState } from 'react';
 import { ArrowUp, Check, FolderOpen, KeyRound, Plus, SlidersHorizontal, Sparkles, Trash2, Wrench, X, FileArchive } from 'lucide-react';
 import { open as openDialog } from '@tauri-apps/plugin-dialog';
@@ -477,6 +478,8 @@ export function QuickSetup() {
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [allowRelay, setAllowRelay] = useState(false);
+  const vaultState = useKeyVault((v) => v.state);
+  const vaultProviders = useKeyVault((v) => v.providers);
 
   const settings = useApp((s) => s.settings);
   const provider: ProviderId = settings?.provider ?? 'nvidia';
@@ -587,6 +590,14 @@ export function QuickSetup() {
               Advanced…
             </Button>
           </div>
+          {!keyStatus?.stored && vaultState === 'locked' && vaultProviders.length > 0 && (
+            <Callout tone="info">
+              Your account already has saved AI keys. <a href="#" onClick={(e) => (e.preventDefault(), navigate({ name: 'settings', tab: 'account' }))}>Unlock your key vault</a> and you do not need to paste one here.
+            </Callout>
+          )}
+          {!keyStatus?.stored && vaultState === 'none' && (
+            <div className="faint small">Tip: after you connect, create a key vault in Settings → Account to have this key on all your devices.</div>
+          )}
           {needsRelay && !settings?.relayConsent && (
             <label className="row small" style={{ gap: 8, alignItems: 'flex-start' }}>
               <input type="checkbox" checked={allowRelay} onChange={(e) => setAllowRelay(e.target.checked)} style={{ marginTop: 3 }} />

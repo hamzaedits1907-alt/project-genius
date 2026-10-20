@@ -240,6 +240,7 @@ impl Genius {
 
     pub fn with_db(db: Arc<Db>, data_dir: &Path, emitter: Arc<dyn crate::events::Emitter>, secrets: Arc<dyn SecretStore>) -> Result<Arc<Self>> {
         crate::research::ensure_schema(&db)?; // chat/research tables (idempotent)
+        crate::sync::ensure_schema(&db)?; // account sync outbox and triggers (idempotent)
         let bus = EventBus::new(db.clone(), emitter);
         // A previous session may have been killed: never show stale "running" states.
         bus.close_stale()?;
@@ -331,6 +332,31 @@ impl Genius {
         }
         self.bus.record(None, None, EventKind::Task, EventStatus::Completed, format!("{} API key saved to system credential store", self.provider_kind().label()), json!({ "backend": self.secrets.backend_name(), "hint": secrets::mask(&key) }));
         Ok(self.key_status())
+    }
+
+    fn key_slot(provider: &str) -> Result<String> {
+        crate::provider::ProviderKind::from_id(provider).map(|k| k.key_name()).ok_or_else(|| GeniusError::Validation(format!("unknown provider '{provider}'")))
+    }
+
+    /// The key saved for one provider (used to copy it into the account's encrypted key vault; the user opted in).
+    pub fn api_key_for(&self, provider: &str) -> Result<Option<String>> {
+        self.secrets.get(&Self::key_slot(provider)?)
+    }
+
+    /// Save a key for a specific provider (a key that arrived from the account's key vault).
+    pub fn save_api_key_for(&self, provider: &str, key: &str) -> Result<()> {
+        let key = secrets::validate_nvidia_key(key)?;
+        let name = Self::key_slot(provider)?;
+        self.secrets.set(&name, &key)?;
+        if self.secrets.get(&name)?.as_deref() != Some(key.as_str()) {
+            return Err(GeniusError::Secret("the credential store did not return the saved key".into()));
+        }
+        self.bus.record(None, None, EventKind::Task, EventStatus::Completed, format!("{provider} API key saved to system credential store (from the account key vault)"), json!({ "backend": self.secrets.backend_name(), "hint": secrets::mask(&key) }));
+        Ok(())
+    }
+
+    pub fn remove_api_key_for(&self, provider: &str) -> Result<()> {
+        self.secrets.delete(&Self::key_slot(provider)?)
     }
 
     pub fn remove_api_key(&self) -> Result<KeyStatus> {
@@ -1264,6 +1290,9 @@ impl Genius {
         // A plan with more than a handful of files is written a few files at a time, dependencies first, then
         // gaps are closed the same way. (One answer holding a whole app is cut off by the output limit.)
         let batched = spec.files.len() > prompts::GENERATE_BATCH_FILES;
+        // Writing known files from a finished plan needs no long hidden reasoning: without it each part takes
+        // seconds instead of minutes (the reasoning budget is what made one real run last 15+ minutes).
+        let batch_opts = CallOptions { role: Some(ModelRole::Code), thinking: Some(false), effort: Some(Effort::Balanced), ..Default::default() };
         if batched {
             let order = prompts::generation_order(&spec.files);
             let parts = order.len().div_ceil(prompts::GENERATE_BATCH_FILES);
@@ -1271,7 +1300,7 @@ impl Genius {
                 let written = collect(&all_events).files;
                 let msgs = prompts::generate_batch_messages(&spec, &template_ctx, &p.notes, &written, batch, i, parts, "");
                 let purpose = format!("Generating source code (part {}/{parts})", i + 1);
-                let (_, ev) = self.ai_call_opts(project_id, task_id, &purpose, &msgs, true, cancel, &CallOptions::role(ModelRole::Code)).await?;
+                let (_, ev) = self.ai_call_opts(project_id, task_id, &purpose, &msgs, true, cancel, &batch_opts).await?;
                 rounds += 1;
                 if i == 0 {
                     explanation = collect(&ev).explanation;
@@ -1288,7 +1317,7 @@ impl Genius {
                         let written = collect(&all_events).files;
                         let note = format!("A previous attempt at {} was cut off by the output limit. Write it again COMPLETE and compact: under 200 lines, no long comments, no unused code.", f.path);
                         let msgs = prompts::generate_batch_messages(&spec, &template_ctx, &p.notes, &written, std::slice::from_ref(&f), i, parts, &note);
-                        let (_, ev) = self.ai_call_opts(project_id, task_id, &format!("Rewriting {}", f.path), &msgs, true, cancel, &CallOptions::role(ModelRole::Code)).await?;
+                        let (_, ev) = self.ai_call_opts(project_id, task_id, &format!("Rewriting {}", f.path), &msgs, true, cancel, &batch_opts).await?;
                         rounds += 1;
                         all_events.extend(ev);
                     }
@@ -1332,7 +1361,7 @@ impl Genius {
 {}", gaps.notes.join("
 "));
                 let msgs = prompts::generate_batch_messages(&spec, &template_ctx, &p.notes, &parsed.files, &want, 0, 1, &note);
-                let (_, ev) = self.ai_call_opts(project_id, task_id, "Completing the project", &msgs, true, cancel, &CallOptions::role(ModelRole::Code)).await?;
+                let (_, ev) = self.ai_call_opts(project_id, task_id, "Completing the project", &msgs, true, cancel, &batch_opts).await?;
                 rounds += 1;
                 all_events.extend(ev);
             }
