@@ -15,6 +15,10 @@ The phone apps are the **same signed-in web app** (Genius Web) packaged with [Ca
 
 Sign in with your Genius account, open **Settings → Account → Key vault**, type your vault passphrase once and your provider keys are on the phone (tick "do not ask again" and the phone remembers the passphrase in the Keystore/Keychain). Keys are encrypted on the device before they reach your account; see the privacy notes in `docs/DEPLOY-NETLIFY-SUPABASE.md`. Without a vault you can paste a key in the app: it is kept in the Keystore/Keychain of this phone only.
 
+## Updates
+
+The Android app looks for a newer release by itself (start, every 6 hours, return to the app) and shows a banner; Settings → Account → App version has "Check for updates". The download opens in the browser and Android asks you to confirm the install. Updates only install over the previous app when both APKs are signed with the **same key**: releases from 0.7.2 on use the owner's release key (repository secrets `ANDROID_KEYSTORE_*`); the 0.7.0 / 0.7.1 debug-signed APKs must be uninstalled once.
+
 ## Build the Android APK
 
 Needs Node 20+, JDK 21 and the Android SDK (platform 36).

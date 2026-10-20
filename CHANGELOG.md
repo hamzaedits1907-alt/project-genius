@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.7.2] — Android app fixes: no more endless loading after sign-in, in-app update check, release-signed APK
+
+- **Fixed (Android): after signing in the app could stay on the loading screen for ever.** Start-up waited for the phone's secure key storage (Android Keystore) and for the settings with no time limit, so a storage call that never answered froze the app. Every native storage call now has a time limit (the app starts with what it has), the settings load has a limit too, and a loading screen that lasts more than ten seconds says where it is stuck and offers "Try again" and "Sign out". The CI now signs in **inside the app on an Android emulator** and requires that the chat screen appears.
+- **Updates for the Android app.** The app checks GitHub for a newer APK at start, every six hours and when it comes back to the foreground, shows an "update available" banner with a Download button, and Settings → Account has the version and a "Check for updates" button. (Android lets an app download an update but only you can confirm the install; there is no silent update outside the Play Store.)
+- **Release-signed APK.** Releases from now on are signed with a permanent release key (kept by the owner, never in the repository), so a new APK installs over the previous one and keeps your data. The 0.7.0 and 0.7.1 APKs were signed with temporary debug keys: uninstall them once before installing 0.7.2 (your account, conversations and, with the key vault, your keys come back after you sign in).
+
 ## [0.7.1] — Code Mode generates a whole app in minutes, not tens of minutes
 
 - **Code Mode is about three times faster and now verified end to end with a real model.** The first batch of a generation no longer writes the whole app (a model shown the full plan did that: 85,000 characters in one answer): batches see the application description and only the names of the other files, files an earlier answer already delivered are not requested again, and the parts after the foundations (components, pages, App) are written three at a time. A real Personal Finance Tracker (17 files) was planned in 32 s and generated in about 7 minutes with NVIDIA's model; then a real `npm install`, `tsc` type check and production build all passed (`live_code` test, opt-in).
