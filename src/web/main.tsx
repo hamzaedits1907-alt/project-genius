@@ -7,6 +7,9 @@ import '../styles/mobile.css';
 import './web.css';
 import WebApp from './WebApp';
 import { RootBoundary } from './RootBoundary';
+import { initMobileShell } from './mobileShell';
+
+void initMobileShell();
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>

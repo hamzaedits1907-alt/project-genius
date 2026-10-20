@@ -11,11 +11,20 @@
     "test": "vitest run",
     "tauri": "tauri",
     "dev:web": "vite -c vite.web.config.ts",
+    "build:mobile": "tsc --noEmit && vite build -c vite.mobile.config.ts",
+    "cap:sync": "npm run build:mobile && cap sync",
     "build:web": "tsc --noEmit && vite build -c vite.web.config.ts && tsc -p tsconfig.netlify.json",
     "preview:web": "vite preview -c vite.web.config.ts",
     "test:db": "vitest run -c vitest.db.config.ts"
   },
   "dependencies": {
+    "@aparajita/capacitor-secure-storage": "^8.0.1",
+    "@capacitor/android": "^8.5.3",
+    "@capacitor/app": "^8.1.2",
+    "@capacitor/core": "^8.5.3",
+    "@capacitor/ios": "^8.5.3",
+    "@capacitor/keyboard": "^8.0.6",
+    "@capacitor/status-bar": "^8.0.4",
     "@codemirror/autocomplete": "^6.20.3",
     "@codemirror/commands": "^6.11.1",
     "@codemirror/lang-css": "^6.3.1",
@@ -44,6 +53,7 @@
     "zustand": "^5.0.15"
   },
   "devDependencies": {
+    "@capacitor/cli": "^8.5.3",
     "@electric-sql/pglite": "^0.3.16",
     "@eslint/js": "^9.39.5",
     "@netlify/functions": "^6.0.2",

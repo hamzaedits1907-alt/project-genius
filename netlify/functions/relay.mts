@@ -2,9 +2,9 @@
 import type { Config } from '@netlify/functions';
 import { checkTarget, forwardHeaders } from '../lib/relay.ts';
 import { WebError } from '../lib/safeweb.ts';
-import { authenticate, AuthError, json, rateLimit } from '../lib/session.ts';
+import { authenticate, AuthError, json, rateLimit, withCors } from '../lib/session.ts';
 
-export default async (req: Request): Promise<Response> => {
+export default withCors(async (req: Request): Promise<Response> => {
   if (req.method !== 'POST') return json(405, { error: 'Use POST.' });
   try {
     const caller = await authenticate(req);
@@ -25,6 +25,6 @@ export default async (req: Request): Promise<Response> => {
     if (e instanceof AuthError || e instanceof WebError) return json(e.status, { error: e.message });
     return json(502, { error: 'The relay could not reach the provider.' });
   }
-};
+});
 
 export const config: Config = { path: '/api/relay' };

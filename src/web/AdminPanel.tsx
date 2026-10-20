@@ -5,7 +5,7 @@
 // provider key or message content ever appears here: only counts and account metadata.
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Download, Loader2, Megaphone, Power, Search, ShieldAlert, Trash2, X } from 'lucide-react';
-import { isWeb } from '../lib/platform';
+import { apiBase, isWeb } from '../lib/platform';
 import { sb, useAuth, featureOf, type Limits } from './auth';
 
 interface UserRow {
@@ -943,7 +943,7 @@ function System({ onError }: P) {
     const admins = await rpc<{ user_id: string; email: string; since: string }[]>('admin_list_admins');
     const dbMs = Math.round(performance.now() - t0);
     // The web proxy and the relay are functions of the website; the desktop app does not use them.
-    const probe = (p: string) => (isWeb ? fetch(p, { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' }).then((r) => ({ status: r.status })).catch(() => ({ status: 0 })) : Promise.resolve({ status: -1 }));
+    const probe = (p: string) => (isWeb ? fetch(apiBase + p, { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' }).then((r) => ({ status: r.status })).catch(() => ({ status: 0 })) : Promise.resolve({ status: -1 }));
     const web = await probe('/api/web');
     const relay = await probe('/api/relay');
     return { admins, dbMs, web, relay };

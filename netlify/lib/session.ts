@@ -52,4 +52,25 @@ export function rateLimit(key: string, max: number, windowMs: number) {
   if (hits.size > 5000) for (const [k, v] of hits) if (!v.some((t) => now - t < windowMs)) hits.delete(k);
 }
 
+// The Android and iOS apps are not served from this site: they call the functions from their own origin
+// (capacitor://localhost, https://localhost). Requests carry a bearer token, never cookies, so allowing these
+// known origins (and this site) is safe; every other origin gets no CORS headers and the browser blocks it.
+const APP_ORIGINS = ['capacitor://localhost', 'https://localhost', 'http://localhost'];
+export function corsHeaders(req: Request): Record<string, string> {
+  const origin = req.headers.get('origin');
+  if (!origin) return {};
+  const site = env('URL');
+  const ok = APP_ORIGINS.includes(origin) || origin === new URL(req.url).origin || (!!site && origin === site) || origin === 'https://project-genius.netlify.app';
+  return ok ? { 'access-control-allow-origin': origin, 'access-control-allow-headers': 'authorization, content-type, x-genius-target, x-genius-key, x-genius-method', 'access-control-allow-methods': 'POST, OPTIONS', 'access-control-max-age': '86400', vary: 'origin' } : {};
+}
+export function withCors(handler: (req: Request) => Promise<Response>) {
+  return async (req: Request): Promise<Response> => {
+    if (req.method === 'OPTIONS') return new Response(null, { status: 204, headers: corsHeaders(req) });
+    const res = await handler(req);
+    const h = new Headers(res.headers);
+    for (const [k, v] of Object.entries(corsHeaders(req))) h.set(k, v);
+    return new Response(res.body, { status: res.status, headers: h });
+  };
+}
+
 export const json = (status: number, body: unknown) => new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json', 'cache-control': 'no-store' } });

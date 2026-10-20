@@ -11,7 +11,12 @@
 //! ```
 //!
 //! Anything outside blocks is the model's explanation. Markdown fences that some models
-//! wrap around file content are stripped. A block still open when the stream ends is
+//! wrap around file content are stripped.
+//!
+//! Many models forget the `<<<END FILE>>>` line: they write the next `<<<FILE:` straight away, or stop after
+//! the last file. That is not a truncated file. A block is only incomplete when the answer was really cut off
+//! (the provider said `length`, or the stream broke); a block that the model itself moved on from, or that ended
+//! an answer the provider finished normally, is complete. A block still open when a cut-off answer ends is
 //! reported as incomplete and is never applied.
 
 use serde::Serialize;
@@ -77,14 +82,25 @@ impl BlockParser {
         out
     }
 
+    /// The stream ended and the answer may have been cut off: a block still open is incomplete.
     pub fn finish(&mut self) -> Vec<BlockEvent> {
+        self.finish_as(false)
+    }
+
+    /// The stream ended and the provider reported a normal finish: a block left open only lacks its END line.
+    pub fn finish_closing(&mut self) -> Vec<BlockEvent> {
+        self.finish_as(true)
+    }
+
+    fn finish_as(&mut self, finished: bool) -> Vec<BlockEvent> {
         let mut out = Vec::new();
         if !self.partial.is_empty() {
             let line = std::mem::take(&mut self.partial);
             self.line(line, &mut out);
         }
         if let Some(b) = self.current.take() {
-            out.push(BlockEvent::FileEnd { path: b.path, content: b.content, complete: false });
+            let complete = finished && !b.content.trim().is_empty();
+            out.push(BlockEvent::FileEnd { path: b.path, content: b.content, complete });
         }
         out
     }
@@ -100,14 +116,17 @@ impl BlockParser {
                 }
                 "file" => {
                     if let Some(b) = self.current.take() {
-                        out.push(BlockEvent::FileEnd { path: b.path, content: b.content, complete: false });
+                        // the model moved on to the next file without an END line: the previous one is whole
+                        let complete = !b.content.trim().is_empty();
+                        out.push(BlockEvent::FileEnd { path: b.path, content: b.content, complete });
                     }
                     out.push(BlockEvent::FileStart { path: path.clone() });
                     self.current = Some(OpenBlock { path, content: String::new(), lines_seen: 0, held_fence: None });
                 }
                 "delete" => {
                     if let Some(b) = self.current.take() {
-                        out.push(BlockEvent::FileEnd { path: b.path, content: b.content, complete: false });
+                        let complete = !b.content.trim().is_empty();
+                        out.push(BlockEvent::FileEnd { path: b.path, content: b.content, complete });
                     }
                     out.push(BlockEvent::Delete { path });
                 }
@@ -148,11 +167,16 @@ fn emit_line(b: &mut OpenBlock, line: String, out: &mut Vec<BlockEvent>) {
     out.push(BlockEvent::FileDelta { path: b.path.clone(), text });
 }
 
-/// Parse a complete response at once.
+/// Parse a complete response at once (a block left open at the end counts as cut off).
 pub fn parse_all(text: &str) -> Vec<BlockEvent> {
+    parse_all_ex(text, false)
+}
+
+/// Parse a complete response; `finished` says the provider ended it normally (not by the length limit).
+pub fn parse_all_ex(text: &str, finished: bool) -> Vec<BlockEvent> {
     let mut p = BlockParser::default();
     let mut ev = p.push(text);
-    ev.extend(p.finish());
+    ev.extend(if finished { p.finish_closing() } else { p.finish() });
     ev
 }
 
@@ -341,6 +365,27 @@ mod tests {
         let o = collect(&parse_all("<<<FILE: src/a.ts>>>\nconst a = 1;\n"));
         assert!(o.files.is_empty());
         assert_eq!(o.incomplete, vec!["src/a.ts"]);
+    }
+
+    #[test]
+    fn a_file_followed_by_another_file_without_an_end_line_is_complete() {
+        let s = "<<<FILE: src/a.ts>>>\nconst a = 1;\n<<<FILE: src/b.ts>>>\nconst b = 2;\n<<<END FILE>>>\n";
+        let o = collect(&parse_all(s));
+        assert_eq!(o.files.iter().map(|f| f.0.as_str()).collect::<Vec<_>>(), vec!["src/a.ts", "src/b.ts"]);
+        assert!(o.incomplete.is_empty(), "{:?}", o.incomplete);
+    }
+
+    #[test]
+    fn the_last_file_of_a_normally_finished_answer_is_complete_but_of_a_cut_off_one_is_not() {
+        let s = "<<<FILE: src/a.ts>>>\nconst a = 1;\n";
+        let done = collect(&parse_all_ex(s, true));
+        assert_eq!(done.files, vec![("src/a.ts".to_string(), "const a = 1;\n".to_string())]);
+        assert!(done.incomplete.is_empty());
+        let cut = collect(&parse_all_ex(s, false));
+        assert!(cut.files.is_empty());
+        assert_eq!(cut.incomplete, vec!["src/a.ts"]);
+        // an open block with nothing in it is never a file
+        assert_eq!(collect(&parse_all_ex("<<<FILE: src/a.ts>>>\n", true)).incomplete, vec!["src/a.ts"]);
     }
 
     #[test]

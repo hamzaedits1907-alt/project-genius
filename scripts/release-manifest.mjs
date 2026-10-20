@@ -11,7 +11,7 @@
 //       Re-verifies every artifact listed in a manifest against the files on disk.
 //
 // Env (build): TAG, VERSION, GITHUB_SHA, GITHUB_RUN_ID, GITHUB_SERVER_URL, GITHUB_REPOSITORY,
-//              EXPECTED_RECORDS (default 4: windows, macOS arm64, macOS x64, linux)
+//              EXPECTED_RECORDS (default 5: windows, macOS arm64, macOS x64, linux, android)
 // What this proves: the files published on the release are byte-identical to what the CI runners
 // built from the tagged commit. It is a consistency record, not a signature: see docs/RELEASING.md.
 import { createHash } from 'node:crypto';
@@ -24,12 +24,13 @@ const fail = (title, msg) => {
   console.log(`::error title=${title}::${msg}`);
 };
 const sha256 = (bytes) => createHash('sha256').update(bytes).digest('hex');
-const INSTALLER = /(-setup\.exe|\.msi|\.dmg|\.appimage|\.deb)$/i;
+const INSTALLER = /(-setup\.exe|\.msi|\.dmg|\.appimage|\.deb|\.apk)$/i;
 const META = /(\.sha256|\.sha256sum|\.sig)$|^RELEASE_MANIFEST\.json$/;
 const REQUIRED_BY_PLATFORM = {
   'windows-latest': [/-setup\.exe$/i, /\.msi$/i],
   'macos-latest': [/\.dmg$/i],
   'ubuntu-22.04': [/\.appimage$/i, /\.deb$/i],
+  android: [/\.apk$/i],
 };
 
 function listAssets(dir) {
@@ -48,7 +49,7 @@ function buildMode(recordsDir, assetsDir, outFile) {
     console.error('::error::GITHUB_SHA and TAG must be set');
     process.exit(1);
   }
-  const expected = Number(process.env.EXPECTED_RECORDS || 4);
+  const expected = Number(process.env.EXPECTED_RECORDS || 5);
   const records = readdirSync(recordsDir)
     .filter((n) => /^build-record.*\.json$/.test(n))
     .map((n) => JSON.parse(readFileSync(join(recordsDir, n), 'utf8')));

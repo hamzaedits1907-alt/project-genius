@@ -1138,12 +1138,14 @@ impl Genius {
         match res {
             Ok(r) => {
                 if stream_files {
-                    for e in parser.finish() {
+                    // a normal finish means a file left open only lacks its END line; a cut-off answer stays incomplete
+                    let tail = if r.finish_reason.as_deref() == Some("stop") { parser.finish_closing() } else { parser.finish() };
+                    for e in tail {
                         push_file(&bus, &e);
                         events.push(e);
                     }
                 } else {
-                    events = crate::blocks::parse_all(&r.content);
+                    events = crate::blocks::parse_all_ex(&r.content, r.finish_reason.as_deref() == Some("stop"));
                 }
                 let tokens = r.usage.as_ref().map(usage_tokens).map(|(p, c, t)| json!({ "prompt": p, "completion": c, "total": t }));
                 if r.content.trim().is_empty() && r.reasoning.trim().is_empty() {

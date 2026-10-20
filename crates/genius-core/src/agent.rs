@@ -97,6 +97,7 @@ const TOOLS: &[ToolSpec] = &[
     ToolSpec { name: "read_reference", args: r#"{"id": string}"#, description: "Read an imported reference document by id.", read_only: true },
     ToolSpec { name: "use_skill", args: r#"{"name": string}"#, description: "Load one of the skills listed under SKILLS: an expert playbook for a kind of work. Load the relevant one before starting that work.", read_only: true },
     ToolSpec { name: "calculate", args: r#"{"expression": string}"#, description: "Evaluate an arithmetic expression exactly (+ - * / % ^, parentheses, sqrt, abs, round, floor, ceil, ln, log, sin, cos, tan, min, max, sum, avg, pi, e). Use it for any calculation instead of working it out yourself.", read_only: true },
+    ToolSpec { name: "data_query", args: r#"{"id": string, "where"?: [{"column": string, "op": "="|"!="|">"|">="|"<"|"<="|"contains", "value": any}], "group_by"?: string, "metrics"?: [{"column"?: string, "fn": "count"|"sum"|"mean"|"min"|"max"|"median"}], "columns"?: string[], "sort_by"?: string, "desc"?: boolean, "limit"?: number}"#, description: "Exact questions about an attached CSV, TSV or JSON table: filter rows, group by a column and count/sum/average/min/max/median, sort, list the top rows. Computed from the whole file, never estimated. Pass the file id from FILES IN THIS CONVERSATION.", read_only: true },
     ToolSpec { name: "data_summary", args: r#"{"id": string, "column"?: string}"#, description: "Computed statistics of an attached CSV, TSV or JSON table: rows, columns, types, missing values, min/max/mean/median/sum/stdev of numbers, most frequent values of text. Pass the file id from FILES IN THIS CONVERSATION; add \"column\" for one column in detail.", read_only: true },
     ToolSpec { name: "runtime_info", args: "{}", description: "Which model and provider actually served your previous step, as measured by Genius. Call it ONLY when the user explicitly asks which model, provider or version you run on.", read_only: true },
     ToolSpec { name: "capabilities", args: "{}", description: "Genius's live self-description: model, verified capabilities, tools, integrations, permissions, recent operations and failures.", read_only: true },
@@ -1071,11 +1072,13 @@ struct Run<'a> {
     calls_with_usage: u64,
     /// Which global limit stopped the run (see `budget.rs`).
     limit_stop: Option<crate::budget::BudgetStop>,
+    /// The last model answer was cut off by the length limit: a file block left open in it is incomplete.
+    cut_off: bool,
 }
 
 impl<'a> Run<'a> {
     fn new(project_id: &'a str, task_id: &'a str, conversation_id: Option<&'a str>, role: Role, mode: AgentMode, effort: Effort) -> Self {
-        Run { project_id, task_id, conversation_id, role, seq: 0, seen: HashMap::new(), steps: Vec::new(), mode, effort, staged: Vec::new(), turn_text: String::new(), turn_note: None, turn: 0, turn_blocks: Vec::new(), autopilot: false, applied: Vec::new(), applied_paths: Vec::new(), dirty: false, checks: Vec::new(), usage: [0; 4], models: Vec::new(), calls: Vec::new(), chain: None, vision: None, request: String::new(), model: String::new(), malformed: HashMap::new(), proto_streak: 0, refunds: 0, file_block_mode: false, failed_calls: HashMap::new(), passed: Vec::new(), last_passing: None, profile: None, budget_stop: None, violations: Vec::new(), started: Instant::now(), estimated_tokens: 0, calls_with_usage: 0, limit_stop: None }
+        Run { project_id, task_id, conversation_id, role, seq: 0, seen: HashMap::new(), steps: Vec::new(), mode, effort, staged: Vec::new(), turn_text: String::new(), turn_note: None, turn: 0, turn_blocks: Vec::new(), autopilot: false, applied: Vec::new(), applied_paths: Vec::new(), dirty: false, checks: Vec::new(), usage: [0; 4], models: Vec::new(), calls: Vec::new(), chain: None, vision: None, request: String::new(), model: String::new(), malformed: HashMap::new(), proto_streak: 0, refunds: 0, file_block_mode: false, failed_calls: HashMap::new(), passed: Vec::new(), last_passing: None, profile: None, budget_stop: None, violations: Vec::new(), started: Instant::now(), estimated_tokens: 0, calls_with_usage: 0, limit_stop: None, cut_off: false }
     }
     fn stage(&mut self, path: &str, content: Option<String>) {
         let path = path.trim_start_matches("./");
@@ -1437,6 +1440,7 @@ impl Genius {
             let model = res.model.clone();
             run.note_usage(&res, &model, messages.iter().map(|m| m.content.len()).sum());
             run.model = model;
+            run.cut_off = res.finish_reason.as_deref() == Some("length");
             used += 1;
             let text = res.content.clone();
             let parsed = parse_turn(&text);
@@ -1553,7 +1557,7 @@ impl Genius {
         run.turn_text = text.to_string();
         run.turn_note = Some(narration(text));
         // File blocks anywhere in a tool turn are saved, whether or not write_files is called.
-        run.turn_blocks = if builder { let b = collect(&crate::blocks::parse_all(text)); self.stage_blocks(run, &b) } else { vec![] };
+        run.turn_blocks = if builder { let b = collect(&crate::blocks::parse_all_ex(text, !run.cut_off)); self.stage_blocks(run, &b) } else { vec![] };
         let mut results = String::new();
         let mut wrote = false;
         let mut malformed = 0usize;
@@ -1631,7 +1635,7 @@ impl Genius {
 
     /// Stage the files carried by a final answer and return the answer without them.
     fn stage_final(&self, run: &mut Run<'_>, text: &str) -> String {
-        let parsed = collect(&crate::blocks::parse_all(text));
+        let parsed = collect(&crate::blocks::parse_all_ex(text, !run.cut_off));
         self.stage_blocks(run, &parsed);
         if parsed.files.is_empty() && parsed.deletes.is_empty() && run.staged.is_empty() && run.applied.is_empty() {
             // Last resort: fenced code labelled with paths, only if it can't truncate a file.
@@ -2205,6 +2209,16 @@ impl Genius {
                 }
                 let text = crate::general_tools::summarize_table(&att.name, &att.kind, &att.text, a.column.as_deref())?;
                 Ok(ToolOutcome::ok(format!("Summarised {}", att.name), clip(&text, MAX_RESULT), json!({ "file": att.name, "id": att.id })))
+            }
+            "data_query" => {
+                let a: SummaryArgs = typed(name, args)?;
+                let att = self.attachment(pid, &a.id)?;
+                if run.role == Role::Chat && att.conversation_id.as_deref() != run.conversation_id {
+                    return Err(GeniusError::Validation("that file is not attached to this conversation".into()));
+                }
+                let spec = crate::general_tools::query_from_args(args)?;
+                let text = crate::general_tools::query_table(&att.name, &att.kind, &att.text, &spec)?;
+                Ok(ToolOutcome::ok(format!("Queried {}", att.name), clip(&text, MAX_RESULT), json!({ "file": att.name, "id": att.id })))
             }
             "runtime_info" => {
                 typed::<NoArgs>(name, args)?;

@@ -71,7 +71,14 @@ async fn live_code_mode_builds_an_app_that_type_checks_and_builds() {
 }
 
 async fn wait_idle(g: &Arc<Genius>, pid: &str, since: Instant, secs: u64) {
+    let mut seen = std::collections::HashSet::new();
     loop {
+        // show progress as it happens: every model call and its duration
+        for e in g.bus.list(Some(pid), 400).unwrap_or_default().into_iter().rev() {
+            if e.title.contains('(') && seen.insert(format!("{}{:?}", e.id, e.status)) {
+                println!("  [{:>5.0}s] {:?} {} {}", since.elapsed().as_secs_f32(), e.status, e.title, e.detail.get("totalMs").map(|v| format!("totalMs={v} out={}", e.detail.get("outputChars").unwrap_or(&serde_json::Value::Null))).unwrap_or_default());
+            }
+        }
         if g.active_tasks(Some(pid)).is_empty() {
             return;
         }

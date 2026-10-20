@@ -9,7 +9,7 @@
   /* one column: top bar + content */
   .gx-shell, .gx-shell.collapsed, .gx-shell:not(.collapsed) { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto minmax(0, 1fr); height: 100dvh; }
   .gx-mobilebar {
-    display: flex; align-items: center; gap: 8px; height: calc(52px + env(safe-area-inset-top)); padding: env(safe-area-inset-top) 8px 0 8px;
+    display: flex; align-items: center; gap: 8px; height: calc(52px + var(--safe-area-inset-top, env(safe-area-inset-top, 0px))); padding: var(--safe-area-inset-top, env(safe-area-inset-top, 0px)) 8px 0 8px;
     background: var(--bg-1); border-bottom: 1px solid var(--border); position: relative; z-index: 30;
   }
   .gx-mobilebar .brand { flex: 1; font-weight: 700; letter-spacing: 0.01em; }
@@ -20,7 +20,7 @@
   .gx-side.collapsed { display: none; }
   .gx-side:not(.collapsed) {
     position: fixed; z-index: 70; top: 0; bottom: 0; left: 0; width: min(86vw, 330px); overflow-y: auto;
-    padding-top: calc(12px + env(safe-area-inset-top)); padding-bottom: calc(10px + env(safe-area-inset-bottom));
+    padding-top: calc(12px + var(--safe-area-inset-top, env(safe-area-inset-top, 0px))); padding-bottom: calc(10px + var(--safe-area-inset-bottom, env(safe-area-inset-bottom, 0px)));
     box-shadow: 8px 0 40px rgba(0, 0, 0, 0.55); animation: gx-drawer 0.18s ease-out;
   }
   .gx-scrim { display: block; position: fixed; inset: 0; z-index: 65; background: rgba(0, 0, 0, 0.55); }
@@ -40,7 +40,7 @@
   .quick-setup .row .select, .quick-setup .select { max-width: 100%; margin: 0 0 6px 0 !important; }
 
   /* the message box clears the home indicator and the on-screen keyboard */
-  .gx-dock { padding-bottom: calc(10px + env(safe-area-inset-bottom)); }
+  .gx-dock { padding-bottom: calc(10px + var(--safe-area-inset-bottom, env(safe-area-inset-bottom, 0px))); }
   .gx-thread { padding-left: 12px; padding-right: 12px; }
   .main { overflow: hidden; }
 
@@ -48,5 +48,9 @@
   .md-table, table { display: block; max-width: 100%; overflow-x: auto; }
   .pj-inner { padding-left: 14px; padding-right: 14px; }
   .gx-drawer { width: 100vw; max-width: 100vw; }
-  .toasts, .toast-stack { left: 8px; right: 8px; bottom: calc(8px + env(safe-area-inset-bottom)); }
+  .toasts, .toast-stack { left: 8px; right: 8px; bottom: calc(8px + var(--safe-area-inset-bottom, env(safe-area-inset-bottom, 0px))); }
+}
+
+@media (max-width: 640px) {
+  body.kb-open .gx-dock { padding-bottom: 8px; }
 }

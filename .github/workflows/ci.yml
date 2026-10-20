@@ -4,7 +4,7 @@ name: CI
 # `windows-desktop` below succeeded on the release commit: keep their ids (or update scripts/ci-gate.sh).
 on:
   push:
-    branches: [main]
+    branches: [main, genius-web-launch]
   pull_request:
     branches: [main]
 
@@ -62,7 +62,13 @@ jobs:
       - run: npm run typecheck
       - run: npm run lint
       - run: npm test
+      - name: Database tests (real PostgreSQL engine - security rules, sync, key vault, admin, access)
+        run: npm run test:db
       - run: npm run build
+      - name: Genius Web production build (+ Netlify functions type check)
+        run: npm run build:web
+      - name: Mobile app web bundle
+        run: npm run build:mobile
 
   windows-desktop:
     # The real Windows desktop app: core tests on Windows, then the NSIS/MSI installers,
@@ -120,3 +126,71 @@ jobs:
             target/release/bundle/nsis/*-setup.exe
             target/release/bundle/msi/*.msi
           if-no-files-found: error
+
+  android:
+    # The Android app: a debug-signed APK is built, installed on a real Android emulator (KVM) and started;
+    # the job passes only if the app is running and shows the sign-in screen. Uploaded as an artifact.
+    runs-on: ubuntu-22.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+      - run: npm ci
+      - name: Bundle the web app and sync the Android project
+        run: npm run cap:sync
+      - name: Build the debug APK
+        working-directory: android
+        run: ./gradlew assembleDebug --no-daemon
+      - uses: actions/upload-artifact@v4
+        with:
+          name: genius-android-debug-${{ github.sha }}
+          path: android/app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+      - name: Install and start the app on an emulator
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 34
+          arch: x86_64
+          target: google_apis
+          profile: pixel_6
+          emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim
+          disable-animations: true
+          script: bash scripts/android-smoke.sh android/app/build/outputs/apk/debug/app-debug.apk
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: android-smoke-evidence
+          path: |
+            launch.png
+            ui.xml
+          if-no-files-found: ignore
+
+  ios:
+    # The iOS project must compile (simulator build, no signing). App Store signing needs Apple credentials: docs/MOBILE.md.
+    runs-on: macos-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - name: Bundle the web app and sync the iOS project
+        run: npm run cap:sync
+      - name: Build for the iOS simulator
+        working-directory: ios/App
+        run: |
+          xcodebuild -project App.xcodeproj -scheme App -configuration Debug -sdk iphonesimulator             -destination 'generic/platform=iOS Simulator' CODE_SIGNING_ALLOWED=NO build | tail -40

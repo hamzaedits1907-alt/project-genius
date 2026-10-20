@@ -1,9 +1,9 @@
 // /api/web — web search and page reading for signed-in Genius Web users.
 import type { Config } from '@netlify/functions';
 import { fetchPage, search, WebError } from '../lib/safeweb.ts';
-import { authenticate, AuthError, json, rateLimit, requireFeature } from '../lib/session.ts';
+import { authenticate, AuthError, json, rateLimit, requireFeature, withCors } from '../lib/session.ts';
 
-export default async (req: Request): Promise<Response> => {
+export default withCors(async (req: Request): Promise<Response> => {
   if (req.method !== 'POST') return json(405, { error: 'Use POST.' });
   try {
     const caller = await authenticate(req);
@@ -17,6 +17,6 @@ export default async (req: Request): Promise<Response> => {
     if (e instanceof AuthError || e instanceof WebError) return json(e.status, { error: e.message });
     return json(502, { error: 'The web proxy failed. Try again.' });
   }
-};
+});
 
 export const config: Config = { path: '/api/web' };

@@ -143,6 +143,21 @@ describe('session checks', () => {
     expect(locked.locked).toBe(true);
     expect(() => requireFeature(locked, 'web_tools')).toThrow(/early access/);
   });
+  it('answers the mobile apps' + " preflight and allows only known origins", async () => {
+    const { withCors } = await import('../../netlify/lib/session.ts');
+    const h = withCors(async () => new Response('ok', { status: 200 }));
+    const pre = await h(new Request('https://x/api/relay', { method: 'OPTIONS', headers: { origin: 'capacitor://localhost' } }));
+    expect(pre.status).toBe(204);
+    expect(pre.headers.get('access-control-allow-origin')).toBe('capacitor://localhost');
+    expect(pre.headers.get('access-control-allow-headers')).toMatch(/x-genius-key/);
+    const real = await h(new Request('https://x/api/relay', { method: 'POST', headers: { origin: 'https://localhost' } }));
+    expect(real.headers.get('access-control-allow-origin')).toBe('https://localhost');
+    expect(await real.text()).toBe('ok');
+    const evil = await h(new Request('https://x/api/relay', { method: 'POST', headers: { origin: 'https://evil.example' } }));
+    expect(evil.headers.get('access-control-allow-origin')).toBeNull();
+    const same = await h(new Request('https://x/api/relay', { method: 'POST' }));
+    expect(same.headers.get('access-control-allow-origin')).toBeNull(); // same-origin requests need none
+  });
   it('rate limits a user', () => {
     for (let i = 0; i < 3; i++) rateLimit('k', 3, 1000);
     expect(() => rateLimit('k', 3, 1000)).toThrow(/Too many/);

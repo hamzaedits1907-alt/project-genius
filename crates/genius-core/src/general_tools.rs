@@ -423,6 +423,212 @@ pub fn summarize_table(name: &str, kind: &str, text: &str, column: Option<&str>)
     Ok(out)
 }
 
+
+// -------------------------------------------------------------------------------- table queries (data_query)
+
+const QUERY_OPS: &[&str] = &["=", "!=", ">", ">=", "<", "<=", "contains"];
+const QUERY_FNS: &[&str] = &["count", "sum", "mean", "min", "max", "median"];
+
+#[derive(Debug, Default, Clone)]
+pub struct QuerySpec {
+    pub filters: Vec<(String, String, String)>,
+    pub columns: Vec<String>,
+    pub group_by: Option<String>,
+    pub metrics: Vec<(String, Option<String>)>,
+    pub sort_by: Option<String>,
+    pub desc: Option<bool>,
+    pub limit: usize,
+}
+
+fn json_list(v: Option<&Value>) -> Vec<Value> {
+    match v {
+        Some(Value::Array(a)) => a.clone(),
+        Some(Value::String(s)) => serde_json::from_str::<Value>(s).ok().map(|p| json_list(Some(&p))).unwrap_or_else(|| if s.trim().is_empty() { vec![] } else { vec![Value::String(s.clone())] }),
+        Some(o @ Value::Object(_)) => vec![o.clone()],
+        _ => vec![],
+    }
+}
+
+/// Reads the arguments of a `data_query` call leniently: nested lists may arrive as JSON text, a single object instead of a list, or `columns` as "a, b".
+pub fn query_from_args(args: &Value) -> Result<QuerySpec> {
+    let get = |names: &[&str]| names.iter().find_map(|n| args.get(*n)).cloned();
+    let mut q = QuerySpec { limit: 20, ..Default::default() };
+    for w in json_list(get(&["where", "filter", "filters", "conditions"]).as_ref()) {
+        let column = w.get("column").and_then(|v| v.as_str()).unwrap_or("").to_string();
+        let op = w.get("op").and_then(|v| v.as_str()).unwrap_or("=").trim().to_lowercase();
+        let value = match w.get("value") {
+            None | Some(Value::Null) => String::new(),
+            Some(Value::String(s)) => s.clone(),
+            Some(o) => o.to_string(),
+        };
+        q.filters.push((column, op, value));
+    }
+    q.columns = match get(&["columns", "select", "fields"]) {
+        Some(Value::Array(a)) => a.iter().filter_map(|v| v.as_str().map(String::from)).collect(),
+        Some(Value::String(s)) => s.split(',').map(|x| x.trim().to_string()).filter(|x| !x.is_empty()).collect(),
+        _ => vec![],
+    };
+    q.group_by = get(&["group_by", "groupBy", "group", "by"]).and_then(|v| v.as_str().map(String::from));
+    for m in json_list(get(&["metrics", "aggregate", "aggregates", "aggregations", "agg"]).as_ref()) {
+        let f = m.get("fn").and_then(|v| v.as_str()).unwrap_or("count").to_lowercase();
+        let c = m.get("column").and_then(|v| v.as_str()).map(String::from);
+        q.metrics.push((f, c));
+    }
+    q.sort_by = get(&["sort_by", "sortBy", "sort", "order_by", "orderBy"]).and_then(|v| v.as_str().map(String::from));
+    q.desc = get(&["desc"]).and_then(|v| v.as_bool().or_else(|| v.as_str().map(|s| s.eq_ignore_ascii_case("true"))));
+    if let Some(l) = get(&["limit"]).and_then(|v| v.as_f64().or_else(|| v.as_str().and_then(|s| s.parse().ok()))) {
+        q.limit = (l as usize).clamp(1, 200);
+    }
+    Ok(q)
+}
+
+fn find_col<'a>(cols: &'a [Column], name: &str, file: &str) -> Result<&'a Column> {
+    cols.iter().find(|c| c.name.eq_ignore_ascii_case(name.trim())).ok_or_else(|| err(format!("no column \"{name}\" in {file}. Columns: {}", cols.iter().map(|c| c.name.as_str()).collect::<Vec<_>>().join(", "))))
+}
+
+/// Numbers compare as numbers, everything else as case-insensitive text.
+fn cmp_cells(a: &str, b: &str) -> std::cmp::Ordering {
+    match (as_number(a), as_number(b)) {
+        (Some(x), Some(y)) => x.total_cmp(&y),
+        _ => a.trim().to_lowercase().cmp(&b.trim().to_lowercase()),
+    }
+}
+
+fn aggregate(f: &str, values: &[&str]) -> (usize, Option<f64>) {
+    if f == "count" {
+        let n = values.iter().filter(|v| !v.trim().is_empty()).count();
+        return (n, Some(n as f64));
+    }
+    let mut nums: Vec<f64> = values.iter().filter_map(|v| as_number(v)).collect();
+    if nums.is_empty() {
+        return (0, None);
+    }
+    nums.sort_by(|a, b| a.total_cmp(b));
+    let sum: f64 = nums.iter().sum();
+    let mid = if nums.len() % 2 == 1 { nums[nums.len() / 2] } else { (nums[nums.len() / 2 - 1] + nums[nums.len() / 2]) / 2.0 };
+    let v = match f {
+        "sum" => sum,
+        "mean" => sum / nums.len() as f64,
+        "min" => nums[0],
+        "max" => nums[nums.len() - 1],
+        _ => mid,
+    };
+    (nums.len(), Some(v))
+}
+
+fn md_cell(s: &str) -> String {
+    s.replace('|', "\\|").split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// Filter, group, aggregate, sort and limit a table: every figure is computed from the whole file.
+pub fn query_table(name: &str, kind: &str, text: &str, q: &QuerySpec) -> Result<String> {
+    let (cols, total) = columns_of(kind, text)?;
+    if cols.is_empty() || total == 0 {
+        return Err(err(format!("{name} has no rows")));
+    }
+    let mut idx: Vec<usize> = (0..total).collect();
+    let mut notes: Vec<String> = Vec::new();
+    for (column, op, value) in &q.filters {
+        let c = find_col(&cols, column, name)?;
+        if !QUERY_OPS.contains(&op.as_str()) && op != "==" {
+            return Err(err(format!("unknown filter operator \"{op}\". Use one of: {}", QUERY_OPS.join(" "))));
+        }
+        idx.retain(|&i| {
+            let v = c.values.get(i).map(String::as_str).unwrap_or("");
+            match op.as_str() {
+                "=" | "==" => cmp_cells(v, value).is_eq(),
+                "!=" => !cmp_cells(v, value).is_eq(),
+                ">" => cmp_cells(v, value).is_gt(),
+                ">=" => cmp_cells(v, value).is_ge(),
+                "<" => cmp_cells(v, value).is_lt(),
+                "<=" => cmp_cells(v, value).is_le(),
+                _ => v.to_lowercase().contains(&value.to_lowercase()),
+            }
+        });
+        notes.push(format!("{} {op} {value}", c.name));
+    }
+    let limit = q.limit.clamp(1, 200);
+    let header = format!("TABLE {name}: {total} rows{} (computed from the whole file)", if notes.is_empty() { String::new() } else { format!("; filter {} → {} rows", notes.join(" AND "), idx.len()) });
+
+    let mut metrics: Vec<(String, Option<&Column>)> = Vec::new();
+    for (f, c) in &q.metrics {
+        if !QUERY_FNS.contains(&f.as_str()) {
+            return Err(err(format!("unknown metric \"{f}\". Use one of: {}", QUERY_FNS.join(", "))));
+        }
+        if f != "count" && c.is_none() {
+            return Err(err(format!("metric \"{f}\" needs a \"column\"")));
+        }
+        metrics.push((f.clone(), c.as_deref().map(|n| find_col(&cols, n, name)).transpose()?));
+    }
+    let label = |m: &(String, Option<&Column>)| m.1.map(|c| format!("{}({})", m.0, c.name)).unwrap_or_else(|| "count".into());
+    let vals_of = |m: &(String, Option<&Column>), rows: &[usize]| -> Vec<String> { rows.iter().map(|&i| m.1.map(|c| c.values.get(i).cloned().unwrap_or_default()).unwrap_or_else(|| "x".into())).collect() };
+
+    if let Some(g) = &q.group_by {
+        let gc = find_col(&cols, g, name)?;
+        let ms = if metrics.is_empty() { vec![("count".to_string(), None)] } else { metrics.clone() };
+        let mut order: Vec<String> = Vec::new();
+        let mut groups: HashMap<String, Vec<usize>> = HashMap::new();
+        for &i in &idx {
+            let raw = gc.values.get(i).map(|s| s.trim()).unwrap_or("");
+            let k = if raw.is_empty() { "(empty)".to_string() } else { raw.to_string() };
+            if !groups.contains_key(&k) {
+                order.push(k.clone());
+            }
+            groups.entry(k).or_default().push(i);
+        }
+        let mut rows: Vec<(String, usize, Vec<Option<f64>>)> = order
+            .iter()
+            .map(|k| {
+                let is = &groups[k];
+                (k.clone(), is.len(), ms.iter().map(|m| aggregate(&m.0, &vals_of(m, is).iter().map(String::as_str).collect::<Vec<_>>()).1).collect())
+            })
+            .collect();
+        let sort_key = q.sort_by.clone().unwrap_or_else(|| label(&ms[0])).to_lowercase();
+        let si = ms.iter().position(|m| label(m).to_lowercase() == sort_key).unwrap_or(0);
+        let by_group = sort_key == gc.name.to_lowercase();
+        let dir: f64 = if q.desc == Some(false) { 1.0 } else { -1.0 };
+        rows.sort_by(|a, b| {
+            let d = if by_group { a.0.cmp(&b.0) } else { a.2[si].unwrap_or(f64::NEG_INFINITY).total_cmp(&b.2[si].unwrap_or(f64::NEG_INFINITY)) };
+            let d = if dir < 0.0 { d.reverse() } else { d };
+            d.then(a.0.cmp(&b.0))
+        });
+        let n_groups = rows.len();
+        let mut out = format!("{header}\nGrouped by {}: {n_groups} groups{}\n| {} | rows | {} |\n|---|---|{}|\n", gc.name, if n_groups > limit { format!(" (showing {limit})") } else { String::new() }, gc.name, ms.iter().map(&label).collect::<Vec<_>>().join(" | "), ms.iter().map(|_| "---").collect::<Vec<_>>().join("|"));
+        for (k, n, vals) in rows.into_iter().take(limit) {
+            out.push_str(&format!("| {} | {n} | {} |\n", md_cell(&k), vals.iter().map(|v| v.map(format_number).unwrap_or_else(|| "—".into())).collect::<Vec<_>>().join(" | ")));
+        }
+        return Ok(out.trim_end().to_string());
+    }
+
+    if !metrics.is_empty() {
+        let lines: Vec<String> = metrics
+            .iter()
+            .map(|m| {
+                let vals = vals_of(m, &idx);
+                let (n, v) = aggregate(&m.0, &vals.iter().map(String::as_str).collect::<Vec<_>>());
+                format!("- {} = {}{}", label(m), v.map(format_number).unwrap_or_else(|| "no numeric values".into()), if m.1.is_some() && m.0 != "count" { format!(" (over {n} numeric values)") } else { String::new() })
+            })
+            .collect();
+        return Ok(format!("{header}\n{}", lines.join("\n")));
+    }
+
+    let pick: Vec<&Column> = if q.columns.is_empty() { cols.iter().take(12).collect() } else { q.columns.iter().map(|c| find_col(&cols, c, name)).collect::<Result<_>>()? };
+    if let Some(s) = &q.sort_by {
+        let sc = find_col(&cols, s, name)?;
+        let desc = q.desc == Some(true);
+        idx.sort_by(|&a, &b| {
+            let o = cmp_cells(sc.values.get(a).map(String::as_str).unwrap_or(""), sc.values.get(b).map(String::as_str).unwrap_or(""));
+            (if desc { o.reverse() } else { o }).then(a.cmp(&b))
+        });
+    }
+    let shown = idx.len().min(limit);
+    let mut out = format!("{header}\nShowing {shown} of {} rows{}\n| {} |\n|{}|\n", idx.len(), q.sort_by.as_ref().map(|s| format!(" sorted by {s}{}", if q.desc == Some(true) { " (descending)" } else { "" })).unwrap_or_default(), pick.iter().map(|c| c.name.as_str()).collect::<Vec<_>>().join(" | "), pick.iter().map(|_| "---").collect::<Vec<_>>().join("|"));
+    for &i in idx.iter().take(limit) {
+        out.push_str(&format!("| {} |\n", pick.iter().map(|c| md_cell(c.values.get(i).map(String::as_str).unwrap_or(""))).collect::<Vec<_>>().join(" | ")));
+    }
+    Ok(out.trim_end().to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -501,5 +707,59 @@ mod tests {
         assert!(summarize_table("d.json", "json", r#"{"a": 1}"#, None).is_err());
         assert!(summarize_table("d.json", "json", "[]", None).is_err());
         assert!(summarize_table("x.pdf", "pdf", "text", None).unwrap_err().to_string().contains("CSV, TSV and JSON"));
+    }
+}
+
+#[cfg(test)]
+mod query_tests {
+    use super::*;
+    use serde_json::json;
+
+    const CSV: &str = "date,category,amount,note\n2026-01-03,Food,12.50,lunch\n2026-01-04,Food,30,groceries\n2026-01-05,Rent,900,jan\n2026-02-01,Food,8,coffee\n2026-02-02,Fun,45.5,cinema\n2026-02-03,Fun,,missing amount\n";
+    fn run(a: serde_json::Value) -> Result<String> {
+        query_table("spend.csv", "csv", CSV, &query_from_args(&a)?)
+    }
+
+    #[test]
+    fn groups_and_sums_over_the_whole_file_biggest_first() {
+        let r = run(json!({"group_by": "category", "metrics": [{"column": "amount", "fn": "sum"}]})).unwrap();
+        assert!(r.contains("| category | rows | sum(amount) |"));
+        let rows: Vec<&str> = r.lines().filter(|l| l.starts_with("| Rent") || l.starts_with("| Fun") || l.starts_with("| Food")).collect();
+        assert_eq!(rows, vec!["| Rent | 1 | 900 |", "| Food | 3 | 50.5 |", "| Fun | 2 | 45.5 |"]);
+    }
+
+    #[test]
+    fn filters_compare_numbers_as_numbers_and_text_case_insensitively() {
+        assert!(run(json!({"where": [{"column": "amount", "op": ">", "value": 20}], "columns": ["category", "amount"], "sort_by": "amount", "desc": true})).unwrap().contains("Showing 3 of 3 rows"));
+        assert!(run(json!({"where": [{"column": "category", "value": "food"}], "metrics": [{"column": "amount", "fn": "mean"}]})).unwrap().contains("mean(amount) = 16.8333333333"));
+        assert!(run(json!({"where": [{"column": "note", "op": "contains", "value": "JAN"}], "columns": ["note"]})).unwrap().contains("| jan |"));
+    }
+
+    #[test]
+    fn aggregates_without_grouping_and_reports_the_numeric_count() {
+        let r = run(json!({"metrics": [{"column": "amount", "fn": "sum"}, {"fn": "count"}]})).unwrap();
+        assert!(r.contains("sum(amount) = 996 (over 5 numeric values)"), "{r}");
+        assert!(r.contains("- count = 6"), "{r}");
+    }
+
+    #[test]
+    fn lists_rows_with_a_limit_and_honest_totals() {
+        let r = run(json!({"limit": 2, "sort_by": "date", "desc": true})).unwrap();
+        assert!(r.contains("Showing 2 of 6 rows sorted by date (descending)"));
+        assert!(r.contains("2026-02-03") && !r.contains("2026-01-03"));
+    }
+
+    #[test]
+    fn accepts_nested_arguments_written_as_json_text() {
+        let r = run(json!({"group_by": "category", "metrics": "[{\"column\":\"amount\",\"fn\":\"sum\"}]", "where": {"column": "category", "op": "!=", "value": "Rent"}})).unwrap();
+        assert!(r.contains("| Food | 3 | 50.5 |") && !r.contains("| Rent |"));
+    }
+
+    #[test]
+    fn explains_a_wrong_column_operator_or_metric() {
+        assert!(run(json!({"group_by": "nope"})).unwrap_err().to_string().contains("no column \"nope\""));
+        assert!(run(json!({"where": [{"column": "amount", "op": "~", "value": 1}]})).unwrap_err().to_string().contains("unknown filter operator"));
+        assert!(run(json!({"metrics": [{"column": "amount", "fn": "avg"}]})).unwrap_err().to_string().contains("unknown metric"));
+        assert!(run(json!({"metrics": [{"fn": "sum"}]})).unwrap_err().to_string().contains("needs a \"column\""));
     }
 }

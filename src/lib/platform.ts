@@ -5,9 +5,16 @@
 import { openUrl } from '@tauri-apps/plugin-opener';
 
 declare const __GENIUS_TARGET__: string | undefined;
+declare const __GENIUS_MOBILE__: boolean | undefined;
 
 /** True in the browser build (Genius Web). */
 export const isWeb: boolean = typeof __GENIUS_TARGET__ !== 'undefined' && __GENIUS_TARGET__ === 'web';
+
+/** True inside the Android / iOS apps (a Capacitor shell around the web app). */
+export const isMobileApp: boolean = typeof __GENIUS_MOBILE__ !== 'undefined' && __GENIUS_MOBILE__ === true;
+
+/** Where the web functions (/api/web, /api/relay) live: this site on the web, the public site from inside the mobile apps. */
+export const apiBase: string = isMobileApp ? ((import.meta.env.VITE_API_BASE as string | undefined) ?? 'https://project-genius.netlify.app') : '';
 
 export interface Capabilities {
   /** Local project folders, terminal, git, build and preview (desktop only). */

@@ -111,6 +111,27 @@ describe('chat loop', () => {
     const r = await runTask(env, { taskId: 't7', conv, role: 'chat', message: 'Total?', attachments: [a], effort: 'balanced' }, ac());
     expect(r.answer).toContain('195.7');
   });
+
+  it('answers a specific question about an attached table with data_query (grouped totals), nested arguments written as JSON text included', async () => {
+    const { env, store, events } = await setup((m, n) => {
+      if (n === 0) {
+        const call = (args: object) => `<tool>${JSON.stringify({ name: 'data_query', args })}</tool>`;
+        // the first call writes its nested argument as JSON text (a common model habit), the second names a column that does not exist
+        return call({ file: att, group_by: 'city', metrics: JSON.stringify([{ column: 'sales', fn: 'sum' }]) }) + call({ id: att, group_by: 'nope' });
+      }
+      expect(last(m)).toContain('| Paris | 1 | 1000 |');
+      expect(last(m)).toContain('| Berlin | 2 | 30 |');
+      expect(last(m)).toContain('no column "nope"'); // a wrong column is explained, not guessed
+      return '<final>Paris 1000, Berlin 30.</final>';
+    });
+    const conv = await store.createConversation('chat', 'x');
+    const a = await store.addAttachment({ conversationId: conv.id, name: 'sales.csv', kind: 'csv', mime: 'text/csv', size: 40, scope: 'message', status: 'ready', error: null, text: 'city,sales\nBerlin,10\nBerlin,20\nParis,"1,000"\n', imageDataUrl: null, meta: {} });
+    att = a.id;
+    const r = await runTask(env, { taskId: 't7b', conv, role: 'chat', message: 'Sales per city?', attachments: [a], effort: 'balanced' }, ac());
+    expect(r.answer).toContain('Paris 1000');
+    expect(r.steps.map((x) => [x.tool, x.ok])).toEqual([['data_query', true], ['data_query', false]]);
+    void events;
+  });
 });
 let att = '';
 

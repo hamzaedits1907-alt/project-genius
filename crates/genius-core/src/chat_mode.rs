@@ -38,7 +38,7 @@ use tokio_util::sync::CancellationToken;
 pub const GENERAL_KIND: &str = "chat";
 
 /// What Genius Chat may call: read-only workspace/attachment access, memory, the web.
-pub const CHAT_TOOLS: &[&str] = &["list_files", "search", "read_file", "memory", "remember", "search_references", "read_reference", "calculate", "data_summary", "runtime_info", "capabilities", "todo", "web_search", "fetch_url"];
+pub const CHAT_TOOLS: &[&str] = &["list_files", "search", "read_file", "memory", "remember", "search_references", "read_reference", "calculate", "data_summary", "data_query", "runtime_info", "capabilities", "todo", "web_search", "fetch_url"];
 /// What Genius Research may call: the same, without memory writes.
 pub const RESEARCH_TOOLS: &[&str] = &["list_files", "search", "read_file", "memory", "search_references", "read_reference", "calculate", "runtime_info", "capabilities", "todo", "web_search", "fetch_url"];
 
@@ -832,7 +832,7 @@ fn injection_notice(flags: &[String]) -> String {
 }
 
 const CHAT_RULES: &str = r#"CHAT STYLE: warm, direct, honest. Plain language, no filler, no flattery; use short Markdown (bullets, tables for comparisons, fenced code with a language) only when it helps. Say "I'm not sure" or "I haven't verified this" when that is true; never invent facts, quotes, numbers, links or sources. When you cannot do something (for example read an image you cannot see, or access something not provided), say so plainly.
-NUMBERS: never do arithmetic or statistics in your head. Use calculate for any calculation, and data_summary (with the file id) for the figures of an attached CSV or JSON table; quote what the tool returned.
+NUMBERS: never do arithmetic or statistics in your head. Use calculate for any calculation, and data_summary (with the file id) for the overall figures of an attached CSV or JSON table, and data_query for any specific question about its rows (totals per category, the top 10, rows matching a condition); quote what the tool returned.
 FILES: attached files are inlined (long ones in part); use search_references / read_reference for the rest. Analyse what is actually in them and quote it; do not guess at missing parts.
 WEB: use web_search and fetch_url only when the question needs current or checkable information (and internet access is ON). When you used pages, name them and link the URLs you actually fetched. Training knowledge may be out of date; say when you answer from memory.
 LINKS: when the user gives a URL, open it with fetch_url first and report only what the returned text shows. If the result says the page is built by JavaScript or has little text, say exactly that. Never assume login systems, databases, back-end functions or technologies that are not visible in what you read. List each source once; no boilerplate warnings.

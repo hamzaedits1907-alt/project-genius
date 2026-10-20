@@ -12,6 +12,7 @@ import AuthScreen from './AuthScreen';
 import AccountSettings from './AccountSettings';
 import CodeView from './CodeView';
 import { accessToken, localOnly, sb, supabaseConfigured, useAuth, type Announcement } from './auth';
+import { apiBase, isMobileApp } from '../lib/platform';
 import { setRuntime } from './context';
 import { MemoryStore } from './store';
 import { SupabaseStore } from './supabaseStore';
@@ -21,6 +22,7 @@ import { startLiveRefresh } from './liveSync';
 import { keyHooks } from '../lib/api';
 import { onKeyRemoved, onKeySaved, startKeySync, stopKeySync } from './keySync';
 import { webLocalKeys } from './keyPorts';
+import { createNativeKeyVault, isNativeApp } from './nativeKeys';
 import { noWebTools, proxyTools } from './webTools';
 
 extraViews.code = CodeView;
@@ -137,7 +139,7 @@ function Shell({ runtime }: { runtime: WebRuntime }) {
   }, [navigate]);
   useEffect(() => {
     const p = routeToPath(route);
-    if (location.pathname !== p) history.pushState(null, '', p);
+    if (!isMobileApp && location.pathname !== p) history.pushState(null, '', p); // inside the app there is no address bar
   }, [route]);
 
   useEffect(() => {
@@ -190,7 +192,7 @@ export default function WebApp() {
   }, [init]);
 
   const userId = session?.user.id ?? null;
-  const vault = useMemo(() => createKeyVault(), []);
+  const vault = useMemo(() => (isNativeApp() ? createNativeKeyVault() : createKeyVault()), []);
   const store = useMemo(() => (userId ? new SupabaseStore(sb()) : localOnly ? new MemoryStore('genius.web.local') : null), [userId]);
   useEffect(() => {
     if (!store) {
@@ -198,7 +200,7 @@ export default function WebApp() {
       setRt(null);
       return;
     }
-    const rt = new WebRuntime({ store, tools: localOnly ? noWebTools : proxyTools({ url: '/api/web', accessToken }), accessToken: localOnly ? async () => '' : accessToken, relayUrl: '/api/relay', keys: vault });
+    const rt = new WebRuntime({ store, tools: localOnly ? noWebTools : proxyTools({ url: `${apiBase}/api/web`, accessToken }), accessToken: localOnly ? async () => '' : accessToken, relayUrl: `${apiBase}/api/relay`, keys: vault });
     setRuntime(rt);
     void Promise.all([vault.ready, rt.load()]).then(() => setRt(rt)); // remembered keys are decrypted before the first request
     return () => {

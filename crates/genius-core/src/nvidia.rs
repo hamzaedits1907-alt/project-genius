@@ -183,6 +183,9 @@ pub struct NvidiaClient {
     base_url: String,
     api_key: Option<String>,
     pub idle_timeout: Duration,
+    /// How long the provider may take to START answering (response headers, then the first data): a request that is
+    /// accepted and then never answered used to hang for minutes (or forever before the first byte).
+    pub start_timeout: Duration,
     pub max_retries: u32,
     params: ParamMemory,
     kind: ProviderKind,
@@ -196,7 +199,7 @@ impl NvidiaClient {
             .user_agent(concat!("ProjectGenius/", env!("CARGO_PKG_VERSION")))
             .build()
             .map_err(|e| ProviderError::Network(e.to_string()))?;
-        Ok(Self { http, base_url: base, api_key, idle_timeout: Duration::from_secs(180), max_retries: 3, params: ParamMemory::default(), kind: ProviderKind::Nvidia })
+        Ok(Self { http, base_url: base, api_key, idle_timeout: Duration::from_secs(120), start_timeout: Duration::from_secs(90), max_retries: 3, params: ParamMemory::default(), kind: ProviderKind::Nvidia })
     }
 
     /// Talk to another provider (default: NVIDIA / OpenAI chat-completions).
@@ -380,6 +383,9 @@ impl NvidiaClient {
         let send = req.send();
         let resp = tokio::select! {
             _ = cancel.cancelled() => return Err(ProviderError::Cancelled),
+            _ = tokio::time::sleep(self.start_timeout) => {
+                return Err(ProviderError::Timeout(format!("the provider did not start answering within {}s", self.start_timeout.as_secs())))
+            }
             r = send => r.map_err(net_err)?,
         };
         let status = resp.status().as_u16();
@@ -429,14 +435,17 @@ impl NvidiaClient {
         let mut sse = SseParser::default();
         let mut filter = ThinkFilter::default();
         let mut bytes = resp.bytes_stream();
+        let mut got_data = false;
         loop {
+            let wait = if got_data { self.idle_timeout } else { self.start_timeout };
             let next = tokio::select! {
                 _ = cancel.cancelled() => return Err(ProviderError::Cancelled),
-                _ = tokio::time::sleep(self.idle_timeout) => {
-                    return Err(ProviderError::Timeout(format!("no data received for {}s while streaming", self.idle_timeout.as_secs())))
+                _ = tokio::time::sleep(wait) => {
+                    return Err(ProviderError::Timeout(format!("no data received for {}s while streaming", wait.as_secs())))
                 }
                 n = bytes.next() => n,
             };
+            got_data = true;
             let Some(chunk) = next else { break };
             let chunk = chunk.map_err(net_err)?;
             for data in sse.push(&String::from_utf8_lossy(&chunk)) {
@@ -538,14 +547,17 @@ impl NvidiaClient {
             return state.finish();
         }
         let mut bytes = resp.bytes_stream();
+        let mut got_data = false;
         loop {
+            let wait = if got_data { self.idle_timeout } else { self.start_timeout };
             let next = tokio::select! {
                 _ = cancel.cancelled() => return Err(ProviderError::Cancelled),
-                _ = tokio::time::sleep(self.idle_timeout) => {
-                    return Err(ProviderError::Timeout(format!("no data received for {}s while streaming", self.idle_timeout.as_secs())))
+                _ = tokio::time::sleep(wait) => {
+                    return Err(ProviderError::Timeout(format!("no data received for {}s while streaming", wait.as_secs())))
                 }
                 n = bytes.next() => n,
             };
+            got_data = true;
             let Some(chunk) = next else { break };
             let chunk = chunk.map_err(net_err)?;
             for data in sse.push(&String::from_utf8_lossy(&chunk)) {

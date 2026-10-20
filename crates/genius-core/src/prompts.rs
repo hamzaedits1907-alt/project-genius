@@ -102,7 +102,7 @@ pub fn plan_messages(description: &str, constraints: &str) -> Vec<ChatMessage> {
         r#"You are the planning engine of Project Genius, an AI software studio. Turn the user's idea into a precise, buildable specification.
 {STACK}
 {DESIGN_GUIDE}
-Make ordinary product decisions yourself (including a concrete visual direction: mood, palette, fonts) and record the important ones under "assumptions". Keep scope realistic for a first version that can be fully implemented (typically 4-12 source files; HARD LIMIT 22 entries in "files"). Do not give every tiny component its own file and stylesheet: put small shared UI pieces together, share one stylesheet where sensible, and build the features the user asked for rather than a large design system.
+Make ordinary product decisions yourself (including a concrete visual direction: mood, palette, fonts) and record the important ones under "assumptions". Keep scope realistic for a first version that can be fully implemented (typically 6-12 source files; HARD LIMIT 18 entries in "files"). Do not give every tiny component its own file and stylesheet: put small shared UI pieces together, share one stylesheet where sensible, and build the features the user asked for rather than a large design system.
 Respond with ONLY one JSON object (no markdown fences, no commentary) with exactly these keys:
 {{
   "name": "short product name",
@@ -150,7 +150,7 @@ pub fn generate_messages(spec: &ProjectSpec, template_context: &str, memory: &st
 /// Files per model call when a new application is generated. One answer that holds a whole app (40 files in
 /// one real Personal Finance Tracker run) is cut off by the output limit again and again and ends as drafts
 /// that never build, so the app is written a few files at a time, dependencies first.
-pub const GENERATE_BATCH_FILES: usize = 4;
+pub const GENERATE_BATCH_FILES: usize = 5;
 
 /// How early a planned file must be written: shared styles, types and helpers first, the app shell last, so
 /// every later file can import what already exists.
@@ -232,7 +232,7 @@ pub fn generate_batch_messages(spec: &ProjectSpec, template_context: &str, memor
 
 {FILE_PROTOCOL}
 
-The application is written a few files at a time (this is part {} of {}). Write ONLY the files listed under FILES TO WRITE NOW, each complete, and nothing else: no files that are not listed, no README unless listed. Keep each file focused (under about 250 lines) and finish every file. Reuse what already exists: import from the WRITTEN files exactly the names, props and types shown there, and never redefine them.",
+The application is written a few files at a time (this is part {} of {}). Write ONLY the files listed under FILES TO WRITE NOW, each complete, and nothing else: no files that are not listed, no README unless listed. Keep each file small and focused (under about 120 lines, compact code, no long comments) and finish every file: a short complete file is better than a long one that is cut off. Reuse what already exists: import from the WRITTEN files exactly the names, props and types shown there, and never redefine them.",
         part + 1,
         parts
     );
@@ -379,10 +379,32 @@ mod tests {
         let spec = ProjectSpec::default();
         assert!(generate_messages(&spec, "", "")[0].content.contains("DESIGN GUIDE"));
         assert!(change_messages("r", "c", "", "")[0].content.contains("DESIGN GUIDE"));
-        assert!(plan_messages("A site", "")[0].content.contains("up to ~25"));
+        assert!(plan_messages("A site", "")[0].content.contains("HARD LIMIT 18"));
         let id = agent_identity("Nova", "meta/llama-3.3-70b-instruct", false);
         assert!(id.contains("You are Nova") && id.contains("meta/llama-3.3-70b-instruct") && id.contains("OFF"));
         assert!(agent_workflow(true).contains("web_search") && !agent_workflow(false).contains("fetch_url"));
+    }
+
+    fn pf(path: &str) -> crate::spec::PlannedFile {
+        crate::spec::PlannedFile { path: path.into(), purpose: format!("purpose of {path}") }
+    }
+
+    #[test]
+    fn files_are_written_dependencies_first_and_the_app_shell_last() {
+        let planned = vec![pf("src/App.tsx"), pf("src/pages/Dashboard.tsx"), pf("src/components/Card.tsx"), pf("src/hooks/useTransactions.ts"), pf("src/types.ts"), pf("src/index.css"), pf("README.md"), pf("src/lib/format.ts"), pf("src/components/Card.tsx")];
+        let order: Vec<String> = generation_order(&planned).into_iter().map(|f| f.path).collect();
+        assert_eq!(order, vec!["src/index.css", "src/types.ts", "src/lib/format.ts", "src/hooks/useTransactions.ts", "src/components/Card.tsx", "src/pages/Dashboard.tsx", "src/App.tsx", "README.md"]);
+    }
+
+    #[test]
+    fn a_batch_prompt_names_only_its_files_and_shows_what_exists() {
+        let written = vec![("src/types.ts".to_string(), "export interface Tx { id: string }\n".to_string()), ("src/lib/big.ts".to_string(), format!("export function f() {{}}\n{}", "// padding\n".repeat(400)))];
+        let m = generate_batch_messages(&ProjectSpec::default(), "", "", &written, &[pf("src/components/Card.tsx")], 1, 4, "A previous attempt was cut off.");
+        let (system, user) = (&m[0].content, &m[1].content);
+        assert!(system.contains("part 2 of 4") && system.contains("under about 120 lines"));
+        assert!(user.contains("FILES TO WRITE NOW:\n- src/components/Card.tsx") && user.contains("A previous attempt was cut off."));
+        assert!(user.contains("<<<WRITTEN: src/types.ts>>>\nexport interface Tx"), "small files are shown in full");
+        assert!(user.contains("src/lib/big.ts (signatures only)") && !user.contains("// padding"), "large files only as exports");
     }
 
     #[test]

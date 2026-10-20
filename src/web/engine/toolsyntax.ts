@@ -21,18 +21,19 @@ export interface Turn {
 }
 
 /** Tools the browser runtime can run. */
-export const WEB_TOOL_NAMES = ['web_search', 'fetch_url', 'calculate', 'data_summary', 'todo', 'search_references', 'read_reference', 'runtime_info', 'capabilities'] as const;
+export const WEB_TOOL_NAMES = ['web_search', 'fetch_url', 'calculate', 'data_summary', 'data_query', 'todo', 'search_references', 'read_reference', 'runtime_info', 'capabilities'] as const;
 
 const ARG_ALIASES: Record<string, Record<string, string[]>> = {
   web_search: { query: ['q', 'text', 'search', 'term', 'keywords', 'queries'] },
   fetch_url: { url: ['link', 'href', 'uri', 'address', 'urls'] },
   calculate: { expression: ['expr', 'formula', 'input', 'query', 'math', 'calculation'] },
   data_summary: { id: ['file', 'file_id', 'fileId', 'reference', 'attachment'], column: ['col', 'field'] },
+  data_query: { id: ['file', 'file_id', 'fileId', 'reference', 'attachment'], where: ['filter', 'filters', 'conditions'], group_by: ['groupBy', 'group', 'by'], metrics: ['aggregate', 'aggregates', 'aggregations', 'agg'], sort_by: ['sortBy', 'sort', 'order_by', 'orderBy'], columns: ['select', 'fields'] },
   search_references: { query: ['q', 'text', 'search', 'term'] },
   read_reference: { id: ['reference', 'ref', 'reference_id'] },
   todo: { items: ['todos', 'list', 'tasks', 'steps'] },
 };
-const PRIMARY: Record<string, string> = { web_search: 'query', fetch_url: 'url', calculate: 'expression', data_summary: 'id', search_references: 'query', read_reference: 'id', todo: 'items' };
+const PRIMARY: Record<string, string> = { web_search: 'query', fetch_url: 'url', calculate: 'expression', data_summary: 'id', data_query: 'id', search_references: 'query', read_reference: 'id', todo: 'items' };
 const TOOL_SYNONYMS: Record<string, string[]> = {
   web_search: ['websearch', 'search_web', 'internet_search', 'google', 'browse_search', 'search_the_web'],
   fetch_url: ['fetchurl', 'open_url', 'read_url', 'visit', 'browse', 'get_url', 'fetch_page', 'read_page', 'open_page'],
@@ -204,6 +205,17 @@ export function normalizeCall(name: string, rawArgs: unknown): ToolCall {
     if (Array.isArray(args.query)) args.query = args.query.find((x) => typeof x === 'string');
     if (typeof args.query === 'string') args.query = args.query.trim().replace(/^["']+|["']+$/g, '').trim();
   }
+  if (name === 'data_query') {
+    for (const k of ['where', 'metrics', 'columns']) {
+      const v = decodeNested(args[k]);
+      if (v !== undefined) args[k] = v;
+    }
+    if (isObj(args.where)) args.where = [args.where];
+    if (isObj(args.metrics)) args.metrics = [args.metrics];
+    if (typeof args.columns === 'string') args.columns = args.columns.split(',').map((x: string) => x.trim()).filter(Boolean);
+    if (typeof args.desc === 'string') args.desc = args.desc.toLowerCase() === 'true';
+    if (typeof args.limit === 'string') args.limit = Number(args.limit);
+  }
   if (name === 'todo') {
     const items = decodeNested(args.items);
     if (Array.isArray(items)) args.items = items.map((i) => (typeof i === 'string' ? { text: i } : isObj(i) ? { ...i, text: i.text ?? i.content ?? i.title ?? i.task ?? i.description ?? i.name } : i));
@@ -222,6 +234,7 @@ export function validateCall(c: ToolCall): string | null {
     case 'calculate':
       return str('expression');
     case 'data_summary':
+    case 'data_query':
     case 'read_reference':
       return str('id');
     case 'search_references':
@@ -241,6 +254,7 @@ export function toolExample(name: string): string {
     fetch_url: '{"url": "https://react.dev/reference/react/useState"}',
     calculate: '{"expression": "(1250 * 0.19) + sqrt(144)"}',
     data_summary: '{"id": "<file id>", "column": "price"}',
+    data_query: '{"id": "<file id>", "where": [{"column": "year", "op": ">=", "value": 2024}], "group_by": "category", "metrics": [{"column": "amount", "fn": "sum"}], "sort_by": "sum(amount)", "limit": 10}',
     search_references: '{"query": "pricing"}',
     read_reference: '{"id": "<file id>"}',
     todo: '{"items": [{"text": "Search", "status": "active"}, {"text": "Write report", "status": "pending"}]}',

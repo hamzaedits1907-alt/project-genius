@@ -11,7 +11,7 @@ import { buildSystemPrompt, refersToImage } from './prompts';
 import { complete, ProviderError, type ChatMsg, type CompleteOptions, type CompletionResult, type ProviderConfig } from './providers';
 import { contentHash, defang, firstUse, injectionSignals, isOfficialHost, issues, officialDomains, snippetOf, stripAppLinks, stripSourcesSection, validate, validationFeedback, validationSummary, withSourcesSection, type Source, type Validation } from './research';
 import { isVisionModel, type Effort, type Role } from './router';
-import { summarizeTable } from './tables';
+import { queryTable, summarizeTable, type QueryArgs } from './tables';
 import { hasResidue, isInvalid, parseTurn, stripResidue, toolExample, validateCall, WEB_TOOL_NAMES, type ToolCall } from './toolsyntax';
 
 export interface WebPage {
@@ -276,7 +276,7 @@ ${input.extraSystem}` : ''),
       return fail(`invalid arguments for ${c.name}: ${bad}. Example: ${toolExample(c.name)}`);
     }
     protocolStreak = 0;
-    if ((seen.get(key) ?? 0) >= 1 && ['web_search', 'fetch_url', 'calculate', 'data_summary', 'read_reference', 'search_references'].includes(c.name)) {
+    if ((seen.get(key) ?? 0) >= 1 && ['web_search', 'fetch_url', 'calculate', 'data_summary', 'data_query', 'read_reference', 'search_references'].includes(c.name)) {
       record(c.name, c.args, false, `${c.name} repeated (skipped)`, { duplicate: true }, t0);
       return { ok: false, text: 'You already called this tool with identical arguments and nothing changed since; its result is earlier in the conversation. Use it, or try something different.' };
     }
@@ -339,6 +339,17 @@ ${input.extraSystem}` : ''),
           const text = summarizeTable(a.name, a.kind, a.text, typeof c.args.column === 'string' ? c.args.column : undefined);
           record('data_summary', c.args, true, `Summarised ${a.name}`, { file: a.name, id: a.id }, t0);
           return { ok: true, text: clip(text, MAX_RESULT) };
+        }
+        case 'data_query': {
+          const a = allAtts.find((x) => x.id === c.args.id) ?? (await env.store.getAttachment(String(c.args.id)));
+          if (!a || a.conversationId !== input.conv.id) return fail('that file is not attached to this conversation');
+          try {
+            const text = queryTable(a.name, a.kind, a.text, c.args as unknown as QueryArgs);
+            record('data_query', c.args, true, `Queried ${a.name}`, { file: a.name, id: a.id }, t0);
+            return { ok: true, text: clip(text, MAX_RESULT) };
+          } catch (e) {
+            return fail(e instanceof Error ? e.message : 'could not run that query');
+          }
         }
         case 'search_references': {
           const q = String(c.args.query).toLowerCase();

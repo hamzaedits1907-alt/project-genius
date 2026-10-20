@@ -5,7 +5,7 @@
 // is only a convenience, not a protection.
 import { createClient, type Session, type SupabaseClient } from '@supabase/supabase-js';
 import { create } from 'zustand';
-import { isWeb } from '../lib/platform';
+import { isMobileApp, isWeb } from '../lib/platform';
 
 const CONFIG_KEY = 'genius.account.config';
 
@@ -46,7 +46,7 @@ function resolveConfig(): { url?: string; anon?: string; source: 'build' | 'save
   } catch {
     /* storage unavailable: treated as not configured */
   }
-  if (!isWeb) return { ...DESKTOP_DEFAULT, source: 'build' };
+  if (!isWeb || isMobileApp) return { ...DESKTOP_DEFAULT, source: 'build' };
   return { source: 'none' };
 }
 const cfg = resolveConfig();
@@ -178,7 +178,7 @@ export async function accessToken(): Promise<string> {
 }
 
 /** The callback address for emails (confirmation, magic link, password reset). Must be listed in Supabase's redirect URLs. */
-export const redirectTo = () => `${isWeb ? location.origin : SITE_ORIGIN}/app`;
+export const redirectTo = () => `${isWeb && !isMobileApp ? location.origin : SITE_ORIGIN}/app`;
 
 /** Whether a feature is usable for this user (always true for local-only development and the desktop app). */
 export function featureOf(access: Access | null, key: string): FeatureState {

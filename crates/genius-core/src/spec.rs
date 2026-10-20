@@ -198,7 +198,7 @@ pub fn parse_spec(text: &str) -> Result<ProjectSpec> {
 }
 
 /// A plan bigger than this cannot be written reliably in one pass; the planner is asked to merge files.
-pub const MAX_PLANNED_FILES: usize = 30;
+pub const MAX_PLANNED_FILES: usize = 20;
 
 pub fn validate(spec: &ProjectSpec) -> Result<()> {
     if spec.name.trim().is_empty() {

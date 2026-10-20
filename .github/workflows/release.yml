@@ -174,10 +174,76 @@ jobs:
           path: ${{ runner.temp }}/build-record.json
           if-no-files-found: error
 
+  android:
+    # The Android app. Signed with the owner's release key when the repository secrets exist (see docs/MOBILE.md);
+    # otherwise a debug-signed APK is built and named "-debug" so it can never be mistaken for a release-signed one.
+    needs: [prepare, build]
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+      - run: npm ci
+      - name: Bundle the web app and sync the Android project
+        env:
+          VITE_SUPABASE_URL: ${{ vars.VITE_SUPABASE_URL }}
+          VITE_SUPABASE_ANON_KEY: ${{ vars.VITE_SUPABASE_ANON_KEY }}
+        run: npm run cap:sync
+      - name: Build the APK
+        id: apk
+        working-directory: android
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
+          KEYSTORE_B64: ${{ secrets.ANDROID_KEYSTORE_B64 }}
+          GENIUS_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          GENIUS_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          GENIUS_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          if [[ -n "$KEYSTORE_B64" ]]; then
+            echo "$KEYSTORE_B64" | base64 -d > "$RUNNER_TEMP/genius.jks"
+            export GENIUS_KEYSTORE_FILE="$RUNNER_TEMP/genius.jks"
+            ./gradlew assembleRelease --no-daemon
+            out="Genius_${VERSION}_android.apk"
+            cp app/build/outputs/apk/release/app-release.apk "../$out"
+            echo "signed=release" >> "$GITHUB_OUTPUT"
+          else
+            echo "::warning title=Android APK is debug-signed::The ANDROID_KEYSTORE_* repository secrets are not set, so the APK is signed with a throw-away debug key (see docs/MOBILE.md)."
+            ./gradlew assembleDebug --no-daemon
+            out="Genius_${VERSION}_android-debug.apk"
+            cp app/build/outputs/apk/debug/app-debug.apk "../$out"
+            echo "signed=debug" >> "$GITHUB_OUTPUT"
+          fi
+          echo "file=$out" >> "$GITHUB_OUTPUT"
+      - name: Verify the APK (valid, right package, right version, signed)
+        run: |
+          $ANDROID_HOME/build-tools/$(ls $ANDROID_HOME/build-tools | sort -V | tail -1)/apksigner verify --print-certs "${{ steps.apk.outputs.file }}" | head -3
+          $ANDROID_HOME/build-tools/$(ls $ANDROID_HOME/build-tools | sort -V | tail -1)/aapt2 dump badging "${{ steps.apk.outputs.file }}" | grep -E "^package: name='app.projectgenius.mobile' versionCode='[0-9]+' versionName='${{ needs.prepare.outputs.version }}'"
+      - name: Attach the APK to the draft release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: v${{ needs.prepare.outputs.version }}
+          ARTIFACT_PATHS: '["${{ github.workspace }}/${{ steps.apk.outputs.file }}"]'
+          PLATFORM: android
+          ARGS: ''
+        run: |
+          gh release upload "$TAG" "${{ steps.apk.outputs.file }}" -R "$GITHUB_REPOSITORY" --clobber
+          node scripts/release-record.mjs "$RUNNER_TEMP/build-record.json"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: build-record-android
+          path: ${{ runner.temp }}/build-record.json
+          if-no-files-found: error
+
   verify-artifacts:
     # The published (draft) assets must be byte-identical to what the runners built from this
     # commit, the Windows installer must be a real NSIS executable, and the tag must point here.
-    needs: [prepare, build]
+    needs: [prepare, build, android]
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v4
@@ -193,6 +259,7 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAG: v${{ needs.prepare.outputs.version }}
           VERSION: ${{ needs.prepare.outputs.version }}
+          EXPECTED_RECORDS: '5'
         run: |
           mkdir -p records-flat assets
           # download-artifact puts each artifact in its own sub folder; every record is renamed uniquely.
@@ -217,7 +284,7 @@ jobs:
           gh release upload "$TAG" assets/RELEASE_MANIFEST.json -R "$GITHUB_REPOSITORY" --clobber
 
   checksums:
-    needs: [prepare, build, ci-gate, verify-artifacts]
+    needs: [prepare, build, android, ci-gate, verify-artifacts]
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v4
@@ -233,7 +300,7 @@ jobs:
           gh release download "$TAG" -R "$GITHUB_REPOSITORY"
           ls -la
           # Every platform must have produced its installer before anyone can update to it.
-          for pattern in '*-setup.exe' '*.msi' '*_aarch64.dmg' '*_x64.dmg' '*.AppImage' '*.deb'; do
+          for pattern in '*-setup.exe' '*.msi' '*_aarch64.dmg' '*_x64.dmg' '*.AppImage' '*.deb' '*.apk'; do
             compgen -G "$pattern" > /dev/null || { echo "::error::missing installer matching $pattern"; exit 1; }
           done
           # Last check before publishing: the files are still the ones recorded in the manifest.

@@ -9,6 +9,7 @@ import { create } from 'zustand';
 import type { SupabaseClient } from '@supabase/supabase-js';
 import type { ProviderId } from '../lib/types';
 import { AccountVault, PROVIDER_IDS, WrongPassphrase, type VaultRemote, type VaultRow } from './accountVault';
+import { isNativeApp, secureStorage } from './nativeKeys';
 
 /** Where this device keeps its own keys (the OS credential store on the desktop, the encrypted browser store on the web). */
 export interface LocalKeys {
@@ -52,6 +53,28 @@ function idb<T>(mode: IDBTransactionMode, fn: (s: IDBObjectStore) => IDBRequest<
     };
   });
 }
+/** What "do not ask again on this device" remembers: the derived key in the browser, the passphrase in the Keystore/Keychain inside the mobile apps. */
+const deviceMemory = {
+  async get(uid: string): Promise<{ key?: CryptoKey; passphrase?: string } | null> {
+    if (isNativeApp()) {
+      const v = await (await secureStorage()).get(`vaultpass.${uid}`).catch(() => null);
+      return typeof v === 'string' && v ? { passphrase: v } : null;
+    }
+    const k = await deviceKey.get(uid);
+    return k ? { key: k } : null;
+  },
+  async put(uid: string, m: { key: CryptoKey; passphrase?: string }): Promise<boolean> {
+    if (isNativeApp()) {
+      if (!m.passphrase) return false;
+      return (await secureStorage()).set(`vaultpass.${uid}`, m.passphrase).then(() => true, () => false);
+    }
+    return deviceKey.put(uid, m.key);
+  },
+  async del(uid: string): Promise<void> {
+    if (isNativeApp()) await (await secureStorage()).remove(`vaultpass.${uid}`).catch(() => undefined);
+    else await deviceKey.del(uid);
+  },
+};
 const deviceKey = {
   get: (uid: string) => idb<CryptoKey | undefined>('readonly', (s) => s.get(`vault:${uid}`)).catch(() => undefined),
   put: (uid: string, k: CryptoKey) => idb('readwrite', (s) => s.put(k, `vault:${uid}`)).then(() => true).catch(() => false),
@@ -124,9 +147,9 @@ export async function reconcile(): Promise<void> {
   if (changed) local.changed();
 }
 
-async function openWith(k: CryptoKey, remember: boolean) {
+async function openWith(k: CryptoKey, remember: boolean, passphrase?: string) {
   key = k;
-  if (remember && userId) set({ remembered: await deviceKey.put(userId, k) });
+  if (remember && userId) set({ remembered: await deviceMemory.put(userId, { key: k, passphrase }) });
   set({ state: 'unlocked', error: null });
   await reconcile();
   if (!timer) {
@@ -146,14 +169,15 @@ export async function startKeySync(sb: SupabaseClient, uid: string, keys: LocalK
   try {
     const row = await supabaseRemote(sb, uid).get();
     if (!row) return set({ state: 'none', providers: [], remembered: false });
-    const saved = await deviceKey.get(uid);
+    const saved = await deviceMemory.get(uid);
     if (saved) {
       try {
-        await vault.verify(saved, row);
+        const k = saved.key ?? (await vault.unlock(saved.passphrase ?? ''));
+        await vault.verify(k, row);
         set({ remembered: true });
-        return await openWith(saved, false);
+        return await openWith(k, false);
       } catch {
-        await deviceKey.del(uid); // the passphrase was changed or the vault reset elsewhere
+        await deviceMemory.del(uid); // the passphrase was changed or the vault reset elsewhere
       }
     }
     set({ state: 'locked', providers: Object.keys(row.entries ?? {}) as ProviderId[], remembered: false });
@@ -189,19 +213,19 @@ export const keyVaultActions = {
   create: (passphrase: string, remember: boolean) =>
     guarded(async () => {
       if (!vault) throw new Error('Sign in first.');
-      await openWith(await vault.create(passphrase), remember);
+      await openWith(await vault.create(passphrase), remember, passphrase);
       set({ notice: 'Your key vault is ready. Keys you save now are available on every device after you unlock the vault there.' });
     }),
   unlock: (passphrase: string, remember: boolean) =>
     guarded(async () => {
       if (!vault) throw new Error('Sign in first.');
-      await openWith(await vault.unlock(passphrase), remember);
+      await openWith(await vault.unlock(passphrase), remember, passphrase);
       set({ notice: 'Unlocked. Your saved keys are on this device now.' });
     }),
   /** Lock this device: forget the remembered key. Keys already copied to this device stay (they are in its own secure store). */
   lock: () =>
     guarded(async () => {
-      if (userId) await deviceKey.del(userId);
+      if (userId) await deviceMemory.del(userId);
       key = null;
       set({ state: 'locked', remembered: false });
     }),
@@ -209,7 +233,7 @@ export const keyVaultActions = {
     guarded(async () => {
       if (!vault) throw new Error('Sign in first.');
       const k = await vault.changePassphrase(oldPassphrase, newPassphrase);
-      await openWith(k, useKeyVault.getState().remembered);
+      await openWith(k, useKeyVault.getState().remembered, newPassphrase);
       set({ notice: 'Passphrase changed. Unlock the vault again on your other devices with the new passphrase.' });
     }),
   /** Forgotten passphrase: remove the vault and every key in it. */
@@ -217,7 +241,7 @@ export const keyVaultActions = {
     guarded(async () => {
       if (!vault) throw new Error('Sign in first.');
       await vault.reset();
-      if (userId) await deviceKey.del(userId);
+      if (userId) await deviceMemory.del(userId);
       key = null;
       set({ state: 'none', providers: [], remembered: false, notice: 'The vault was deleted. Create a new one and save your keys again.' });
     }),
