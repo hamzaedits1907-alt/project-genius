@@ -7,7 +7,7 @@
 import type { AgentStep } from '../../lib/types';
 import type { AttachmentRec, ConversationRec, MessageRec, WebStore } from '../store';
 import { calculate, CalcError, formatNumber } from './calc';
-import { buildSystemPrompt, refersToImage } from './prompts';
+import { buildSystemPrompt, clarificationNudge, isIdleClarification, refersToImage } from './prompts';
 import { complete, ProviderError, type ChatMsg, type CompleteOptions, type CompletionResult, type ProviderConfig } from './providers';
 import { contentHash, defang, firstUse, injectionSignals, isOfficialHost, issues, officialDomains, snippetOf, stripAppLinks, stripSourcesSection, validate, validationFeedback, validationSummary, withSourcesSection, type Source, type Validation } from './research';
 import { isVisionModel, type Effort, type Role } from './router';
@@ -394,6 +394,7 @@ ${input.extraSystem}` : ''),
   };
 
   let answer = '';
+  let clarified = false;
   let stopped: string | null = null;
   try {
     for (let step = 0; ; step++) {
@@ -433,6 +434,12 @@ ${input.extraSystem}` : ''),
           continue;
         }
         final = stripResidue(final, known) || 'I couldn\'t complete that lookup (my tool call was malformed). Please ask again.';
+      }
+      // a bare clarifying question to an answerable question: one nudge to answer (and look it up) instead
+      if (!clarified && !last && steps.length === 0 && isIdleClarification(final)) {
+        clarified = true;
+        messages.push({ role: 'assistant', content: res.content }, { role: 'user', content: clarificationNudge(env.settings.internetAccess) });
+        continue;
       }
       if (env.drainSteering(input.taskId).length === 0) {
         answer = final.trim();

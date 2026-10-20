@@ -383,3 +383,34 @@ async fn the_product_creator_is_configured_and_never_confused_with_the_user() {
     let third = system_of(&env.log.lock().unwrap()[2]);
     assert!(third.contains("do not invent a team") && !third.contains("created by"), "{third}");
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_bare_clarifying_question_is_nudged_once_into_a_real_answer() {
+    // The field report: "What was the last route of a340 before retire" got "Which A340 do you mean?" three times.
+    let env = setup(Some(TEXT), &[], None, |body| {
+        if last_text(body).contains("Do not ask the user to clarify") {
+            "<final>Reading \"a340\" as the Airbus A340 family: it was retired from scheduled service in stages; I could not verify one single last route from what I read.</final>".into()
+        } else {
+            "<final>I'm not sure which A340 you're referring to. Could you clarify which aircraft's last route you want to know about?</final>".into()
+        }
+    })
+    .await;
+    let g = &env.g;
+    let conv = g.create_chat_conversation("chat", None).unwrap();
+    let (status, msgs) = send(g, &conv.row.id, "What was the last route of a340 before retire", &[]).await;
+    assert_eq!(status, EventStatus::Completed);
+    let answer = &last_assistant(&msgs).content;
+    assert!(answer.contains("Airbus A340") && !answer.trim_end().ends_with('?'), "{answer}");
+    let bodies = env.log.lock().unwrap().clone();
+    assert_eq!(bodies.len(), 2, "one nudge, then the answer");
+    assert!(system_of(&bodies[0]).contains("Never answer a factual question with only a question back"));
+    assert!(system_of(&bodies[0]).contains("Never invent facts, dates, routes, numbers, names or links"));
+    assert!(last_text(&bodies[1]).contains("web_search"), "with internet on, the nudge sends the model to the web");
+
+    // a model that keeps asking is not looped: one nudge only
+    let env2 = setup(Some(TEXT), &[], None, |_| "<final>Which aircraft do you mean?</final>".into()).await;
+    let conv2 = env2.g.create_chat_conversation("chat", None).unwrap();
+    let (_, msgs2) = send(&env2.g, &conv2.row.id, "tell me about it", &[]).await;
+    assert_eq!(last_assistant(&msgs2).content.trim(), "Which aircraft do you mean?");
+    assert_eq!(env2.log.lock().unwrap().len(), 2);
+}

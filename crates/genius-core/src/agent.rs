@@ -1402,6 +1402,7 @@ impl Genius {
         let limits = self.settings()?.limits;
         let mut verify_rounds = 0;
         let mut residue_rounds = 0usize;
+        let mut clarified = false;
         let mut used = 0usize;
         let mut iteration = 0usize;
         loop {
@@ -1493,6 +1494,13 @@ impl Genius {
                     }
                     let cleaned = crate::toolcall::strip_residue(&final_text, &names);
                     return Ok(if cleaned.trim().is_empty() { "I couldn't complete that lookup (my tool call was malformed). Please ask again.".to_string() } else { cleaned });
+                }
+                // A bare clarifying question to a question that can be answered (or looked up): one nudge to answer instead.
+                if matches!(run.role, Role::Chat | Role::Research) && !clarified && !last && run.steps.is_empty() && crate::chat_mode::is_idle_clarification(&final_text) {
+                    clarified = true;
+                    messages.push(ChatMessage::assistant(text.clone()));
+                    messages.push(ChatMessage::user(crate::chat_mode::clarification_nudge(self.settings()?.internet_access)));
+                    continue;
                 }
                 return Ok(final_text);
             }
