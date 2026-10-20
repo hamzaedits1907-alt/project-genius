@@ -22,7 +22,7 @@ describe('isIdleClarification', () => {
 });
 
 describe('the prompt', () => {
-  const p = buildSystemPrompt({ research: false, assistantName: 'Genius', productCreator: 'Hamza', internet: true, effort: 'balanced', files: [] });
+  const p = buildSystemPrompt({ research: false, assistantName: 'Genius', productCreator: 'Hamza', internet: true, effort: 'balanced', files: [], officialHints: [] });
   it('tells the model to search first, to interpret instead of asking, and never to invent', () => {
     expect(p).toContain('Never answer a factual question with only a question back');
     expect(p).toContain('search the web FIRST');

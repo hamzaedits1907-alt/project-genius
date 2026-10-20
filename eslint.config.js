@@ -12,7 +12,7 @@ export const EFFECT_RULES = [EFFECT, EFFECT_MEMBER].flatMap((call) => [
 ]);
 
 export default tseslint.config(
-  { ignores: ['dist', 'target', 'src-tauri', 'crates', 'node_modules'] },
+  { ignores: ['dist', 'dist-web', 'dist-mobile', 'target', 'src-tauri', 'crates', 'node_modules', 'android', 'ios'] },
   {
     extends: [js.configs.recommended, ...tseslint.configs.recommended],
     files: ['**/*.{ts,tsx}'],
