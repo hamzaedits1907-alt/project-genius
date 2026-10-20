@@ -1,7 +1,7 @@
 name: CI
 
-# The release workflow (release.yml) refuses to publish unless the jobs `rust`, `frontend` and
-# `windows-desktop` below succeeded on the release commit: keep their ids (or update scripts/ci-gate.sh).
+# The release workflow (release.yml) refuses to publish unless the jobs `rust`, `frontend`,
+# `windows-desktop`, `android` and `ios` below succeeded on the release commit: keep their ids (or update scripts/ci-gate.sh).
 on:
   push:
     branches: [main, genius-web-launch]

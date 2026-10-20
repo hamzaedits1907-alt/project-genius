@@ -1314,6 +1314,12 @@ impl Genius {
             let bo = &batch_opts;
             for wave in waves {
                 let written = collect(&all_events).files;
+                // a file that an earlier answer already delivered whole is not asked for again
+                let wave: Vec<Vec<crate::spec::PlannedFile>> = wave.into_iter().map(|b| b.into_iter().filter(|f| !written.iter().any(|(p, _)| p == &f.path)).collect::<Vec<_>>()).filter(|b| !b.is_empty()).collect();
+                if wave.is_empty() {
+                    done_parts += 1;
+                    continue;
+                }
                 let note = if wave.len() > 1 { "Other files of this application are being written at the same moment by another worker (see the file list in the specification). Import them by their planned path; every component or page file default-exports a component named exactly like its file. Do not write those other files yourself." } else { "" };
                 let calls = wave.iter().enumerate().map(|(k, batch)| {
                     let msgs = prompts::generate_batch_messages(&spec, &template_ctx, &p.notes, &written, batch, done_parts + k, parts, note);

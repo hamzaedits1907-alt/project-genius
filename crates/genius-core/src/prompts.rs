@@ -236,11 +236,20 @@ The application is written a few files at a time (this is part {} of {}). Write 
         part + 1,
         parts
     );
-    let spec_json = serde_json::to_string_pretty(spec).unwrap_or_default();
-    let mut user = format!("SPECIFICATION of the whole application:
-{spec_json}
-
-{template_context}");
+    // The batch sees what the app is, but not the other files' descriptions: a model that is shown the whole plan tends to
+    // write the whole app in its first answer (85,000 characters in a real run), which defeats writing a few files at a time.
+    let mut brief = serde_json::to_value(spec).unwrap_or_default();
+    if let Some(o) = brief.as_object_mut() {
+        for k in ["files", "milestones", "testStrategy", "risks"] {
+            o.remove(k);
+        }
+    }
+    let spec_json = serde_json::to_string_pretty(&brief).unwrap_or_default();
+    let mut user = format!("THE APPLICATION (context only):\n{spec_json}\n\n{template_context}");
+    let others: Vec<&str> = spec.files.iter().map(|f| f.path.as_str()).filter(|p| !batch.iter().any(|b| b.path == *p) && !written.iter().any(|(w, _)| w == p)).collect();
+    if !others.is_empty() {
+        user.push_str(&format!("\n\nOTHER FILES OF THE APP (written by someone else; import them by these paths, do NOT write them): {}", others.join(", ")));
+    }
     if !memory.trim().is_empty() {
         user.push_str(&format!("
 

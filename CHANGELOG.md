@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.7.1] — Code Mode generates a whole app in minutes, not tens of minutes
+
+- **Code Mode is about three times faster and now verified end to end with a real model.** The first batch of a generation no longer writes the whole app (a model shown the full plan did that: 85,000 characters in one answer): batches see the application description and only the names of the other files, files an earlier answer already delivered are not requested again, and the parts after the foundations (components, pages, App) are written three at a time. A real Personal Finance Tracker (17 files) was planned in 32 s and generated in about 7 minutes with NVIDIA's model; then a real `npm install`, `tsc` type check and production build all passed (`live_code` test, opt-in).
+- **The website** has a "Genius on your phone" section (Android APK button that follows the newest release, iPhone instructions) and links to 0.7.x installers.
+- **Release gate:** the Android emulator start-up check and the iOS compile are now required by the release workflow, next to the Rust, frontend and Windows checks.
+
 ## [0.7.0] — One account everywhere: synced conversations, keys that follow your account, Android app, access control
 
 **Before you update the website/database:** run the three new SQL files in the Supabase SQL editor, in this order (the app keeps working on the old schema until you do): `20261021000000_sync.sql`, `20261022000000_key_vault.sql`, `20261023000000_admin_access.sql`.

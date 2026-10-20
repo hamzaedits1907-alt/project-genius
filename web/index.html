@@ -75,10 +75,22 @@
         </div>
       </section>
 
+      <section id="phone" class="band">
+        <h2>Genius on your phone</h2>
+        <div class="card">
+          <p>The same account, the same conversations, and (if you create the key vault in Settings → Account) the same AI keys, encrypted on your device. Sign in once and everything is there.</p>
+          <p><a class="btn primary" id="dl-apk" href="#phone" hidden>Download for Android (APK)</a> <a class="btn" href="/app/chat">Open Genius Web in your phone's browser</a></p>
+          <ul>
+            <li><b>Android:</b> download the APK, open it and allow "install unknown apps" for your browser or file manager. Until the author signs releases with a permanent key the APK is named <code>-debug</code>; to update, uninstall the old one first.</li>
+            <li><b>iPhone:</b> there is no App Store app yet (it needs an Apple developer account). Open Genius Web in Safari and use Share → Add to Home Screen for an app-like icon.</li>
+          </ul>
+        </div>
+      </section>
+
       <section id="get" class="band">
         <h2>Download for Windows</h2>
         <div class="card">
-          <p><a class="btn primary" id="dl-exe" href="https://github.com/hamzaedits1907-alt/project-genius/releases/download/v0.6.0/Genius_0.6.0_x64-setup.exe">Genius_0.6.0_x64-setup.exe</a> <a class="btn" id="dl-msi" href="https://github.com/hamzaedits1907-alt/project-genius/releases/download/v0.6.0/Genius_0.6.0_x64_en-US.msi">MSI installer</a> <a class="btn ghost" id="dl-sum" href="#get" hidden>SHA-256 checksums</a></p>
+          <p><a class="btn primary" id="dl-exe" href="https://github.com/hamzaedits1907-alt/project-genius/releases/download/v0.7.0/Genius_0.7.0_x64-setup.exe">Genius_0.7.0_x64-setup.exe</a> <a class="btn" id="dl-msi" href="https://github.com/hamzaedits1907-alt/project-genius/releases/download/v0.7.0/Genius_0.7.0_x64_en-US.msi">MSI installer</a> <a class="btn ghost" id="dl-sum" href="#get" hidden>SHA-256 checksums</a></p>
           <ul>
             <li><b>Requirements:</b> Windows 10 or 11 (64-bit) with WebView2 (preinstalled). For the Code workspace you also need Node.js 20+ and, optionally, Git.</li>
             <li><b>Setup:</b> run the installer. Windows may show a warning because the installer is <b>not code-signed yet</b>: install only from the download buttons on this page and compare the published SHA-256 checksum.</li>
@@ -138,7 +150,7 @@
       <section id="changelog" class="band alt">
         <h2>Changelog</h2>
         <div class="card" id="changelog-body">
-          <h3>0.6.0</h3>
+          <h3>0.7.0</h3>
           <ul>
             <li><b>Code workspace repaired:</b> a generated project is no longer reported as built while the preview still shows the starter page. Genius now notices missing or cut-off files, asks the model for exactly those, refuses to call a starter-page build a success, and shows whether the files are applied, built and opened in a real browser.</li>
             <li>Sign in to the desktop app with the same account as Genius Web; no email-confirmation step.</li>

@@ -12,7 +12,7 @@ set -euo pipefail
 sha="${1:-${GITHUB_SHA:?sha required}}"
 repo="${2:-${GITHUB_REPOSITORY:?repository required}}"
 # Job ids of .github/workflows/ci.yml (check-run names default to the job id).
-read -r -a required <<< "${CI_GATE_JOBS:-rust frontend windows-desktop}"
+read -r -a required <<< "${CI_GATE_JOBS:-rust frontend windows-desktop android ios}"
 timeout_s="${CI_GATE_TIMEOUT:-3600}"
 interval="${CI_GATE_INTERVAL:-30}"
 start=$SECONDS

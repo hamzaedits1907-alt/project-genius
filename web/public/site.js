@@ -15,6 +15,8 @@
       var exe = find(/x64-setup\.exe$/), msi = find(/\.msi$/);
       var set = function (id, asset) { var el = document.getElementById(id); if (el && asset) { el.href = asset.browser_download_url; if (id === 'dl-exe') el.textContent = asset.name; } };
       set('dl-exe', exe); set('dl-msi', msi); set('dl-win', exe);
+      var apk = find(/\.apk$/); var al = document.getElementById('dl-apk');
+      if (al && apk) { al.href = apk.browser_download_url; al.textContent = 'Download for Android (' + apk.name + ')'; al.hidden = false; }
       var sum = find2(/SHA256|checksums?/i); var sl = document.getElementById('dl-sum'); if (sl && sum) { sl.href = sum.browser_download_url; sl.hidden = false; }
       var note = document.getElementById('dl-note');
       if (note && exe) note.textContent = 'Version ' + rel.tag_name.replace(/^v/, '') + ' · Windows 10/11 · free · you pay only your own AI provider';
