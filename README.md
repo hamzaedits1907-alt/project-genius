@@ -8,7 +8,7 @@
 
 ## Genius Web (browser version)
 
-Genius also runs in the browser: accounts, synced conversations, Chat, Research with real citations, a Code assistant, Agent Mode (web tools), Projects and an owner admin panel. It uses **your own** provider key, kept only in the browser tab. Setup and the exact Netlify/Supabase steps: [docs/DEPLOY-NETLIFY-SUPABASE.md](docs/DEPLOY-NETLIFY-SUPABASE.md) (Turkish quick guide: [docs/KURULUM-TR.md](docs/KURULUM-TR.md)).
+Genius also runs on **Android** (APK, see [docs/MOBILE.md](docs/MOBILE.md)) and, as a project you can build on a Mac, **iOS**; the same Genius account gives the same conversations and (optionally, encrypted) the same provider keys on every device. Genius also runs in the browser: accounts, synced conversations, Chat, Research with real citations, a Code assistant, Agent Mode (web tools), Projects and an owner admin panel. It uses **your own** provider key, kept only in the browser tab. Setup and the exact Netlify/Supabase steps: [docs/DEPLOY-NETLIFY-SUPABASE.md](docs/DEPLOY-NETLIFY-SUPABASE.md) (Turkish quick guide: [docs/KURULUM-TR.md](docs/KURULUM-TR.md)).
 
 ```bash
 npm run dev:web      # http://localhost:1430 (landing) and /app/index.html (app)

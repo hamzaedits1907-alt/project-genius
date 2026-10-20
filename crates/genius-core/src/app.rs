@@ -1294,7 +1294,7 @@ impl Genius {
         let batched = spec.files.len() > prompts::GENERATE_BATCH_FILES;
         // Writing known files from a finished plan needs no long hidden reasoning: without it each part takes
         // seconds instead of minutes (the reasoning budget is what made one real run last 15+ minutes).
-        let batch_opts = CallOptions { role: Some(ModelRole::Code), thinking: Some(false), effort: Some(Effort::Balanced), ..Default::default() };
+        let batch_opts = CallOptions { role: Some(ModelRole::Code), thinking: Some(false), effort: Some(Effort::Balanced), max_tokens: Some(24_000), ..Default::default() };
         if batched {
             let order = prompts::generation_order(&spec.files);
             let parts = order.len().div_ceil(prompts::GENERATE_BATCH_FILES);

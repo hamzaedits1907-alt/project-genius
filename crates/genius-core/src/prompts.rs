@@ -150,7 +150,7 @@ pub fn generate_messages(spec: &ProjectSpec, template_context: &str, memory: &st
 /// Files per model call when a new application is generated. One answer that holds a whole app (40 files in
 /// one real Personal Finance Tracker run) is cut off by the output limit again and again and ends as drafts
 /// that never build, so the app is written a few files at a time, dependencies first.
-pub const GENERATE_BATCH_FILES: usize = 5;
+pub const GENERATE_BATCH_FILES: usize = 3;
 
 /// How early a planned file must be written: shared styles, types and helpers first, the app shell last, so
 /// every later file can import what already exists.

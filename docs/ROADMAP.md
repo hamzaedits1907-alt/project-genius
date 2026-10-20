@@ -26,6 +26,10 @@ Status words (grounded in evidence, see [STATUS.md](STATUS.md) and [TESTING.md](
 | Owner admin: users, bulk actions, limits, maintenance, announcements, audit | Implemented (0.6.0); **27 database tests on real PostgreSQL**; panel not yet exercised in a browser against a live database |
 | Desktop account (optional, same login as web) | Implemented (0.6.0); mock/unit level; not run against a live Supabase project |
 | Code workspace generation pipeline (completion rounds, starter-page guard, review state, real-browser check) | Implemented and **verified on a real pipeline** with a scripted model (`tests/finance.rs`); not yet run with a live model in this release |
+| Conversations synced across desktop, web and phones (account-scoped, tombstones, realtime + polling) | Implemented; database logic on a real engine and **live** against the real Supabase project; packaged desktop and phones not run against it |
+| Provider keys that follow the account (client-side encrypted vault) | Implemented; **live** crypto/database round trip; vault screens and native secure storage not exercised on a device |
+| Owner access control: open / early access / closed, invites, waitlist, per-user limits | Implemented and tested on a real engine; **not opened live** (no administrator account available) |
+| Android app (Capacitor) and iOS project | Android APK builds and its package was inspected; emulator start checked in CI; iOS compiles in CI; neither run on a physical device; signing needs the owner's keys |
 | Billing | **Not implemented on purpose** (no live billing until you authorise it) |
 
 ## Foundations (previous release)

@@ -10,7 +10,10 @@ Bu sayfa teknik bilgi gerektirmeden Genius Web'i yayınlamak ve masaüstü uygul
    - `20261019000000_genius_web.sql`
    - `20261019000100_genius_web_storage.sql`
    - `20261019000200_missions.sql`
-   - `20261020000000_admin_advanced.sql` (**yeni**: gelişmiş yönetim paneli, bakım modu, duyurular, plan limitleri)
+   - `20261020000000_admin_advanced.sql` (gelişmiş yönetim paneli, bakım modu, duyurular, plan limitleri)
+   - `20261021000000_sync.sql` (**yeni**: konuşmaların cihazlar arası eşitlenmesi)
+   - `20261022000000_key_vault.sql` (**yeni**: API anahtarlarının hesapta şifreli saklanması)
+   - `20261023000000_admin_access.sql` (**yeni**: herkese kapat/aç, erken erişim, davet, bekleme listesi, kullanıcıya özel limit)
 4. Soldan **Project Settings → API** bölümüne gir. İki şeyi kopyalacaksın: **Project URL** ve **anon / publishable key**. (Başka hiçbir anahtarı — özellikle `service_role` / `secret` — hiçbir yere koyma. Bana da yapıştırma.)
 
 ## 2. E-posta doğrulamasını kapat (kayıt olunca hemen girilsin)

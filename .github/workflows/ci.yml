@@ -174,7 +174,7 @@ jobs:
           name: android-smoke-evidence
           path: |
             launch.png
-            ui.xml
+            webview-text.txt
           if-no-files-found: ignore
 
   ios:

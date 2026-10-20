@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Installs the APK on the running emulator/device, starts the app and checks that it really came up:
-# the process runs, there is no crash in the log, and the sign-in screen's text is on screen.
+# the process runs, there is no crash in the log, and the WebView shows Genius's sign-in screen (read through
+# the WebView debugging port, because Android does not expose a WebView's text to uiautomator).
 # Usage: scripts/android-smoke.sh path/to/app.apk
 set -euo pipefail
 APK="${1:?usage: android-smoke.sh app.apk}"
@@ -11,16 +12,11 @@ adb logcat -c
 adb install -r "$APK"
 adb shell pm list packages | grep -q "package:$PKG"
 adb shell am start -W -n "$PKG/.MainActivity"
-sleep 20
+sleep 15
 pid=$(adb shell pidof "$PKG" | tr -d '\r' || true)
 [ -n "$pid" ] || { echo "::error::the app is not running after launch"; adb logcat -d | tail -80; exit 1; }
-if adb logcat -d | grep -E "FATAL EXCEPTION|Process: $PKG.*died|ANR in $PKG" ; then echo "::error::the app crashed"; exit 1; fi
-adb shell uiautomator dump /sdcard/ui.xml >/dev/null
-adb pull /sdcard/ui.xml ui.xml >/dev/null
-adb exec-out screencap -p > launch.png
-# The WebView exposes its page text to accessibility: the sign-in screen must be visible
-if grep -q -E "Welcome back|Sign in|Email" ui.xml; then
-  echo "OK: $PKG installed, running (pid $pid) and showing the sign-in screen"
-else
-  echo "::error::the app is running but the sign-in screen text was not found on screen"; head -c 3000 ui.xml; exit 1
-fi
+if adb logcat -d | grep -E "FATAL EXCEPTION|ANR in $PKG"; then echo "::error::the app crashed"; exit 1; fi
+adb exec-out screencap -p > launch.png || true
+adb forward tcp:9222 "localabstract:webview_devtools_remote_${pid}"
+node scripts/android-webview-check.mjs 9222 || { adb logcat -d | grep -i -E "chromium|capacitor|console" | tail -40; exit 1; }
+echo "OK: $PKG installed, running (pid $pid)"

@@ -1262,6 +1262,26 @@ mod tests {
         assert!(started.elapsed() < Duration::from_secs(5));
     }
 
+    #[tokio::test]
+    async fn a_provider_that_accepts_the_request_but_never_answers_times_out_quickly() {
+        // The field problem: the connection is accepted and then nothing arrives. Without a start timeout the call
+        // waited for minutes (streaming requests had no limit at all before the first byte).
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/chat/completions"))
+            .respond_with(ResponseTemplate::new(200).set_delay(Duration::from_secs(20)).set_body_string("{}"))
+            .mount(&server)
+            .await;
+        let mut c = client(&server, Some("nvapi-k-0000000000000"));
+        c.start_timeout = Duration::from_millis(400);
+        c.max_retries = 0;
+        let started = std::time::Instant::now();
+        let err = c.chat("a/b", &[ChatMessage::user("x")], &ChatOptions::default(), &CancellationToken::new(), |_| {}).await.unwrap_err();
+        assert_eq!(err.kind(), "provider_timeout");
+        assert!(err.to_string().contains("did not start answering"), "{err}");
+        assert!(started.elapsed() < Duration::from_secs(5), "{:?}", started.elapsed());
+    }
+
     fn think(on: bool) -> ChatOptions {
         ChatOptions { thinking: Some(on), ..Default::default() }
     }

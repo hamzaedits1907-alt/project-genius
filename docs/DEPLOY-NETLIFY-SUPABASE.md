@@ -44,7 +44,7 @@ Without Supabase you can try the interface with `VITE_GENIUS_LOCAL=1 npm run dev
 
 1. Use the organization you already have: create a project in it (or reuse one).
 2. Apply the migrations in `supabase/migrations` in order (SQL Editor → paste each file → Run, or `supabase link` + `supabase db push`):
-   `20261019000000_genius_web.sql`, `20261019000100_genius_web_storage.sql`, `20261019000200_missions.sql`, `20261020000000_admin_advanced.sql` (advanced admin: settings, limits, maintenance, announcements, quotas, bulk actions).
+   `20261019000000_genius_web.sql`, `20261019000100_genius_web_storage.sql`, `20261019000200_missions.sql`, `20261020000000_admin_advanced.sql` (advanced admin: settings, limits, maintenance, announcements, quotas, bulk actions), `20261021000000_sync.sql` (conversation sync across devices), `20261022000000_key_vault.sql` (encrypted provider keys in the account), `20261023000000_admin_access.sql` (open / early access / closed, invites, waitlist, per-user limits). Run each file once, in this order; the app keeps working on the older schema until a file is applied.
 3. Authentication → URL Configuration:
    - **Site URL**: `https://<your-site>.netlify.app/app`
    - **Redirect URLs**: `https://<your-site>.netlify.app/app` (add your own domain too if you use one). Do not add wildcards such as `*`.
@@ -56,7 +56,7 @@ Without Supabase you can try the interface with `VITE_GENIUS_LOCAL=1 npm run dev
 
 ## What stays private
 
-- AI provider keys: never stored in Supabase or Netlify; in the browser they live in the tab (sessionStorage) or — if the user ticks "Remember this key on this device" — encrypted (AES-GCM, non-exportable Web Crypto key) in that browser's IndexedDB, never synced; on the desktop in the OS credential store. They are sent only to the provider (directly, or through `/api/relay` for NVIDIA/custom endpoints, which forwards and stores nothing).
+- AI provider keys: stored in Supabase **only** if the user creates the key vault, and then only as ciphertext encrypted on their device with a passphrase nobody else has (the database refuses anything key-shaped and the owner cannot read them; a forgotten passphrase means resetting the vault). Never stored in Netlify. Otherwise: in the browser they live in the tab (sessionStorage) or — if the user ticks "Remember this key on this device" — encrypted (AES-GCM, non-exportable Web Crypto key) in that browser's IndexedDB, never synced; on the desktop in the OS credential store. They are sent only to the provider (directly, or through `/api/relay` for NVIDIA/custom endpoints, which forwards and stores nothing).
 - Conversations, sources, files, preferences: stored per user; row level security allows only the owner to read or change them (tested on real PostgreSQL in `tests/db/rls.test.ts`).
 - Administrators: the `admin_users` table has no client policy at all; all admin actions are database functions that re-check the caller and write `admin_audit`.
 

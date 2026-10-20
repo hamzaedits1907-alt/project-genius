@@ -142,6 +142,10 @@ Not covered by any automated test: the packaged Tauri window, live OpenAI/Anthro
 | Command | What it proves | What it does not |
 |---|---|---|
 | `npx vitest run` (frontend) | Interface, Agent Mode screen, citations, web engine (`web-engine`), conversation loop with a scripted model (`web-chat`), runtime commands, key vault, relay consent, missions (`web-runtime`) | Any live model or provider. On a small machine the whole suite can run out of memory: `maxWorkers` is capped at 2; run files one at a time if needed. |
+| `npm run build:mobile` / `npm run cap:sync` | The phone apps' web bundle and the Capacitor sync (Node 22) | The apps on a device |
+| `GENIUS_LIVE_URL=… GENIUS_LIVE_ANON=… GENIUS_LIVE_EMAIL=… GENIUS_LIVE_PASSWORD=… npx vitest run src/test/live-account.test.ts` | **Live** key vault + sync + account isolation against the real Supabase project (skipped without the variables) | The admin functions (needs an administrator account) |
+| `NVIDIA_API_KEY=… cargo test -p genius-core --test live_a340 -- --nocapture` | **Live** Chat answer (searches the web instead of asking back) | Other providers |
+| `NVIDIA_API_KEY=… cargo test -p genius-core --test live_code -- --nocapture` | **Live** Code Mode: plan, batched generation, real npm install / type check / build | Runtime behaviour in a browser |
 | `npm run test:db` | **Real PostgreSQL (PGlite)** with the real migrations: row level security, admin functions, audit; plus `tests/netlify`: SSRF rules, redirects, size limits against a real local HTTP server, session and kill-switch checks with a stand-in Supabase, Netlify configuration | A live Supabase project, emails, the functions running on Netlify |
 | `npm run build:web` | Type check, production build of landing + app, Netlify function type check | The deployed site |
 | `NVIDIA_API_KEY=… cargo test -p genius-core --test live_mission -- --nocapture` | **Live** Agent Mode mission (opt-in, uses your quota) | Other providers |
