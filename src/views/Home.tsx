@@ -564,7 +564,7 @@ export function QuickSetup() {
                       </a>
                     </>
                   )}
-                  . {isWeb ? 'It stays in this browser tab only and is never saved to your account.' : "It's stored in your system's secure credential store, never in a file."}
+                  . {isWeb ? 'It stays in this browser tab only, unless you turn on the key vault (Settings → Account): then it is saved to your account encrypted, readable only with your passphrase.' : "It's stored in your system's secure credential store, never in a file."}
                 </>
               )}
             </div>

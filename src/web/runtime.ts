@@ -167,7 +167,7 @@ export class WebRuntime {
   keyStatus() {
     const key = this.opts.keys.get(this.settings.provider);
     const kept = this.opts.keys.remembered?.(this.settings.provider) ?? false;
-    return { stored: !!key, hint: key ? `…${key.slice(-4)}` : null, backend: kept ? 'this device (encrypted in this browser; never sent to Genius servers)' : 'this browser tab (session only)', error: null, remembered: kept, canRemember: this.opts.keys.canRemember?.() ?? false };
+    return { stored: !!key, hint: key ? `…${key.slice(-4)}` : null, backend: kept ? 'this device (encrypted in this browser; never sent to Genius servers in readable form)' : 'this browser tab (session only)', error: null, remembered: kept, canRemember: this.opts.keys.canRemember?.() ?? false };
   }
   providerConfig(): ProviderConfig {
     const s = this.settings;

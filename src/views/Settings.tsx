@@ -240,7 +240,7 @@ function AiSettings() {
             <input type="checkbox" checked={remember} disabled={keyStatus?.canRemember === false} onChange={(e) => { setRemember(e.target.checked); writeRememberPref(e.target.checked); }} aria-label="Remember this key on this device" style={{ marginTop: 3 }} />
             <span>
               <b>Remember this key on this device</b>
-              <span className="faint"> — saved encrypted in this browser so you do not have to paste it on every visit. It is never sent to Genius servers or your account and is not synced to other devices. Anyone using this browser profile, or a malicious script on this page, could still use it; leave this off on shared computers. {keyStatus?.canRemember === false ? 'This browser cannot store it (private window or blocked storage), so it will be kept for this tab only.' : ''}</span>
+              <span className="faint"> — saved encrypted in this browser so you do not have to paste it on every visit. It is never sent to Genius servers in readable form; only if you use the key vault (Settings → Account) an encrypted copy, readable only with your passphrase, is saved to your account and reaches your other devices. Anyone using this browser profile, or a malicious script on this page, could still use it; leave this off on shared computers. {keyStatus?.canRemember === false ? 'This browser cannot store it (private window or blocked storage), so it will be kept for this tab only.' : ''}</span>
             </span>
           </label>
         )}

@@ -9,8 +9,9 @@
 // What this does NOT do, and the UI says so: any script running on this page can still ask the browser to
 // decrypt the key, so a cross-site-scripting bug would expose it. The defences are the strict content
 // security policy of the app (scripts only from this site), no third-party scripts, and keeping the key
-// out of every server: it is never sent to Supabase or to a Genius backend and is never synced between
-// devices. It goes only to the provider (or, for providers that block browsers, through the relay that
+// out of every server in readable form: it is never sent to Supabase or to a Genius backend as plain text. Only if the
+// user creates the account key vault (accountVault.ts) is an encrypted copy, openable only with their passphrase, saved
+// to their account and shared with their other devices. It goes only to the provider (or, for providers that block browsers, through the relay that
 // forwards it and stores nothing).
 import type { ProviderId } from '../lib/types';
 import type { KeyVault } from './runtime';

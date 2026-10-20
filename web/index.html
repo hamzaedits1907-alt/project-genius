@@ -67,7 +67,7 @@
               <tr><th>Chat, Research, files, images</th><td>Yes</td><td>Yes</td></tr>
               <tr><th>Agent Mode</th><td>Real tools in an isolated project copy, approvals, builds and tests</td><td>Web tools only (search, pages, calculation); cannot change files, never “verified” by a build</td></tr>
               <tr><th>Code</th><td>Local projects, terminal, Git, live preview</td><td>Writes and previews code; nothing runs</td></tr>
-              <tr><th>Your provider key</th><td>Windows credential store (remembered until you remove it)</td><td>Your choice: this tab only, or remembered on this device (encrypted in this browser, never sent to Genius)</td></tr>
+              <tr><th>Your provider key</th><td>Windows credential store (remembered until you remove it)</td><td>Your choice: this tab only, remembered on this device (encrypted in this browser), or in your account key vault (encrypted with your own passphrase)</td></tr>
               <tr><th>Account and sync</th><td>None (local data)</td><td>Account; conversations kept in your private account area</td></tr>
               <tr><th>NVIDIA NIM</th><td>Direct</td><td>Through a relay that stores nothing (NVIDIA blocks browsers)</td></tr>
             </tbody>
@@ -103,7 +103,7 @@
 
       <section id="nvidia" class="band">
         <h2>Get a free NVIDIA API key (about 3 minutes)</h2>
-        <p class="sub">Genius is built to work with NVIDIA's hosted models, and NVIDIA lets developers try them for free. You create the key yourself; it stays on your computer or in your browser tab and is never sent to Genius servers.</p>
+        <p class="sub">Genius is built to work with NVIDIA's hosted models, and NVIDIA lets developers try them for free. You create the key yourself; it stays on your computer or in your browser tab and is never sent to Genius servers in readable form (the optional key vault keeps an encrypted copy that only your passphrase opens).</p>
         <div class="card">
           <ol class="steps">
             <li><b>Open <a href="https://build.nvidia.com/" rel="noopener">build.nvidia.com</a></b> and press <b>Login</b> (top right). Create a free NVIDIA account with your email, or sign in if you already have one, and confirm the verification email. NVIDIA may also ask you to verify a phone number.</li>
@@ -142,7 +142,7 @@
       <section class="band">
         <h2>Privacy, security and known limits</h2>
         <div class="grid two">
-          <article><h3>What we keep</h3><ul><li>Web: your conversations, sources and attachments live in your account, readable only by you (database row-level security).</li><li>Your provider key: never saved to an account or database.</li><li>Desktop: everything stays on your computer.</li></ul></article>
+          <article><h3>What we keep</h3><ul><li>Web: your conversations, sources and attachments live in your account, readable only by you (database row-level security).</li><li>Your provider key: never saved in readable form. Only if you create the key vault is an encrypted copy (only your passphrase opens it) saved to your account so your other devices have it.</li><li>Desktop: everything stays on your computer.</li></ul></article>
           <article><h3>What to know</h3><ul><li>Models can be wrong; research reports flag claims without a source, but check anything important.</li><li>Web pages are treated as untrusted data; private and local addresses are blocked.</li><li>Genius Pro will sell Genius capabilities (Agent Mode, custom agents, bigger task budgets), not model usage. No live billing exists yet.</li></ul></article>
         </div>
       </section>

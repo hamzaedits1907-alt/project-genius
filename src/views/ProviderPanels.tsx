@@ -75,7 +75,7 @@ export function ProviderCard({ settings, save }: { settings: Settings; save: (ne
           {n}
         </div>
       ))}
-      <div className="faint small">{capabilities.secureKeyStore ? "You bring your own key. It is stored in this computer's credential store, one slot per provider, and is only ever sent to that provider." : 'You bring your own key. In the browser it is kept only for this tab (closing the tab forgets it), is never sent to Genius accounts or databases, and goes only to the provider you choose.'}</div>
+      <div className="faint small">{capabilities.secureKeyStore ? "You bring your own key. It is stored in this computer's credential store, one slot per provider, and is only ever sent to that provider." : 'You bring your own key. In the browser it is kept for this tab (closing the tab forgets it) or, if you choose, remembered encrypted on this device, and it goes only to the provider you choose. If you create the key vault (Settings → Account) an encrypted copy that only your passphrase can open is also saved to your account, so your other devices have it too.'}</div>
     </div>
   );
 }
