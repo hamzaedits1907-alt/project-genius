@@ -101,6 +101,8 @@ export interface Access {
   isAdmin: boolean;
   /** Set while the owner has put the service into maintenance (administrators never see it). */
   maintenance?: { enabled: boolean; message: string } | null;
+  /** Who may use Genius right now (the owner can switch between open, early access and closed). */
+  access?: { mode: 'open' | 'early' | 'closed'; locked: boolean; message: string; waitlist: boolean; request: 'pending' | 'approved' | 'declined' | null };
   features: Record<string, FeatureState>;
 }
 export interface Limits {

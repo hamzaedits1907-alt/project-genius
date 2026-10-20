@@ -40,7 +40,7 @@ interface Detail {
 }
 interface Announcement { id: string; title: string; body: string; level: 'info' | 'warning' | 'critical'; active: boolean; starts_at: string; ends_at: string | null }
 
-type Tab = 'overview' | 'users' | 'features' | 'early' | 'limits' | 'site' | 'audit' | 'system';
+type Tab = 'overview' | 'access' | 'users' | 'features' | 'early' | 'limits' | 'site' | 'audit' | 'system';
 const errText = (e: unknown) => (e && typeof e === 'object' && 'message' in e ? String((e as { message: unknown }).message) : String(e));
 const day = (iso: string | null) => (iso ? iso.slice(0, 10) : '—');
 const when = (iso: string | null) => (iso ? iso.slice(0, 16).replace('T', ' ') : 'never');
@@ -77,7 +77,7 @@ export default function AdminPanel() {
       </div></div>
     );
   }
-  const tabs: [Tab, string][] = [['overview', 'Overview'], ['users', 'Users'], ['features', 'Features & flags'], ['early', 'Early access'], ['limits', 'Plans & limits'], ['site', 'Site controls'], ['audit', 'Audit log'], ['system', 'System']];
+  const tabs: [Tab, string][] = [['overview', 'Overview'], ['access', 'Access & invites'], ['users', 'Users'], ['features', 'Features & flags'], ['early', 'Early access'], ['limits', 'Plans & limits'], ['site', 'Site controls'], ['audit', 'Audit log'], ['system', 'System']];
   const notify = { onError: (e: string | null) => { setErr(e); if (e) setOk(null); }, onOk: (m: string) => { setOk(m); setErr(null); setTimeout(() => setOk(null), 4000); } };
   return (
     <div className="pj-root">
@@ -89,6 +89,7 @@ export default function AdminPanel() {
         {err && <div className="callout bad" role="alert">{err}</div>}
         {ok && <div className="callout ok" role="status">{ok}</div>}
         {tab === 'overview' && <Overview {...notify} goTo={setTab} />}
+        {tab === 'access' && <Access {...notify} />}
         {tab === 'users' && <Users {...notify} />}
         {tab === 'features' && <Features {...notify} />}
         {tab === 'early' && <Early {...notify} />}
@@ -135,15 +136,16 @@ const KIND_COLOR: Record<string, string> = { chat: 'var(--accent)', research: 'v
 
 function Overview({ onError, goTo }: P & { goTo: (t: Tab) => void }) {
   const { data, loading } = useLoad(async () => {
-    const [summary, series, top, signups, settings] = await Promise.all([
+    const [summary, series, top, signups, settings, stats] = await Promise.all([
       rpc<Record<string, unknown>>('admin_usage_summary'),
       rpc<{ day: string; kind: string; n: number }[]>('admin_usage_series', { days: 30 }),
       rpc<{ user_id: string; email: string; events: number }[]>('admin_top_users', { days: 30, lim: 8 }),
       rpc<{ day: string; n: number }[]>('admin_signups_series', { days: 30 }),
       sb().from('app_settings').select('key, value'),
+      rpc<Record<string, unknown>>('admin_system_stats').catch(() => null), // needs the access migration; the rest of the page works without it
     ]);
     const s = new Map(((settings.data ?? []) as { key: string; value: Record<string, unknown> }[]).map((r) => [r.key, r.value]));
-    return { summary, series, top, signups, maintenance: s.get('maintenance') as { enabled?: boolean; message?: string } | undefined, signupsOpen: (s.get('signups') as { open?: boolean } | undefined)?.open !== false };
+    return { summary, series, top, signups, stats, access: s.get('access') as { mode?: string } | undefined, maintenance: s.get('maintenance') as { enabled?: boolean; message?: string } | undefined, signupsOpen: (s.get('signups') as { open?: boolean } | undefined)?.open !== false };
   }, onError);
   const days = useMemo(() => {
     const out: string[] = [];
@@ -153,7 +155,10 @@ function Overview({ onError, goTo }: P & { goTo: (t: Tab) => void }) {
   if (loading) return <Loader2 className="spin" />;
   if (!data) return null;
   const sm = data.summary;
-  const tiles: [string, unknown][] = [['Users', sm.users], ['Pro users', sm.pro], ['Suspended', sm.suspended], ['Conversations', sm.conversations], ['Messages', sm.messages], ['Active (7 days)', sm.activeLast7Days ?? sm.activeLastDays]];
+  const st = data.stats;
+  const mb = (n: unknown) => `${(Number(n ?? 0) / 1048576).toFixed(1)} MB`;
+  const tiles: [string, unknown][] = [['Users', sm.users], ['Pro users', sm.pro], ['Suspended', sm.suspended], ['Conversations', st?.conversations ?? sm.conversations], ['Messages', st?.messages ?? sm.messages], ['Active (7 days)', st?.activeLast7d ?? sm.activeLast7Days ?? sm.activeLastDays]];
+  if (st) tiles.push(['New (24 h)', st.newLast24h], ['New (7 days)', st.newLast7d], ['Active (24 h)', st.activeLast24h], ['Messages (24 h)', st.messagesLast24h], ['Files stored', `${st.attachments} · ${mb(st.attachmentBytes)}`], ['Key vaults', st.keyVaults], ['Custom limits', st.withOverrides], ['Waiting to be let in', st.pendingRequests]);
   const perDay = days.map((d) => {
     const rows = data.series.filter((r) => String(r.day).slice(0, 10) === d);
     return { d, total: rows.reduce((a, r) => a + Number(r.n), 0), rows };
@@ -166,6 +171,13 @@ function Overview({ onError, goTo }: P & { goTo: (t: Tab) => void }) {
   const bw = W / days.length;
   return (
     <>
+      {data.access?.mode && data.access.mode !== 'open' && (
+        <div className="callout warn" role="status">
+          <Power size={15} />
+          <div className="grow"><b>{data.access.mode === 'early' ? 'Early access is ON.' : 'Genius is CLOSED.'}</b> Ordinary accounts are locked out{data.access.mode === 'early' ? ' unless they are on the early-access list' : ''}.</div>
+          <button className="btn sm" onClick={() => goTo('access')}>Open access controls</button>
+        </div>
+      )}
       {(data.maintenance?.enabled || !data.signupsOpen) && (
         <div className="callout warn" role="status">
           <Power size={15} />
@@ -299,6 +311,8 @@ function UserDrawer({ id, onClose, onChanged, onError, onOk }: { id: string; onC
   const { data: features } = useLoad(async () => ((await sb().from('features').select('*').order('key')).data ?? []) as Feature[], onError);
   const { data: cohorts } = useLoad(async () => ((await sb().from('early_access_cohorts').select('*').order('id')).data ?? []) as Cohort[], onError);
   const [note, setNote] = useState<string | null>(null);
+  const [suspending, setSuspending] = useState(false);
+  const [reason, setReason] = useState('');
   const [busy, setBusy] = useState(false);
   const act = async (label: string, fn: () => Promise<unknown>) => {
     setBusy(true);
@@ -335,6 +349,7 @@ function UserDrawer({ id, onClose, onChanged, onError, onOk }: { id: string; onC
               <button className="btn sm" disabled={busy} onClick={() => void act('Plan set to Free.', () => rpc('admin_set_plan', { target: id, new_plan: 'free', until: null, note: 'set by owner' }))}>Free</button>
             </div>
           </div>
+          <UserExtras id={id} email={p.email} isAdmin={d.isAdmin} busy={busy} act={act} onError={onError} />
           <div className="card pad col" style={{ gap: 8 }}>
             <b>Feature grants</b>
             {d.grants.length === 0 ? <span className="faint small">None.</span> : d.grants.map((g) => (
@@ -368,7 +383,12 @@ function UserDrawer({ id, onClose, onChanged, onError, onOk }: { id: string; onC
             <div className="card pad col" style={{ gap: 6 }}>
               <b>Account</b>
               {p.status === 'active'
-                ? <button className="btn danger" disabled={busy} onClick={() => { const why = window.prompt(`Suspend ${p.email}? Reason (shown to the user):`, ''); if (why !== null) void act('Account suspended.', () => rpc('admin_set_status', { target: id, new_status: 'suspended', why })); }}>Suspend account</button>
+                ? (suspending
+                  ? <div className="col" style={{ gap: 6 }}>
+                      <input className="input" placeholder="Reason (shown to the user)" aria-label="Suspension reason" value={reason} onChange={(e) => setReason(e.target.value)} />
+                      <div className="row"><button className="btn danger" disabled={busy} onClick={() => void act('Account suspended.', async () => { await rpc('admin_set_status', { target: id, new_status: 'suspended', why: reason }); setSuspending(false); setReason(''); })}>Suspend now</button><button className="btn ghost" onClick={() => setSuspending(false)}>Cancel</button></div>
+                    </div>
+                  : <button className="btn danger" disabled={busy} onClick={() => setSuspending(true)}>Suspend account…</button>)
                 : <button className="btn" disabled={busy} onClick={() => void act('Account restored.', () => rpc('admin_set_status', { target: id, new_status: 'active', why: null }))}>Restore account</button>}
             </div>
           )}
@@ -379,6 +399,264 @@ function UserDrawer({ id, onClose, onChanged, onError, onOk }: { id: string; onC
         </div>
       )}
     </div>
+  );
+}
+
+// ------------------------------------------------------------------------------------------ access
+interface AccessOverview {
+  access: { mode: 'open' | 'early' | 'closed'; cohort: string; message: string; waitlist: boolean };
+  users: number;
+  admins: number;
+  cohortMembers: number;
+  allowedNow: number;
+  pendingRequests: number;
+  invitesPending: number;
+  invitesClaimed: number;
+  cohorts: { id: string; name: string; members: number }[];
+}
+interface AccessRequest { user_id: string; email: string; note: string; status: string; created_at: string }
+interface Invite { email: string; cohort: string; created_at: string; claimed_by: string | null; claimed_at: string | null }
+
+const MODES: { id: 'open' | 'early' | 'closed'; title: string; text: string }[] = [
+  { id: 'open', title: 'Open to everyone', text: 'Anyone with an account can use Genius (the normal state).' },
+  { id: 'early', title: 'Early access only', text: 'Only people in the early-access list (and you) can use Genius. Everyone else sees a private-beta screen and can ask to be let in.' },
+  { id: 'closed', title: 'Closed for everyone', text: 'Only administrators can use Genius. Everyone else is locked out until you open it again.' },
+];
+
+function Access({ onError, onOk }: P) {
+  const { data, loading, reload } = useLoad(async () => {
+    const [overview, requests, invites] = await Promise.all([
+      rpc<AccessOverview>('admin_access_overview'),
+      rpc<AccessRequest[]>('admin_list_access_requests', { p_status: 'pending' }),
+      rpc<Invite[]>('admin_list_invites'),
+    ]);
+    return { overview, requests, invites };
+  }, onError);
+  const [mode, setMode] = useState<'open' | 'early' | 'closed' | null>(null);
+  const [cohort, setCohort] = useState<string | null>(null);
+  const [message, setMessage] = useState<string | null>(null);
+  const [waitlist, setWaitlist] = useState<boolean | null>(null);
+  const [emails, setEmails] = useState('');
+  const [confirming, setConfirming] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const run = async (label: string, fn: () => Promise<unknown>) => {
+    setBusy(true);
+    try {
+      await fn();
+      onOk(label);
+      await reload();
+    } catch (e) {
+      onError(errText(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+  if (loading && !data) return <Loader2 className="spin" />;
+  if (!data) return null;
+  const o = data.overview;
+  const curMode = mode ?? o.access.mode;
+  const curCohort = cohort ?? o.access.cohort;
+  const curMessage = message ?? o.access.message;
+  const curWaitlist = waitlist ?? o.access.waitlist;
+  const dirty = curMode !== o.access.mode || curCohort !== o.access.cohort || curMessage !== o.access.message || curWaitlist !== o.access.waitlist;
+  const apply = () =>
+    run(curMode === 'open' ? 'Genius is open to everyone.' : curMode === 'early' ? 'Genius is now in early access.' : 'Genius is now closed.', async () => {
+      await rpc('admin_set_access', { p_mode: curMode, p_cohort: curCohort.trim() || 'early', p_message: curMessage, p_waitlist: curWaitlist });
+      setMode(null);
+      setCohort(null);
+      setMessage(null);
+      setWaitlist(null);
+      setConfirming(false);
+    });
+  const list = emails.split(/[\s,;]+/).map((e) => e.trim()).filter(Boolean);
+  return (
+    <>
+      <div className={`callout ${o.access.mode === 'open' ? 'ok' : 'warn'}`} role="status">
+        <Power size={15} />
+        <div className="grow">
+          {o.access.mode === 'open' && <><b>Genius is open to everyone.</b> {o.users} accounts.</>}
+          {o.access.mode === 'early' && <><b>Early access is ON.</b> {o.allowedNow} of {o.users} accounts are let in; the others are locked out.</>}
+          {o.access.mode === 'closed' && <><b>Genius is CLOSED.</b> Only the {o.admins} administrator(s) can use it.</>}
+        </div>
+      </div>
+
+      <div className="card pad col" style={{ gap: 10 }}>
+        <b>Who may use Genius</b>
+        <div className="pj-grid" role="radiogroup" aria-label="Access mode">
+          {MODES.map((m) => (
+            <label key={m.id} className="pj-card" style={{ cursor: 'pointer', outline: curMode === m.id ? '2px solid var(--accent)' : 'none' }}>
+              <span className="row"><input type="radio" name="access-mode" checked={curMode === m.id} onChange={() => { setMode(m.id); setConfirming(false); }} /> <b>{m.title}</b></span>
+              <span className="small muted">{m.text}</span>
+            </label>
+          ))}
+        </div>
+        {curMode === 'early' && (
+          <div className="row wrap">
+            <label className="small">Early-access list
+              <select className="select" style={{ marginLeft: 6 }} value={curCohort} onChange={(e) => setCohort(e.target.value)} aria-label="Early-access list">
+                {o.cohorts.map((c) => <option key={c.id} value={c.id}>{c.name} ({c.members})</option>)}
+                {!o.cohorts.some((c) => c.id === curCohort) && <option value={curCohort}>{curCohort} (new)</option>}
+              </select>
+            </label>
+            <label className="small row"><input type="checkbox" checked={curWaitlist} onChange={(e) => setWaitlist(e.target.checked)} /> let locked-out people ask for access (waitlist)</label>
+          </div>
+        )}
+        {curMode !== 'open' && (
+          <label className="col small" style={{ gap: 4 }}>Message shown to people who are locked out (optional)
+            <textarea className="textarea" rows={2} maxLength={500} value={curMessage} onChange={(e) => setMessage(e.target.value)} placeholder="Genius is in a private beta. Ask for access and I will let you in." />
+          </label>
+        )}
+        {dirty && curMode !== 'open' && confirming && (
+          <div className="callout warn" role="alert">This takes effect immediately for everyone who is not an administrator{curMode === 'early' ? ' or on the early-access list' : ''}. Their data stays safe; they simply cannot use Genius until you let them in.</div>
+        )}
+        <div className="row">
+          {dirty && curMode !== 'open' && !confirming
+            ? <button className="btn primary" disabled={busy} onClick={() => setConfirming(true)}>Apply…</button>
+            : <button className="btn primary" disabled={busy || !dirty} onClick={() => void apply()}>{confirming ? 'Yes, apply now' : 'Apply'}</button>}
+          {dirty && <button className="btn ghost" onClick={() => { setMode(null); setCohort(null); setMessage(null); setWaitlist(null); setConfirming(false); }}>Discard changes</button>}
+        </div>
+      </div>
+
+      <div className="card pad col" style={{ gap: 8 }}>
+        <b>Invite people (early access)</b>
+        <p className="small muted" style={{ margin: 0 }}>Paste e-mail addresses (one per line or separated by commas, up to 200). People who already have an account are let in at once; the others are let in automatically the moment they register with that address.</p>
+        <textarea className="textarea" rows={3} aria-label="E-mail addresses to invite" value={emails} onChange={(e) => setEmails(e.target.value)} placeholder="friend@example.com&#10;another@example.com" />
+        <div className="row">
+          <button className="btn primary" disabled={busy || list.length === 0 || list.length > 200} onClick={() => void run(`Invited ${list.length} address(es).`, async () => {
+            const r = await rpc<{ invited: number; addedNow: number; invalid: string[] }>('admin_invite_emails', { p_emails: list, p_cohort: curCohort });
+            setEmails('');
+            if (r.invalid.length) onError(`Not valid e-mail addresses (skipped): ${r.invalid.join(', ')}`);
+            else onOk(`${r.addedNow} let in now, ${r.invited} will be let in when they register.`);
+          })}>Invite {list.length > 0 ? `${list.length} address${list.length > 1 ? 'es' : ''}` : ''}</button>
+          <span className="small muted">{o.invitesPending} waiting to register · {o.invitesClaimed} claimed</span>
+        </div>
+      </div>
+
+      <div className="card pad col" style={{ gap: 8 }}>
+        <b>Requests to be let in {data.requests.length > 0 && <span className="badge accent">{data.requests.length}</span>}</b>
+        {data.requests.length === 0 ? <span className="faint small">No pending requests.</span> : (
+          <table className="md-table" style={{ width: '100%' }}>
+            <thead><tr><th>Account</th><th>Note</th><th>Asked</th><th /></tr></thead>
+            <tbody>
+              {data.requests.map((r) => (
+                <tr key={r.user_id}>
+                  <td><b>{r.email}</b></td>
+                  <td className="small">{r.note || <span className="faint">—</span>}</td>
+                  <td className="small">{when(r.created_at)}</td>
+                  <td className="row" style={{ gap: 6 }}>
+                    <button className="btn sm primary" disabled={busy} onClick={() => void run(`${r.email} was let in.`, () => rpc('admin_decide_access_request', { p_user: r.user_id, p_approve: true }))}>Let in</button>
+                    <button className="btn sm danger" disabled={busy} onClick={() => void run(`${r.email} was declined.`, () => rpc('admin_decide_access_request', { p_user: r.user_id, p_approve: false }))}>Decline</button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+      </div>
+
+      <div className="card pad col" style={{ gap: 8 }}>
+        <b>Invitations ({data.invites.length})</b>
+        {data.invites.length === 0 ? <span className="faint small">No invitations yet.</span> : (
+          <div style={{ maxHeight: 280, overflow: 'auto' }}>
+            {data.invites.map((i) => (
+              <div key={i.email} className="row small" style={{ gap: 8 }}>
+                <span className="grow ellipsis">{i.email}</span>
+                <span className={`badge ${i.claimed_by ? 'ok' : ''}`}>{i.claimed_by ? `in since ${day(i.claimed_at)}` : 'not registered yet'}</span>
+                <button className="btn sm danger" disabled={busy} aria-label={`Revoke invitation of ${i.email}`} onClick={() => void run(`Invitation of ${i.email} revoked.`, () => rpc('admin_revoke_invite', { p_email: i.email }))}>Revoke</button>
+              </div>
+            ))}
+          </div>
+        )}
+        <p className="small muted" style={{ margin: 0 }}>Revoking an invitation of someone who is already in removes them from the early-access list. You can also add or remove single people in Users → their details, and manage lists in the Early access tab.</p>
+      </div>
+    </>
+  );
+}
+
+// ------------------------------------------------------------------------------------------ per-user controls
+const USER_LIMIT_FIELDS: [keyof Limits, string][] = [
+  ['maxModelCalls', 'Model calls per task'],
+  ['maxToolCalls', 'Tool calls per task'],
+  ['maxTaskMinutes', 'Minutes per task'],
+  ['maxConcurrentTasks', 'Tasks at once'],
+  ['dailyAgentMissions', 'Agent missions / day'],
+  ['dailyResearch', 'Research reports / day'],
+  ['dailyWebToolCalls', 'Web searches / day'],
+];
+
+interface Extras { limits: Partial<Record<keyof Limits, number | null>> | null; limitsNote: string | null; request: { status: string; note: string } | null; allowedNow: boolean; hasKeyVault: boolean }
+
+/** Access, custom limits and content removal for one account (inside the user drawer). */
+function UserExtras({ id, email, isAdmin, busy, act, onError }: { id: string; email: string; isAdmin: boolean; busy: boolean; act: (label: string, fn: () => Promise<unknown>) => Promise<void> } & Pick<P, 'onError'>) {
+  const { data: x, loading, reload } = useLoad(() => rpc<Extras>('admin_user_extras', { target: id }), onError, [id]);
+  const [draft, setDraft] = useState<Record<string, string> | null>(null);
+  const [typed, setTyped] = useState('');
+  const [purge, setPurge] = useState(false);
+  if (loading && !x) return <Loader2 className="spin" />;
+  if (!x) return null;
+  const value = (k: string) => {
+    if (draft && draft[k] !== undefined) return draft[k];
+    const v = x.limits?.[k as keyof Limits];
+    return v === null ? 'none' : v === undefined ? '' : String(v);
+  };
+  const saveLimits = () => {
+    const out: Record<string, number | null> = {};
+    for (const [k] of USER_LIMIT_FIELDS) {
+      const v = value(k).trim().toLowerCase();
+      if (v === '') continue;
+      if (v === 'none') out[k] = null;
+      else if (/^d+$/.test(v)) out[k] = Number(v);
+      else return onError('Limits are whole numbers of 0 or more, or "none" for no cap. Leave a field empty to use the plan value.');
+    }
+    void act('Custom limits saved.', async () => {
+      await rpc('admin_set_user_limits', { target: id, p_limits: out, p_note: 'set by owner' });
+      setDraft(null);
+      await reload();
+    });
+  };
+  return (
+    <>
+      <div className="card pad col" style={{ gap: 6 }}>
+        <b>Access</b>
+        <div className="small">{x.allowedNow ? <span className="badge ok">can use Genius now</span> : <span className="badge bad">locked out right now</span>} {x.request && <span className="badge">request: {x.request.status}</span>} {x.hasKeyVault && <span className="badge">has a key vault (encrypted; you cannot read it)</span>}</div>
+        {x.request?.note && <div className="small muted">“{x.request.note}”</div>}
+        {x.request?.status === 'pending' && (
+          <div className="row"><button className="btn sm primary" disabled={busy} onClick={() => void act('Let in.', async () => { await rpc('admin_decide_access_request', { p_user: id, p_approve: true }); await reload(); })}>Let in</button><button className="btn sm danger" disabled={busy} onClick={() => void act('Declined.', async () => { await rpc('admin_decide_access_request', { p_user: id, p_approve: false }); await reload(); })}>Decline</button></div>
+        )}
+      </div>
+      <div className="card pad col" style={{ gap: 8 }}>
+        <b>Custom limits for this person</b>
+        <p className="small muted" style={{ margin: 0 }}>Each field you fill replaces the plan's value for this account only. Leave it empty to use the plan's value, type a whole number to change it, or type <code>none</code> for no cap.</p>
+        <div className="pj-grid">
+          {USER_LIMIT_FIELDS.map(([k, label]) => (
+            <label key={k} className="col small" style={{ gap: 2 }}>{label}
+              <input className="input" placeholder="plan value" aria-label={`${label} for ${email}`} value={value(k)} onChange={(e) => setDraft({ ...Object.fromEntries(USER_LIMIT_FIELDS.map(([kk]) => [kk, value(kk)])), [k]: e.target.value })} />
+            </label>
+          ))}
+        </div>
+        <div className="row">
+          <button className="btn sm primary" disabled={busy || !draft} onClick={saveLimits}>Save limits</button>
+          <button className="btn sm" disabled={busy || (!x.limits && !draft)} onClick={() => void act('Custom limits cleared.', async () => { await rpc('admin_set_user_limits', { target: id, p_limits: {}, p_note: '' }); setDraft(null); await reload(); })}>Back to the plan's limits</button>
+        </div>
+      </div>
+      {!isAdmin && (
+        <div className="card pad col" style={{ gap: 6 }}>
+          <b>Remove this person's content</b>
+          <p className="small muted" style={{ margin: 0 }}>Deletes their conversations, files, missions, preferences and key vault from Genius. The account and usage counters stay. Files in storage must be removed in the Supabase dashboard. This cannot be undone.</p>
+          {!purge ? <div className="row"><button className="btn sm danger" disabled={busy} onClick={() => setPurge(true)}>Remove content…</button></div> : (
+            <div className="col" style={{ gap: 6 }}>
+              <label className="small">Type <b>{email}</b> to confirm
+                <input className="input" value={typed} onChange={(e) => setTyped(e.target.value)} aria-label="Type the e-mail address to confirm" />
+              </label>
+              <div className="row">
+                <button className="btn sm danger" disabled={busy || typed.trim().toLowerCase() !== email.toLowerCase()} onClick={() => void act('Content removed.', async () => { await rpc('admin_purge_user_data', { target: id }); setPurge(false); setTyped(''); })}>Remove everything</button>
+                <button className="btn sm ghost" onClick={() => { setPurge(false); setTyped(''); }}>Cancel</button>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+    </>
   );
 }
 

@@ -95,6 +95,7 @@ export default function AccountSettings() {
           ))}
         </ul>
       </div>
+      {access?.access?.locked && !access.isAdmin && <div className="callout warn" role="status" style={{ marginTop: 12 }}>{access.access.message || 'Genius is in early access and this account has not been let in yet.'} Genius Web features and sync stay off until the owner lets you in.</div>}
       <KeyVaultCard />
       {extraViews.sync && (() => { const S = extraViews.sync; return <S />; })()}
       {limits && (

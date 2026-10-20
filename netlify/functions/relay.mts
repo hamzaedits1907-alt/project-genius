@@ -9,6 +9,7 @@ export default async (req: Request): Promise<Response> => {
   try {
     const caller = await authenticate(req);
     if (caller.status === 'suspended') throw new AuthError('Your account is suspended.', 403);
+    if (caller.locked) throw new AuthError('Genius is in early access and this account has not been let in yet.', 403);
     rateLimit(`relay:${caller.userId}`, 120, 60_000);
     const target = await checkTarget(req.headers.get('x-genius-target') ?? '');
     const key = req.headers.get('x-genius-key') ?? '';

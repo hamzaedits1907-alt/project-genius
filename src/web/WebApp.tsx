@@ -85,6 +85,42 @@ export function Announcements() {
   );
 }
 
+/** Early access / closed mode: the owner has not let this account in yet. */
+function LockedScreen({ signOut }: { signOut: () => void }) {
+  const info = useAuth((s) => s.access?.access);
+  const refreshAccess = useAuth((s) => s.refreshAccess);
+  const [note, setNote] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  const ask = async () => {
+    setBusy(true);
+    setErr(null);
+    const { error } = await sb().rpc('request_access', { p_note: note });
+    if (error) setErr(error.message);
+    await refreshAccess();
+    setBusy(false);
+  };
+  const closed = info?.mode === 'closed';
+  return (
+    <Notice title={closed ? 'Genius is closed right now' : 'Genius is in early access'}>
+      <p className="muted">{info?.message || (closed ? 'The owner has switched Genius off for now. Please come back later.' : 'This account has not been let in yet. Ask for access and the owner will see your request.')}</p>
+      {!closed && info?.waitlist && info.request === 'pending' && <div className="callout info" role="status">Your request was sent. You will be let in as soon as the owner approves it; reload this page afterwards.</div>}
+      {!closed && info?.waitlist && info.request === 'declined' && <div className="callout bad" role="status">Your request was not approved.</div>}
+      {!closed && info?.waitlist && !info.request && (
+        <div className="col" style={{ gap: 8 }}>
+          <textarea className="input" rows={2} maxLength={500} placeholder="Optional: who you are and why you want in" aria-label="Note for the owner" value={note} onChange={(e) => setNote(e.target.value)} />
+          <button className="btn primary" disabled={busy} onClick={() => void ask()}>Ask for access</button>
+        </div>
+      )}
+      {err && <div className="callout bad" role="alert">{err}</div>}
+      <div className="row" style={{ gap: 8 }}>
+        <button className="btn" onClick={() => void refreshAccess()}>Check again</button>
+        <button className="btn" onClick={signOut}>Sign out</button>
+      </div>
+    </Notice>
+  );
+}
+
 function Shell({ runtime }: { runtime: WebRuntime }) {
   const access = useAuth((s) => s.access);
   const session = useAuth((s) => s.session);
@@ -128,6 +164,7 @@ function Shell({ runtime }: { runtime: WebRuntime }) {
       </Notice>
     );
   }
+  if (access?.access?.locked && !access.isAdmin) return <LockedScreen signOut={() => void signOut()} />;
   if (access?.maintenance && !access.isAdmin) {
     return (
       <Notice title="Genius is being maintained">

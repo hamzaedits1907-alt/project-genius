@@ -4,6 +4,8 @@
 export interface Caller {
   userId: string;
   status: 'active' | 'suspended';
+  /** Genius is locked for this account (early access / closed). */
+  locked: boolean;
   features: Record<string, { available: boolean; reason: string }>;
 }
 
@@ -28,12 +30,13 @@ export async function authenticate(req: Request, fetchImpl: typeof fetch = fetch
   if (!user.id) throw new AuthError('Your session is not valid. Sign in again.', 401);
   const acc = await fetchImpl(`${url}/rest/v1/rpc/my_access`, { method: 'POST', headers, body: '{}' }).catch(() => null);
   if (!acc || !acc.ok) throw new AuthError('Could not check your access.', 502);
-  const a = (await acc.json()) as { status?: string; features?: Caller['features'] };
-  return { userId: user.id, status: a.status === 'suspended' ? 'suspended' : 'active', features: a.features ?? {} };
+  const a = (await acc.json()) as { status?: string; access?: { locked?: boolean }; features?: Caller['features'] };
+  return { userId: user.id, status: a.status === 'suspended' ? 'suspended' : 'active', locked: a.access?.locked === true, features: a.features ?? {} };
 }
 
 export function requireFeature(c: Caller, feature: string) {
   if (c.status === 'suspended') throw new AuthError('Your account is suspended.', 403);
+  if (c.locked) throw new AuthError('Genius is in early access and this account has not been let in yet.', 403);
   const f = c.features[feature];
   if (!f?.available) throw new AuthError(f?.reason === 'maintenance' ? 'Genius is in maintenance right now. Try again later.' : f?.reason === 'switched_off' ? 'This feature is switched off at the moment.' : f?.reason === 'needs_pro' ? 'This feature needs Genius Pro.' : 'This feature is not available to your account.', 403);
 }

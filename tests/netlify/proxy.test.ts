@@ -138,6 +138,11 @@ describe('session checks', () => {
     const sus = await authenticate(req('Bearer t'), fakeFetch({ status: 'suspended', features: {} }));
     expect(() => requireFeature(sus, 'web_tools')).toThrow(AuthError);
   });
+  it('refuses an account that early access / closed mode has not let in', async () => {
+    const locked = await authenticate(req('Bearer t'), fakeFetch({ status: 'active', access: { locked: true }, features: { web_tools: { available: true, reason: 'ok' } } }));
+    expect(locked.locked).toBe(true);
+    expect(() => requireFeature(locked, 'web_tools')).toThrow(/early access/);
+  });
   it('rate limits a user', () => {
     for (let i = 0; i < 3; i++) rateLimit('k', 3, 1000);
     expect(() => rateLimit('k', 3, 1000)).toThrow(/Too many/);
