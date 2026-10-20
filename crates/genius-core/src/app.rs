@@ -1297,33 +1297,55 @@ impl Genius {
         let batch_opts = CallOptions { role: Some(ModelRole::Code), thinking: Some(false), effort: Some(Effort::Balanced), max_tokens: Some(24_000), ..Default::default() };
         if batched {
             let order = prompts::generation_order(&spec.files);
-            let parts = order.len().div_ceil(prompts::GENERATE_BATCH_FILES);
-            for (i, batch) in order.chunks(prompts::GENERATE_BATCH_FILES).enumerate() {
+            // Foundations (styles, types, helpers, hooks, context) are written first, in order, because everything imports
+            // them. The rest (components, pages, App) only needs what exists by then, so up to MAX_PARALLEL batches of it are
+            // written at the same time: about three times faster on a slow model.
+            const MAX_PARALLEL: usize = 3;
+            let (foundation, rest): (Vec<_>, Vec<_>) = order.into_iter().partition(|f| prompts::generation_tier(&f.path) <= 2);
+            let mut waves: Vec<Vec<Vec<crate::spec::PlannedFile>>> = Vec::new();
+            for chunk in foundation.chunks(prompts::GENERATE_BATCH_FILES) {
+                waves.push(vec![chunk.to_vec()]);
+            }
+            for group in rest.chunks(prompts::GENERATE_BATCH_FILES * MAX_PARALLEL) {
+                waves.push(group.chunks(prompts::GENERATE_BATCH_FILES).map(|c| c.to_vec()).collect());
+            }
+            let parts: usize = waves.iter().map(|w| w.len()).sum();
+            let mut done_parts = 0usize;
+            let bo = &batch_opts;
+            for wave in waves {
                 let written = collect(&all_events).files;
-                let msgs = prompts::generate_batch_messages(&spec, &template_ctx, &p.notes, &written, batch, i, parts, "");
-                let purpose = format!("Generating source code (part {}/{parts})", i + 1);
-                let (_, ev) = self.ai_call_opts(project_id, task_id, &purpose, &msgs, true, cancel, &batch_opts).await?;
-                rounds += 1;
-                if i == 0 {
-                    explanation = collect(&ev).explanation;
+                let note = if wave.len() > 1 { "Other files of this application are being written at the same moment by another worker (see the file list in the specification). Import them by their planned path; every component or page file default-exports a component named exactly like its file. Do not write those other files yourself." } else { "" };
+                let calls = wave.iter().enumerate().map(|(k, batch)| {
+                    let msgs = prompts::generate_batch_messages(&spec, &template_ctx, &p.notes, &written, batch, done_parts + k, parts, note);
+                    let purpose = format!("Generating source code (part {}/{parts})", done_parts + k + 1);
+                    async move { self.ai_call_opts(project_id, task_id, &purpose, &msgs, true, cancel, bo).await }
+                });
+                let results = futures_util::future::join_all(calls).await;
+                for r in results {
+                    let (_, ev) = r?;
+                    rounds += 1;
+                    if done_parts == 0 && explanation.is_empty() {
+                        explanation = collect(&ev).explanation;
+                    }
+                    all_events.extend(ev);
                 }
-                all_events.extend(ev);
-                // a file that arrived cut off or not at all is asked for again, alone and compact
+                // files that arrived cut off or not at all are asked for again, alone and compact
                 let missing: Vec<crate::spec::PlannedFile> = {
                     let parsed = collect(&all_events);
-                    batch.iter().filter(|f| !parsed.files.iter().any(|(p, _)| p == &f.path)).cloned().collect()
+                    wave.iter().flatten().filter(|f| !parsed.files.iter().any(|(p, _)| p == &f.path)).cloned().collect()
                 };
                 if !missing.is_empty() {
-                    stage("generate", "continuing", format!("part {}/{parts}: {} file(s) were cut off; writing them again one at a time", i + 1, missing.len()));
+                    stage("generate", "continuing", format!("{} file(s) were cut off; writing them again one at a time", missing.len()));
                     for f in missing {
                         let written = collect(&all_events).files;
                         let note = format!("A previous attempt at {} was cut off by the output limit. Write it again COMPLETE and compact: under 200 lines, no long comments, no unused code.", f.path);
-                        let msgs = prompts::generate_batch_messages(&spec, &template_ctx, &p.notes, &written, std::slice::from_ref(&f), i, parts, &note);
+                        let msgs = prompts::generate_batch_messages(&spec, &template_ctx, &p.notes, &written, std::slice::from_ref(&f), done_parts, parts, &note);
                         let (_, ev) = self.ai_call_opts(project_id, task_id, &format!("Rewriting {}", f.path), &msgs, true, cancel, &batch_opts).await?;
                         rounds += 1;
                         all_events.extend(ev);
                     }
                 }
+                done_parts += wave.len();
             }
             // close what is still missing: App.tsx, cut-off files, imports of files nobody wrote
             for gap_round in 0..3 {

@@ -154,7 +154,7 @@ pub const GENERATE_BATCH_FILES: usize = 3;
 
 /// How early a planned file must be written: shared styles, types and helpers first, the app shell last, so
 /// every later file can import what already exists.
-fn generation_tier(path: &str) -> u8 {
+pub fn generation_tier(path: &str) -> u8 {
     let p = path.to_lowercase();
     let name = p.rsplit('/').next().unwrap_or(&p);
     if p == "src/index.css" || p == "src/styles.css" || p == "src/global.css" {
@@ -232,7 +232,7 @@ pub fn generate_batch_messages(spec: &ProjectSpec, template_context: &str, memor
 
 {FILE_PROTOCOL}
 
-The application is written a few files at a time (this is part {} of {}). Write ONLY the files listed under FILES TO WRITE NOW, each complete, and nothing else: no files that are not listed, no README unless listed. Keep each file small and focused (under about 120 lines, compact code, no long comments) and finish every file: a short complete file is better than a long one that is cut off. Reuse what already exists: import from the WRITTEN files exactly the names, props and types shown there, and never redefine them.",
+The application is written a few files at a time (this is part {} of {}). Write ONLY the files listed under FILES TO WRITE NOW, each complete, and nothing else: the specification shows the whole application for context only, every other planned file is written by another worker, and any file you write that is not in the list is thrown away. No README unless listed. Keep each file small and focused (under about 120 lines, compact code, no long comments) and finish every file: a short complete file is better than a long one that is cut off. Reuse what already exists: import from the WRITTEN files exactly the names, props and types shown there, and never redefine them.",
         part + 1,
         parts
     );

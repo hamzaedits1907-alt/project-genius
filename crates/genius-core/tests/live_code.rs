@@ -34,6 +34,8 @@ async fn live_code_mode_builds_an_app_that_type_checks_and_builds() {
     s.model = None;
     s.model_mode = "auto".into();
     s.workspace_dir = Some(tmp.path().join("projects").to_string_lossy().to_string());
+    s.approvals.dependency_install = genius_core::settings::Policy::Auto; // like the "auto" setting in the app
+    s.approvals.apply_ai_edits = genius_core::settings::Policy::Auto;
     g.save_settings(&s).unwrap();
     g.save_api_key(&key).unwrap();
 
