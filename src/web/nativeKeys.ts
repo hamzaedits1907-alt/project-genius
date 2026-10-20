@@ -13,6 +13,23 @@ export function isNativeApp(): boolean {
   }
 }
 
+/** A native call that never answers must not freeze the app: give up after `ms` and use `fallback`. */
+export function within<T>(p: Promise<T>, ms: number, fallback: T): Promise<T> {
+  return new Promise((resolve) => {
+    const t = setTimeout(() => resolve(fallback), ms);
+    p.then(
+      (v) => {
+        clearTimeout(t);
+        resolve(v);
+      },
+      () => {
+        clearTimeout(t);
+        resolve(fallback);
+      },
+    );
+  });
+}
+
 type Secure = { set(key: string, value: string): Promise<void>; get(key: string): Promise<unknown>; remove(key: string): Promise<boolean | void> };
 let plugin: Promise<Secure> | null = null;
 /** The native secure-storage plugin (loaded only inside the apps). */
@@ -32,17 +49,21 @@ export function createNativeKeyVault(): PersistentKeyVault {
   const enqueue = (task: () => Promise<void>) => {
     chain = chain.then(task, task);
   };
-  const ready = (async () => {
-    try {
-      const s = await secureStorage();
-      for (const p of PROVIDERS) {
-        const v = await s.get(`key.${p}`).catch(() => null);
-        if (typeof v === 'string' && v) mem.set(p, v);
+  const ready = within(
+    (async () => {
+      try {
+        const s = await secureStorage();
+        for (const p of PROVIDERS) {
+          const v = await within(s.get(`key.${p}`), 2500, null);
+          if (typeof v === 'string' && v) mem.set(p, v);
+        }
+      } catch {
+        /* secure storage unavailable: keys last for this session only */
       }
-    } catch {
-      /* secure storage unavailable: keys last for this session only */
-    }
-  })();
+    })(),
+    6000,
+    undefined,
+  );
   return {
     ready,
     canRemember: () => true,
@@ -51,11 +72,11 @@ export function createNativeKeyVault(): PersistentKeyVault {
     get: (p) => mem.get(p) ?? null,
     set: (p, key) => {
       mem.set(p, key);
-      enqueue(async () => void (await (await secureStorage()).set(`key.${p}`, key).catch(() => undefined)));
+      enqueue(async () => void (await within(secureStorage().then((s) => s.set(`key.${p}`, key)), 4000, undefined)));
     },
     remove: (p) => {
       mem.delete(p);
-      enqueue(async () => void (await (await secureStorage()).remove(`key.${p}`).catch(() => undefined)));
+      enqueue(async () => void (await within(secureStorage().then((s) => s.remove(`key.${p}`)), 4000, undefined)));
     },
   };
 }

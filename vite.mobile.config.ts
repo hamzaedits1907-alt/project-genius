@@ -1,6 +1,7 @@
 /// <reference types="vitest/config" />
 import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
+import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
 // The Android and iOS apps (Capacitor): the same signed-in web app as Genius Web, bundled into the app with
@@ -13,7 +14,11 @@ export default defineConfig({
   base: './',
   publicDir: false,
   plugins: [react()],
-  define: { __GENIUS_TARGET__: JSON.stringify('web'), __GENIUS_MOBILE__: JSON.stringify(true) },
+  define: {
+    __GENIUS_TARGET__: JSON.stringify('web'),
+    __GENIUS_MOBILE__: JSON.stringify(true),
+    __APP_VERSION__: JSON.stringify((JSON.parse(readFileSync(p('./package.json'), 'utf8')) as { version: string }).version),
+  },
   resolve: {
     alias: [
       { find: '@tauri-apps/api/core', replacement: p('./src/web/shims/tauri-core.ts') },

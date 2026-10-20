@@ -7,6 +7,8 @@ import { isWeb } from '../lib/platform';
 import { extraViews } from '../lib/extraViews';
 import AuthScreen from './AuthScreen';
 import KeyVaultCard from './KeyVaultCard';
+import { APP_VERSION, openUpdate, useAppUpdate } from './appUpdate';
+import { isMobileApp } from '../lib/platform';
 import { accountConfigSource, clearAccountConfig, saveAccountConfig, sb, supabaseConfigured, useAuth, type Limits } from './auth';
 
 const LIMIT_LABELS: [keyof Limits, string][] = [
@@ -39,6 +41,25 @@ function ConnectService() {
       <input className="input" placeholder="anon / publishable key" aria-label="Public key" value={key} onChange={(e) => setKey(e.target.value)} autoComplete="off" spellCheck={false} />
       {msg && <div className="callout bad" role="alert">{msg}</div>}
       <div className="row"><button className="btn primary" disabled={!url || !key} onClick={save}>Save and reload</button></div>
+    </div>
+  );
+}
+
+/** Android app: which version this is and a button to look for a newer one. */
+function AppVersionCard() {
+  const { info, checking, error, lastChecked, check } = useAppUpdate();
+  return (
+    <div className="card pad col" style={{ gap: 6, marginTop: 12 }}>
+      <b>App version</b>
+      <div className="small">Genius {APP_VERSION}{lastChecked ? ` · checked ${new Date(lastChecked).toLocaleTimeString()}` : ''}</div>
+      {info ? (
+        <div className="callout info" role="status">
+          Version {info.version} is available. <button className="btn sm primary" onClick={() => openUpdate(info.url)}>Download {info.name}</button>
+          {info.debugSigned && <div className="small" style={{ marginTop: 6 }}>Uninstall the old app first: this build is signed with a temporary key (your account and conversations are kept).</div>}
+        </div>
+      ) : lastChecked && !error ? <div className="small muted">You have the newest version.</div> : null}
+      {error && <div className="callout bad" role="alert">{error}</div>}
+      <div className="row"><button className="btn" disabled={checking} onClick={() => void check(true)}>{checking ? 'Checking…' : 'Check for updates'}</button></div>
     </div>
   );
 }
@@ -96,6 +117,7 @@ export default function AccountSettings() {
         </ul>
       </div>
       {access?.access?.locked && !access.isAdmin && <div className="callout warn" role="status" style={{ marginTop: 12 }}>{access.access.message || 'Genius is in early access and this account has not been let in yet.'} Genius Web features and sync stay off until the owner lets you in.</div>}
+      {isMobileApp && <AppVersionCard />}
       <KeyVaultCard />
       {extraViews.sync && (() => { const S = extraViews.sync; return <S />; })()}
       {limits && (

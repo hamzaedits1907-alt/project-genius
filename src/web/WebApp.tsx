@@ -19,10 +19,11 @@ import { SupabaseStore } from './supabaseStore';
 import { createKeyVault } from './keyvault';
 import { WebRuntime } from './runtime';
 import { startLiveRefresh } from './liveSync';
+import { openUpdate, startUpdateChecks, useAppUpdate } from './appUpdate';
 import { keyHooks } from '../lib/api';
 import { onKeyRemoved, onKeySaved, startKeySync, stopKeySync } from './keySync';
 import { webLocalKeys } from './keyPorts';
-import { createNativeKeyVault, isNativeApp } from './nativeKeys';
+import { createNativeKeyVault, isNativeApp, within } from './nativeKeys';
 import { noWebTools, proxyTools } from './webTools';
 
 extraViews.code = CodeView;
@@ -83,6 +84,27 @@ export function Announcements() {
           <button className="icon-btn" aria-label={`Dismiss ${a.title}`} onClick={() => hide(a.id)}><X size={13} /></button>
         </div>
       ))}
+    </div>
+  );
+}
+
+/** Android app: a newer APK is published on GitHub. */
+function UpdateBanner() {
+  const info = useAppUpdate((s) => s.info);
+  const dismissed = useAppUpdate((s) => s.dismissed);
+  const dismiss = useAppUpdate((s) => s.dismiss);
+  if (!info || dismissed === info.version) return null;
+  return (
+    <div className="gx-announce" role="region" aria-label="Update available">
+      <div className="callout info" role="status">
+        <Megaphone size={15} />
+        <div className="grow">
+          <b>Genius {info.version} is available.</b>
+          <div className="small">{info.debugSigned ? 'Download it, then uninstall the old app first (this build is signed with a temporary key, so Android cannot update over it); your account and conversations stay safe.' : 'Download it and open the file to update.'}</div>
+        </div>
+        <button className="btn sm primary" onClick={() => openUpdate(info.url)}>Download</button>
+        <button className="icon-btn" aria-label="Dismiss the update notice" onClick={dismiss}><X size={13} /></button>
+      </div>
     </div>
   );
 }
@@ -178,6 +200,7 @@ function Shell({ runtime }: { runtime: WebRuntime }) {
   void runtime;
   return (
     <>
+      {isMobileApp && <UpdateBanner />}
       <Announcements />
       <App />
     </>
@@ -191,6 +214,11 @@ export default function WebApp() {
     void init();
   }, [init]);
 
+  useEffect(() => {
+    if (!isMobileApp) return;
+    return startUpdateChecks();
+  }, []);
+
   const userId = session?.user.id ?? null;
   const vault = useMemo(() => (isNativeApp() ? createNativeKeyVault() : createKeyVault()), []);
   const store = useMemo(() => (userId ? new SupabaseStore(sb()) : localOnly ? new MemoryStore('genius.web.local') : null), [userId]);
@@ -202,7 +230,9 @@ export default function WebApp() {
     }
     const rt = new WebRuntime({ store, tools: localOnly ? noWebTools : proxyTools({ url: `${apiBase}/api/web`, accessToken }), accessToken: localOnly ? async () => '' : accessToken, relayUrl: `${apiBase}/api/relay`, keys: vault });
     setRuntime(rt);
-    void Promise.all([vault.ready, rt.load()]).then(() => setRt(rt)); // remembered keys are decrypted before the first request
+    // Remembered keys are decrypted before the first request, but nothing here may keep the app on the spinner:
+    // the key store and the settings each get a time limit (the app then starts with what it has).
+    void Promise.all([within(vault.ready, 7000, undefined), within(rt.load(), 20000, undefined)]).then(() => setRt(rt));
     return () => {
       setRuntime(null);
       setRt(null);

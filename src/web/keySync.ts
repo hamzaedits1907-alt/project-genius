@@ -9,7 +9,7 @@ import { create } from 'zustand';
 import type { SupabaseClient } from '@supabase/supabase-js';
 import type { ProviderId } from '../lib/types';
 import { AccountVault, PROVIDER_IDS, WrongPassphrase, type VaultRemote, type VaultRow } from './accountVault';
-import { isNativeApp, secureStorage } from './nativeKeys';
+import { isNativeApp, secureStorage, within } from './nativeKeys';
 
 /** Where this device keeps its own keys (the OS credential store on the desktop, the encrypted browser store on the web). */
 export interface LocalKeys {
@@ -57,7 +57,7 @@ function idb<T>(mode: IDBTransactionMode, fn: (s: IDBObjectStore) => IDBRequest<
 const deviceMemory = {
   async get(uid: string): Promise<{ key?: CryptoKey; passphrase?: string } | null> {
     if (isNativeApp()) {
-      const v = await (await secureStorage()).get(`vaultpass.${uid}`).catch(() => null);
+      const v = await within(secureStorage().then((s) => s.get(`vaultpass.${uid}`)), 3000, null);
       return typeof v === 'string' && v ? { passphrase: v } : null;
     }
     const k = await deviceKey.get(uid);
@@ -66,12 +66,12 @@ const deviceMemory = {
   async put(uid: string, m: { key: CryptoKey; passphrase?: string }): Promise<boolean> {
     if (isNativeApp()) {
       if (!m.passphrase) return false;
-      return (await secureStorage()).set(`vaultpass.${uid}`, m.passphrase).then(() => true, () => false);
+      return within(secureStorage().then((s) => s.set(`vaultpass.${uid}`, m.passphrase!)).then(() => true), 4000, false);
     }
     return deviceKey.put(uid, m.key);
   },
   async del(uid: string): Promise<void> {
-    if (isNativeApp()) await (await secureStorage()).remove(`vaultpass.${uid}`).catch(() => undefined);
+    if (isNativeApp()) await within(secureStorage().then((s) => s.remove(`vaultpass.${uid}`)), 3000, undefined);
     else await deviceKey.del(uid);
   },
 };

@@ -18,5 +18,5 @@ pid=$(adb shell pidof "$PKG" | tr -d '\r' || true)
 if adb logcat -d | grep -E "FATAL EXCEPTION|ANR in $PKG"; then echo "::error::the app crashed"; exit 1; fi
 adb exec-out screencap -p > launch.png || true
 adb forward tcp:9222 "localabstract:webview_devtools_remote_${pid}"
-node scripts/android-webview-check.mjs 9222 || { adb logcat -d | grep -i -E "chromium|capacitor|console" | tail -40; exit 1; }
+node scripts/android-webview-check.mjs 9222 && node scripts/android-login-check.mjs 9222 || { adb logcat -d | grep -i -E "chromium|capacitor|console" | tail -40; exit 1; }
 echo "OK: $PKG installed, running (pid $pid)"
