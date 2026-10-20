@@ -104,7 +104,15 @@ export function Sidebar() {
   }
 
   return (
-    <aside className="gx-side" aria-label="Sidebar">
+    <aside
+      className="gx-side"
+      aria-label="Sidebar"
+      onClick={(e) => {
+        // phones: choosing something closes the drawer (typing in search or the small row actions keep it open)
+        const t = e.target as HTMLElement;
+        if (window.matchMedia?.('(max-width: 640px)').matches && t.closest('.gx-nav button, .gx-new, li > button:not(.icon-btn), .gx-side-foot button') && !t.closest('input, textarea, .icon-btn')) setCollapsed(true);
+      }}
+    >
       <div className="gx-side-head">
         <GeniusAvatar size={26} mood={running || projectBusy ? 'working' : 'idle'} />
         <span className="gx-brand">Genius</span>

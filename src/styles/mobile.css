@@ -1,0 +1,52 @@
+/* Phone layout (Genius Web on a phone and the Android / iOS apps). The desktop window never gets this narrow
+   (minimum 1024 px), so nothing here changes the desktop app. The sidebar becomes a drawer opened from a top bar. */
+.gx-mobilebar, .gx-scrim { display: none; }
+
+@media (max-width: 640px) {
+  html, body, #root { height: 100dvh; }
+  body { overscroll-behavior: none; -webkit-text-size-adjust: 100%; }
+
+  /* one column: top bar + content */
+  .gx-shell, .gx-shell.collapsed, .gx-shell:not(.collapsed) { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto minmax(0, 1fr); height: 100dvh; }
+  .gx-mobilebar {
+    display: flex; align-items: center; gap: 8px; height: calc(52px + env(safe-area-inset-top)); padding: env(safe-area-inset-top) 8px 0 8px;
+    background: var(--bg-1); border-bottom: 1px solid var(--border); position: relative; z-index: 30;
+  }
+  .gx-mobilebar .brand { flex: 1; font-weight: 700; letter-spacing: 0.01em; }
+  .gx-mobilebar button { width: 44px; height: 44px; display: grid; place-items: center; border: 0; border-radius: 12px; background: transparent; color: var(--text); cursor: pointer; }
+  .gx-mobilebar button:active { background: var(--bg-3); }
+
+  /* the sidebar: hidden rail, or a full-height drawer */
+  .gx-side.collapsed { display: none; }
+  .gx-side:not(.collapsed) {
+    position: fixed; z-index: 70; top: 0; bottom: 0; left: 0; width: min(86vw, 330px); overflow-y: auto;
+    padding-top: calc(12px + env(safe-area-inset-top)); padding-bottom: calc(10px + env(safe-area-inset-bottom));
+    box-shadow: 8px 0 40px rgba(0, 0, 0, 0.55); animation: gx-drawer 0.18s ease-out;
+  }
+  .gx-scrim { display: block; position: fixed; inset: 0; z-index: 65; background: rgba(0, 0, 0, 0.55); }
+  @keyframes gx-drawer { from { transform: translateX(-100%); } to { transform: none; } }
+  @media (prefers-reduced-motion: reduce) { .gx-side:not(.collapsed) { animation: none; } }
+
+  /* touch targets and no zoom-on-focus (iOS zooms any input below 16 px) */
+  input, select, textarea, .input, .select, .textarea { font-size: 16px; }
+  .btn, .gx-nav button, .gx-side-foot button, .gx-new { min-height: 44px; }
+  .gx-side li { min-height: 44px; }
+  .gx-side li .icon-btn { opacity: 1; width: 36px; height: 36px; }
+  .icon-btn { min-width: 40px; min-height: 40px; }
+
+  /* the first-run key panel: the field takes the whole row, buttons wrap below it */
+  .quick-setup .row { flex-wrap: wrap; }
+  .quick-setup .row .input { flex: 1 1 100%; min-width: 0; }
+  .quick-setup .row .select, .quick-setup .select { max-width: 100%; margin: 0 0 6px 0 !important; }
+
+  /* the message box clears the home indicator and the on-screen keyboard */
+  .gx-dock { padding-bottom: calc(10px + env(safe-area-inset-bottom)); }
+  .gx-thread { padding-left: 12px; padding-right: 12px; }
+  .main { overflow: hidden; }
+
+  /* tables and wide content scroll inside their own box instead of the page */
+  .md-table, table { display: block; max-width: 100%; overflow-x: auto; }
+  .pj-inner { padding-left: 14px; padding-right: 14px; }
+  .gx-drawer { width: 100vw; max-width: 100vw; }
+  .toasts, .toast-stack { left: 8px; right: 8px; bottom: calc(8px + env(safe-area-inset-bottom)); }
+}

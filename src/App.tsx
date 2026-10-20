@@ -1,5 +1,5 @@
 import { Component, useEffect, useState, type ErrorInfo, type ReactNode } from 'react';
-import { X } from 'lucide-react';
+import { Menu, SquarePen, X } from 'lucide-react';
 import ChatHome from './views/chat/ChatHome';
 import ResearchView from './views/chat/ResearchView';
 import { subscribeChat } from './store/chat';
@@ -140,6 +140,13 @@ export default function App() {
 
   return (
     <div className={`shell gx-shell ${collapsed ? 'collapsed' : ''}`}>
+      {/* phones: a top bar opens the sidebar as a drawer (hidden by CSS on larger screens) */}
+      <div className="gx-mobilebar">
+        <button aria-label="Open menu" onClick={() => setCollapsed(false)}><Menu size={20} /></button>
+        <span className="brand">Genius</span>
+        <button aria-label="New chat" onClick={() => startNewChat(useApp.getState().route.name === 'research' ? 'research' : 'chat')}><SquarePen size={19} /></button>
+      </div>
+      {!collapsed && <div className="gx-scrim" onClick={() => setCollapsed(true)} aria-hidden />}
       <Sidebar />
       <main className="main">
         <ErrorBoundary key={route.name} view={route.name}>
